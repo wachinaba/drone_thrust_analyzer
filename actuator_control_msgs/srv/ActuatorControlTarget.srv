@@ -1,0 +1,4 @@
+float32 value
+float32[4] values
+bool independent false
+---
