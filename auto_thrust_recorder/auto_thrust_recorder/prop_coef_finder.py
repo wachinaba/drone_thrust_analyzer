@@ -9,6 +9,7 @@ from geometry_msgs.msg import WrenchStamped
 import numpy as np
 import csv
 import datetime
+import matplotlib.pyplot as plt  # Matplotlibのインポート
 
 class PropCoefFinderNode(Node):
     """ROS2 Node to incrementally increase thrust and log wrench data."""
@@ -79,6 +80,7 @@ class PropCoefFinderNode(Node):
         self.control_smoothing_factor = self.declare_parameter(
             'control_smoothing_factor', 0.1).get_parameter_value().double_value
         
+        # パラメータのログ出力
         self.get_logger().info(f"max_thrust_percent: {self.max_thrust_percent}")
         self.get_logger().info(f"thrust_step: {self.thrust_step}")
         self.get_logger().info(f"pause_duration: {self.pause_duration}")
@@ -257,8 +259,8 @@ class PropCoefFinderNode(Node):
         self.logging_start_time = self.get_clock().now().nanoseconds / 1e9
 
         # Create primary CSV file
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.log_filename_prefix}_{timestamp}.csv"
+        self.file_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{self.log_filename_prefix}_{self.file_timestamp}.csv"
         self.csv_file = open(filename, mode='w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow([
@@ -268,7 +270,7 @@ class PropCoefFinderNode(Node):
         ])
 
         # Create average CSV file
-        avg_filename = f"{self.log_filename_prefix}_average_{timestamp}.csv"
+        avg_filename = f"{self.log_filename_prefix}_average_{self.file_timestamp}.csv"
         self.avg_csv_file = open(avg_filename, mode='w', newline='')
         self.avg_csv_writer = csv.writer(self.avg_csv_file)
         self.avg_csv_writer.writerow([
@@ -276,6 +278,9 @@ class PropCoefFinderNode(Node):
             'avg_torque_x', 'avg_torque_y', 'avg_torque_z',
             'avg_motor_0', 'avg_motor_1', 'avg_motor_2', 'avg_motor_3'
         ])
+
+        # Save average CSV filename for later use
+        self.avg_csv_filename = avg_filename
 
         # Initialize accumulation variables
         self.accumulated_data = []
@@ -337,8 +342,12 @@ class PropCoefFinderNode(Node):
         # Close CSV files
         if self.csv_file and not self.csv_file.closed:
             self.csv_file.close()
+            self.get_logger().info(f'CSV file written: {self.csv_file.name}')
         if self.avg_csv_file and not self.avg_csv_file.closed:
             self.avg_csv_file.close()
+            self.get_logger().info(f'CSV file written: {self.avg_csv_file.name}')
+        # Plot the collected data
+        self.plot_data()
 
         # Cancel timers
         if self.thrust_timer:
@@ -354,6 +363,86 @@ class PropCoefFinderNode(Node):
         response.message = 'Recording stopped.'
         return response
 
+    def plot_data(self):
+        """Read the average CSV and plot thrust vs force and torque in a single figure with dual y-axes for Force XY and Z."""
+        try:
+            # Initialize dictionaries to store data
+            avg_data = {
+                'thrust_step': [],
+                'avg_force_x': [],
+                'avg_force_y': [],
+                'avg_force_z': [],
+                'avg_torque_x': [],
+                'avg_torque_y': [],
+                'avg_torque_z': [],
+                'avg_motor_0': [],
+                'avg_motor_1': [],
+                'avg_motor_2': [],
+                'avg_motor_3': []
+            }
+
+            # Read the average CSV file
+            with open(self.avg_csv_filename, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    avg_data['thrust_step'].append(float(row['thrust_step']) * 100) # パーセントに変換
+                    avg_data['avg_force_x'].append(float(row['avg_force_x']))
+                    avg_data['avg_force_y'].append(float(row['avg_force_y']))
+                    avg_data['avg_force_z'].append(float(row['avg_force_z']))
+                    avg_data['avg_torque_x'].append(float(row['avg_torque_x']))
+                    avg_data['avg_torque_y'].append(float(row['avg_torque_y']))
+                    avg_data['avg_torque_z'].append(float(row['avg_torque_z']))
+                    # Motor data can be processed similarly if needed
+
+            # Create a figure with 2 vertically aligned subplots
+            fig, axs = plt.subplots(2, 1, figsize=(12, 14), sharex=True)
+
+            # 1つ目のサブプロット：Thrust vs Force XY and Force Z (Dual y-axes)
+            ax1 = axs[0]
+            ax2 = ax1.twinx()  # 右側のy軸を作成
+
+            # Force XY
+            ax1.plot(avg_data['thrust_step'], avg_data['avg_force_x'], label='Force X', color='r')
+            ax1.plot(avg_data['thrust_step'], avg_data['avg_force_y'], label='Force Y', color='g')
+            ax1.set_ylabel('Force XY (N)', color='k')
+            ax1.tick_params(axis='y', labelcolor='k')
+            ax1.set_ylim([-2, 2])
+
+            # Force Z
+            ax2.plot(avg_data['thrust_step'], avg_data['avg_force_z'], label='Force Z', color='b')
+            ax2.set_ylabel('Force Z (N)', color='b')
+            ax2.tick_params(axis='y', labelcolor='b')
+            ax2.set_ylim([0, 30])
+
+            # タイトルと凡例
+            ax1.set_title('Thrust vs Force XY and Force Z')
+            ax1.legend(loc='upper left')
+            ax2.legend(loc='upper right')
+            ax1.grid(True)
+
+            # 2つ目のサブプロット：Thrust vs Torque X, Y, Z
+            axs[1].plot(avg_data['thrust_step'], avg_data['avg_torque_x'], label='Torque X', color='r')
+            axs[1].plot(avg_data['thrust_step'], avg_data['avg_torque_y'], label='Torque Y', color='g')
+            axs[1].plot(avg_data['thrust_step'], avg_data['avg_torque_z'], label='Torque Z', color='b')
+            axs[1].set_xlabel('Thrust (%)')
+            axs[1].set_ylabel('Torque (Nm)')
+            axs[1].set_title('Thrust vs Torque X, Y, Z')
+            axs[1].legend()
+            axs[1].grid(True)
+            axs[1].set_ylim([-1, 1])
+
+            # レイアウトを調整
+            plt.tight_layout()
+
+            # グラフを表示（または保存）
+            plt.show()
+
+            fig.savefig(f"{self.log_filename_prefix}_plots_{self.file_timestamp}.png")
+            self.get_logger().info(f'Plots saved as {self.log_filename_prefix}_plots_{self.file_timestamp}.png')
+
+        except Exception as e:
+            self.get_logger().error(f'Failed to plot data: {e}')
+
     def disarm_on_shutdown(self):
         """Disarm the vehicle when the node is shutting down."""
         self.set_arming(False)
@@ -362,6 +451,10 @@ class PropCoefFinderNode(Node):
         if self.avg_csv_file and not self.avg_csv_file.closed:
             self.avg_csv_file.close()
 
+    def perform_shutdown(self):
+        """Handle node shutdown."""
+        self.disarm_on_shutdown()
+
 def main(args=None):
     """Main function to start the node."""
     rclpy.init(args=args)
@@ -369,10 +462,9 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        print("KeyboardInterrupt, disarming and shutting down...")
-        pass
+        node.get_logger().info("KeyboardInterrupt, disarming and shutting down...")
     finally:
-        node.disarm_on_shutdown()
+        node.perform_shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 
