@@ -8,6 +8,7 @@ from std_srvs.srv import SetBool, Trigger, Empty
 from geometry_msgs.msg import WrenchStamped
 import numpy as np
 import csv
+import datetime
 
 class PropCoefFinderNode(Node):
     """ROS2 Node to incrementally increase thrust and log wrench data."""
@@ -230,7 +231,7 @@ class PropCoefFinderNode(Node):
         self.logging_start_time = self.get_clock().now().nanoseconds / 1e9
 
         # Create CSV file
-        timestamp = int(self.get_clock().now().nanoseconds / 1e9)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{self.log_filename_prefix}_{timestamp}.csv"
         self.csv_file = open(filename, mode='w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
