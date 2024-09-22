@@ -59,6 +59,13 @@ class PropCoefFinderNode(Node):
         self.pause_logging = False
         self.csv_writer = None
         self.csv_file = None
+
+        # 新しいCSVファイル用の変数
+        self.avg_csv_writer = None
+        self.avg_csv_file = None
+        self.accumulated_data = []
+        self.data_count = 0
+
         self.log_filename_prefix = self.declare_parameter(
             'log_filename_prefix', 'thrust').get_parameter_value().string_value
         self.max_thrust_percent = self.declare_parameter(
@@ -71,6 +78,12 @@ class PropCoefFinderNode(Node):
             'recording_time_increment', 1.0).get_parameter_value().double_value
         self.control_smoothing_factor = self.declare_parameter(
             'control_smoothing_factor', 0.1).get_parameter_value().double_value
+        
+        self.get_logger().info(f"max_thrust_percent: {self.max_thrust_percent}")
+        self.get_logger().info(f"thrust_step: {self.thrust_step}")
+        self.get_logger().info(f"pause_duration: {self.pause_duration}")
+        self.get_logger().info(f"recording_time_increment: {self.recording_time_increment}")
+        self.get_logger().info(f"control_smoothing_factor: {self.control_smoothing_factor}")
 
         self.current_thrust = 0.0
         self.logging_start_time = None
@@ -125,8 +138,9 @@ class PropCoefFinderNode(Node):
     def wrench_callback(self, msg):
         """Callback to handle wrench data and write to CSV if logging is active."""
         if self.logging_active and not self.pause_logging and self.csv_writer:
+            current_time = self.get_clock().now().nanoseconds / 1e9
             row = [
-                self.get_clock().now().nanoseconds / 1e9,  # Timestamp
+                current_time,  # Timestamp
                 msg.wrench.force.x,
                 msg.wrench.force.y,
                 msg.wrench.force.z,
@@ -136,6 +150,18 @@ class PropCoefFinderNode(Node):
                 *self.current_control_.tolist()
             ]
             self.csv_writer.writerow(row)
+
+            # データを累積して平均用に保存
+            self.accumulated_data.append([
+                msg.wrench.force.x,
+                msg.wrench.force.y,
+                msg.wrench.force.z,
+                msg.wrench.torque.x,
+                msg.wrench.torque.y,
+                msg.wrench.torque.z,
+                *self.current_control_.tolist()
+            ])
+            self.data_count += 1
 
     def set_arming_callback(self, request, response):
         """Service callback to arm or disarm the vehicle."""
@@ -182,7 +208,7 @@ class PropCoefFinderNode(Node):
             if response.reply.result == VehicleCommandAck.VEHICLE_CMD_RESULT_ACCEPTED:
                 self.get_logger().info('Command accepted')
             else:
-                self.get_logger().warn(f'Command result: {response.result}')
+                self.get_logger().warn(f'Command result: {response.reply.result}')
         except Exception as e:
             self.get_logger().error(f'Service call failed: {e}')
 
@@ -230,7 +256,7 @@ class PropCoefFinderNode(Node):
         self.logging_active = True
         self.logging_start_time = self.get_clock().now().nanoseconds / 1e9
 
-        # Create CSV file
+        # Create primary CSV file
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{self.log_filename_prefix}_{timestamp}.csv"
         self.csv_file = open(filename, mode='w', newline='')
@@ -240,6 +266,20 @@ class PropCoefFinderNode(Node):
             'torque_x', 'torque_y', 'torque_z',
             'motor_0', 'motor_1', 'motor_2', 'motor_3'
         ])
+
+        # Create average CSV file
+        avg_filename = f"{self.log_filename_prefix}_average_{timestamp}.csv"
+        self.avg_csv_file = open(avg_filename, mode='w', newline='')
+        self.avg_csv_writer = csv.writer(self.avg_csv_file)
+        self.avg_csv_writer.writerow([
+            'thrust_step', 'avg_force_x', 'avg_force_y', 'avg_force_z',
+            'avg_torque_x', 'avg_torque_y', 'avg_torque_z',
+            'avg_motor_0', 'avg_motor_1', 'avg_motor_2', 'avg_motor_3'
+        ])
+
+        # Initialize accumulation variables
+        self.accumulated_data = []
+        self.data_count = 0
 
         # Start the thrust increment timer
         self.thrust_timer = self.create_timer(
@@ -255,6 +295,16 @@ class PropCoefFinderNode(Node):
             self.current_thrust = min(self.current_thrust, max_thrust)
             self.target_control_[:] = self.current_thrust
             self.get_logger().info(f'Thrust increased to {self.current_thrust:.2f}')
+
+            # Calculate and write average for the previous thrust step
+            if self.data_count > 0:
+                avg_data = np.mean(self.accumulated_data, axis=0)
+                self.avg_csv_writer.writerow([self.current_thrust - self.thrust_step] + avg_data.tolist())
+                self.get_logger().info(f'Average data for thrust step {self.current_thrust - self.thrust_step:.2f} recorded.')
+                
+                # リセット
+                self.accumulated_data = []
+                self.data_count = 0
 
             # Pause logging for the specified duration
             self.pause_logging = True
@@ -278,9 +328,17 @@ class PropCoefFinderNode(Node):
         self.target_control_ = np.zeros(4)
         self.set_arming(False)
 
-        # Close CSV file
+        # Write average for the last thrust step if any data is present
+        if self.data_count > 0 and self.avg_csv_writer:
+            avg_data = np.mean(self.accumulated_data, axis=0)
+            self.avg_csv_writer.writerow([self.current_thrust] + avg_data.tolist())
+            self.get_logger().info(f'Average data for thrust step {self.current_thrust:.2f} recorded.')
+
+        # Close CSV files
         if self.csv_file and not self.csv_file.closed:
             self.csv_file.close()
+        if self.avg_csv_file and not self.avg_csv_file.closed:
+            self.avg_csv_file.close()
 
         # Cancel timers
         if self.thrust_timer:
@@ -301,6 +359,8 @@ class PropCoefFinderNode(Node):
         self.set_arming(False)
         if self.csv_file and not self.csv_file.closed:
             self.csv_file.close()
+        if self.avg_csv_file and not self.avg_csv_file.closed:
+            self.avg_csv_file.close()
 
 def main(args=None):
     """Main function to start the node."""
