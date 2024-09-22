@@ -3,6 +3,7 @@ from rclpy.node import Node
 from px4_msgs.msg import OffboardControlMode, ActuatorMotors, ActuatorServos
 from px4_msgs.srv import VehicleCommand as VehicleCommandSrv
 from px4_msgs.msg import VehicleCommand as VehicleCommandMsg
+from px4_msgs.msg import VehicleCommandAck
 from std_srvs.srv import SetBool, Trigger, Empty
 from geometry_msgs.msg import WrenchStamped
 import numpy as np
@@ -177,7 +178,7 @@ class PropCoefFinderNode(Node):
         """Handle responses from vehicle command requests."""
         try:
             response = future.result()
-            if response.result == VehicleCommandMsg.VEHICLE_CMD_RESULT_ACCEPTED:
+            if response.reply.result == VehicleCommandAck.VEHICLE_CMD_RESULT_ACCEPTED:
                 self.get_logger().info('Command accepted')
             else:
                 self.get_logger().warn(f'Command result: {response.result}')
