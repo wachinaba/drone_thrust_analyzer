@@ -33,6 +33,7 @@ setup(
     entry_points={
         'console_scripts': [
             'prop_coef_finder = auto_thrust_recorder.prop_coef_finder:main',
+            'auto_thrust_recorder = auto_thrust_recorder.auto_thrust_recorder:main',
         ],
     },
 )
