@@ -6,7 +6,7 @@ from std_srvs.srv import Trigger
 
 import datetime
 
-from auto_thrust_recorder.scheduler.stepwise_scheduler import StepwiseThrustRatioScheduler
+from auto_thrust_recorder.scheduler.stepwise_scheduler import StepwiseThrustRatioScheduler, StepwiseThrustScheduler, PolynomialModelThrustController
 from auto_thrust_recorder.logger.average_logger import AverageLogger
 from auto_thrust_recorder.logger.raw_logger import RawLogger
 from auto_thrust_recorder.exporter.csv_exporter import CSVExporter
@@ -19,13 +19,42 @@ class AutoThrustRecorder(Node):
         super().__init__("auto_thrust_recorder")
         self.force_sensor = force_sensor
         self.actuator_controller = actuator_controller
-        self.scheduler = StepwiseThrustRatioScheduler(
+
+        thrust_coefs = {
+            "0deg_long": [117.9, 21.811, 0.5403],
+            "15deg_long": [113.8, 22.766, 0.6355],
+            "30deg_long": [97.806, 21.468, 0.5682],
+            "15deg_short": [117.5, 18.492, 0.5346],
+            "30deg_short": [91.475, 21.633, 0.4504],
+            "0deg_short": [119.92, 18.022, 0.5599],
+        }
+
+        if True: 
+            #"""
+            self.scheduler = StepwiseThrustScheduler(
             node = self,
-            step_size = self.declare_parameter("step_size", 0.02).get_parameter_value().double_value,
-            min_thrust = self.declare_parameter("min_thrust", 0.1).get_parameter_value().double_value,
+            step_size = self.declare_parameter("step_size", 0.5).get_parameter_value().double_value,
+            min_thrust = self.declare_parameter("min_thrust", 16.0).get_parameter_value().double_value,
+            max_thrust = self.declare_parameter("max_thrust", 20.0).get_parameter_value().double_value,
+            step_duration = self.declare_parameter("step_duration", 3.0).get_parameter_value().double_value,
+            thrust_controller = PolynomialModelThrustController(
+                node = self,
+                thrust_coef = self.declare_parameter("thrust_coef", thrust_coefs["0deg_short"]).get_parameter_value().double_array_value,
+            )
+            )
+            #"""
+        else:
+            # 30deg_short = 91.475x2 + 21.633x + 0.4504
+            # 15deg_short = 117.5x2 + 18.492x + 0.5346
+            # 0deg_short = 119.92x2 + 18.022x + 0.5599
+            self.scheduler = StepwiseThrustRatioScheduler(
+            node = self,
+            step_size = self.declare_parameter("step_size", 0.01).get_parameter_value().double_value,
+            min_thrust = self.declare_parameter("min_thrust", 0.0).get_parameter_value().double_value,
             max_thrust = self.declare_parameter("max_thrust", 0.4).get_parameter_value().double_value,
             step_duration = self.declare_parameter("step_duration", 1.0).get_parameter_value().double_value,
-        )
+            )
+        
 
         self.filename_prefix = self.declare_parameter("filename_prefix", "thrust").get_parameter_value().string_value
 
@@ -36,6 +65,8 @@ class AutoThrustRecorder(Node):
 
         self.countdown = 10
         self.countdown_timer = self.create_timer(1.0, self.countdown_callback)
+        self.disarming_timer = None
+        self.disarming_thrust = 0.0
 
     def countdown_callback(self):
         if self.countdown == 10:
@@ -85,25 +116,48 @@ class AutoThrustRecorder(Node):
         self.get_logger().info(f"Thrust changed to {current_control}")
 
     def complete_callback(self):
+        self.average_logger.next()
+
         self.force_sensor.set_on_sensor_update(None)
 
         self.get_logger().info("Complete recording...")
-        self.get_logger().info("Disarming...")
-        self.actuator_controller.set_arming(False)
+        try:
+            if self.raw_log_exporter:
+                self.raw_log_exporter.export()
+            if self.average_log_exporter:
+                self.average_log_exporter.export()
+        except Exception as e:
+            self.get_logger().error(f"Error exporting logs: {e}")
 
+        self.get_logger().info("Disarming...")
+        self.disarming_thrust = self.scheduler.get_current_control()
+        self.disarming_timer = self.create_timer(0.05, self.disarming_callback)
+
+    def plot(self):
         plotter = AveragePlotter(self.average_logger.get_data())
         plotter.plot()
-        plotter.show()
         plotter.save(f"{self.average_log_exporter.file_path}.png")
-
-        if self.raw_log_exporter:
-            self.raw_log_exporter.export()
-        if self.average_log_exporter:
-            self.average_log_exporter.export()
+        plotter.show()
+        
         self.raw_log_exporter = None
         self.average_log_exporter = None
 
         self.get_logger().info("Finish recording...")
+
+    def disarming_callback(self):
+        self.get_logger().info(f"Disarming thrust: {self.disarming_thrust.mean()}")
+        if self.disarming_thrust.mean() < 0.0:
+            self.disarming_timer.cancel()
+            self.actuator_controller.set_arming(False)
+            self.get_logger().info("Disarming complete.")
+            self.disarming_timer = None
+            self.plot()
+            return
+        
+        self.actuator_controller.set_target_control(self.disarming_thrust)
+        self.actuator_controller.update_control()
+
+        self.disarming_thrust -= 0.01
 
 
     def sensor_update_callback(self, msg: WrenchStamped):

@@ -7,7 +7,7 @@ class ForceSensor(Node):
     def __init__(self):
         super().__init__('force_sensor_subscriber')
         self.force_subscriber = self.create_subscription(
-            WrenchStamped, "/force_sensor_node/data", self.force_callback, 10)
+            WrenchStamped, "/force_sensor_node/filtered_data", self.force_callback, 10)
         self.set_offset_client_ = self.create_client(Empty, '/force_sensor_node/set_offset')
         self.force = WrenchStamped()
 

@@ -26,35 +26,37 @@ class AveragePlotter:
         try:
             # 1つ目のサブプロット：Control vs Force XY and Force Z (Dual y-axes)
             ax1 = self.axs[0]
-            ax2 = ax1.twinx()  # 右側のy軸を作成
+            # ax2 = ax1.twinx()  # 右側のy軸を作成
 
             # Force XY
-            ax1.plot(self.avg_df['control'], self.avg_df['force_x'], label='Force X', color='r', linestyle='-')
-            ax1.plot(self.avg_df['control'], self.avg_df['force_y'], label='Force Y', color='g', linestyle='--')
+            ax1.plot(self.avg_df['force_z'], self.avg_df['force_x'], label='Force X', color='r', linestyle='-')
+            ax1.plot(self.avg_df['force_z'], self.avg_df['force_y'], label='Force Y', color='g', linestyle='--')
             ax1.set_ylabel('Force XY (N)', color='k')
             ax1.tick_params(axis='y', labelcolor='k')
             ax1.set_ylim([-2, 2])
 
+            """
             # Force Z
             ax2.plot(self.avg_df['control'], self.avg_df['force_z'], label='Force Z', color='b', linestyle='-.')
             ax2.set_ylabel('Force Z (N)', color='b')
             ax2.tick_params(axis='y', labelcolor='b')
             ax2.set_ylim([0, 30])
+            """
 
             # タイトルと凡例
-            ax1.set_title('Control vs Force XY and Force Z')
+            ax1.set_title('Vertical Force vs Force XY')
             ax1.legend(loc='upper left')
-            ax2.legend(loc='upper right')
+            # ax2.legend(loc='upper right')
             ax1.grid(True)
 
             # 2つ目のサブプロット：Control vs Torque X, Y, Z
             ax3 = self.axs[1]
-            ax3.plot(self.avg_df['control'], self.avg_df['torque_x'], label='Torque X', color='r', linestyle='-')
-            ax3.plot(self.avg_df['control'], self.avg_df['torque_y'], label='Torque Y', color='g', linestyle='--')
-            ax3.plot(self.avg_df['control'], self.avg_df['torque_z'], label='Torque Z', color='b', linestyle='-.')
-            ax3.set_xlabel('Control')
+            ax3.plot(self.avg_df['force_z'], self.avg_df['torque_x'], label='Torque X', color='r', linestyle='-')
+            ax3.plot(self.avg_df['force_z'], self.avg_df['torque_y'], label='Torque Y', color='g', linestyle='--')
+            ax3.plot(self.avg_df['force_z'], self.avg_df['torque_z'], label='Torque Z', color='b', linestyle='-.')
+            ax3.set_xlabel('Vertical Force (N)')
             ax3.set_ylabel('Torque (Nm)')
-            ax3.set_title('Control vs Torque X, Y, Z')
+            ax3.set_title('Vertical Force vs Torque')
             ax3.legend()
             ax3.grid(True)
             ax3.set_ylim([-1, 1])
@@ -68,7 +70,6 @@ class AveragePlotter:
     def show(self):
         """Displays the generated plots."""
         try:
-            self.plot()
             plt.show()
         except Exception as e:
             print(f"Error displaying plot: {e}")

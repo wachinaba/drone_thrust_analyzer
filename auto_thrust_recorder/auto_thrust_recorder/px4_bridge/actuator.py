@@ -115,6 +115,8 @@ class ActuatorController(Node):
                 self.moving_control_ = False
             else:
                 self.moving_control_ = True
+        self.publish_actuator_messages()
+
 
     def is_moving_control(self) -> bool:
         return self.moving_control_

@@ -53,11 +53,12 @@ class StepwiseThrustRatioScheduler(Scheduler):
         if self.timer:
             self.timer.cancel()
             self.timer = None
-        self.current_thrust = 0.0
-        if self.change_callback:
-            self.change_callback()  # 全てのモータを停止
+        
         if self.complete_callback:
             self.complete_callback()
+
+        self.current_thrust = 0.0
+
         self.node.get_logger().info("StepwiseScheduler finalized.")
 
     def set_on_change_thrust(self, callback: Callable[[], None]):
@@ -110,7 +111,7 @@ class StepwiseThrustScheduler(Scheduler):
             self.current_thrust = min(self.current_thrust, self.max_thrust)
             control = self.thrust_controller(self.current_thrust)
             if self.change_callback:
-                self.change_callback(control)
+                self.change_callback()
         else:
             self.node.get_logger().info("StepwiseScheduler: Max thrust reached. Finalizing scheduler.")
             self.finalize()
@@ -142,8 +143,17 @@ class PolynomialModelThrustController:
         self.thrust_coef = thrust_coef
 
     def calculate_thrust(self, thrust: float) -> float:
-        return (-self.thrust_coef[1] + np.sqrt(self.thrust_coef[1]**2 - 4 * self.thrust_coef[0] * (self.thrust_coef[2] - thrust))) / (2 * self.thrust_coef[0])
+        sq = self.thrust_coef[1]**2 - 4 * self.thrust_coef[0] * (self.thrust_coef[2] - thrust)
+        if sq < 0:
+            self.node.get_logger().error("PolynomialModelThrustController: sq is negative. Returning 0.")
+            return 0.0
+        else:
+            return max((-self.thrust_coef[1] + np.sqrt(sq)) / (2 * self.thrust_coef[0]), 0)
 
-    def __call__(self, target: np.ndarray) -> np.ndarray:
-        return np.array([self.calculate_thrust(f) for f in target])
+    def __call__(self, target: np.ndarray | float) -> np.ndarray:
+        print(self.calculate_thrust(target))
+        if isinstance(target, np.ndarray):
+            return np.array([self.calculate_thrust(f) for f in target])
+        else:
+            return np.array([self.calculate_thrust(target)] * 4)    
 
