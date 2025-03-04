@@ -162,3 +162,10 @@ class PolynomialModelThrustController:
         else:
             return np.array([self.calculate_thrust(target)] * 4)    
 
+class LinearThrustController:
+    def __init__(self, node: Node, thrust_coef: list[float]):
+        self.node = node
+        self.thrust_coef = thrust_coef
+
+    def __call__(self, target: np.ndarray | float) -> np.ndarray:
+        return np.array([self.thrust_coef[0] * target + self.thrust_coef[1]] * 4)
