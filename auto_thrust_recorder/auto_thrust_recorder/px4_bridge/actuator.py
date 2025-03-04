@@ -51,7 +51,7 @@ class ActuatorController(Node):
 
     def set_offboard_mode(self):
         """Set the vehicle to offboard control mode."""
-        self.request_vehicle_command(
+        return self.request_vehicle_command(
             command=VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
             param1=1.0,
             param2=6.0
@@ -59,7 +59,7 @@ class ActuatorController(Node):
 
     def set_arming(self, arm: bool):
         """Arm or disarm the vehicle."""
-        self.request_vehicle_command(
+        return self.request_vehicle_command(
             command=VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
             param1=1.0 if arm else 0.0
         )
@@ -79,6 +79,7 @@ class ActuatorController(Node):
 
         future = self.vehicle_command_client_.call_async(request)
         future.add_done_callback(self.response_callback)
+        return future
 
     def response_callback(self, future):
         """Handle responses from vehicle command requests."""

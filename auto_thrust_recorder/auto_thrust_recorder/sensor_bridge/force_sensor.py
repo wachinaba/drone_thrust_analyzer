@@ -12,6 +12,7 @@ class ForceSensor(Node):
         self.force = WrenchStamped()
 
         self.on_sensor_update_callback = None
+        self.set_sensor_offset_future = None
 
     def force_callback(self, msg: WrenchStamped):
         self.force = msg
@@ -27,5 +28,4 @@ class ForceSensor(Node):
     def set_sensor_offset(self):
         """Service callback to set the force sensor offset."""
         self.get_logger().info('Setting force sensor offset')
-        self.set_offset_client_.call_async(Empty.Request())
-        return
+        return self.set_offset_client_.call_async(Empty.Request())
