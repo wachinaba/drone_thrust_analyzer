@@ -69,6 +69,9 @@ class StepwiseThrustRatioScheduler(Scheduler):
 
     def get_current_control(self) -> np.ndarray: # override
         return np.array([self.current_thrust] * 4)
+    
+    def ready_to_record(self) -> bool:
+        return self.current_thrust >= self.min_thrust
 
 
 class StepwiseThrustScheduler(Scheduler):
@@ -109,7 +112,6 @@ class StepwiseThrustScheduler(Scheduler):
         if self.current_thrust < self.max_thrust:
             self.current_thrust += self.step_size
             self.current_thrust = min(self.current_thrust, self.max_thrust)
-            control = self.thrust_controller(self.current_thrust)
             if self.change_callback:
                 self.change_callback()
         else:
@@ -135,6 +137,9 @@ class StepwiseThrustScheduler(Scheduler):
 
     def get_current_control(self) -> np.ndarray: # override
         return self.thrust_controller(self.current_thrust)
+
+    def ready_to_record(self) -> bool:
+        return self.current_thrust >= self.min_thrust
 
 
 class PolynomialModelThrustController:

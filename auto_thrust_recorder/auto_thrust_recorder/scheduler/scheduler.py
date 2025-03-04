@@ -28,3 +28,7 @@ class Scheduler(ABC):
     @abstractmethod
     def get_current_control(self) -> np.ndarray:
         pass
+
+    @abstractmethod
+    def ready_to_record(self) -> bool:
+        pass
