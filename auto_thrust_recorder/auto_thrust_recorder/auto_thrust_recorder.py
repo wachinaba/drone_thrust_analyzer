@@ -29,7 +29,8 @@ class AutoThrustRecorder(Node):
             "30deg_short": [91.475, 21.633, 0.4504],
             "0deg_short": [126.67, 14.089, 0.6691],
             "linear": [0.0, 1.0, 0.0],
-            "tilt0deg_fold15deg": [124.45, 17.182, 0.6627]
+            "tilt0deg_fold15deg": [124.45, 17.182, 0.6627],
+            "tilt8deg_fold15deg": [127.1, 15.612, 0.6906] #127.1x2 + 15.612x + 0.6906
         }
 
         self.scheduler_params = {
@@ -37,7 +38,7 @@ class AutoThrustRecorder(Node):
             "min_thrust": self.declare_parameter("min_thrust", 16.0).get_parameter_value().double_value,
             "max_thrust": self.declare_parameter("max_thrust", 20.0).get_parameter_value().double_value,
             "step_duration": self.declare_parameter("step_duration", 3.0).get_parameter_value().double_value,
-            "thrust_coef": self.declare_parameter("thrust_coef", thrust_coefs["tilt0deg_fold15deg"]).get_parameter_value().double_array_value,
+            "thrust_coef": self.declare_parameter("thrust_coef", thrust_coefs["tilt8deg_fold15deg"]).get_parameter_value().double_array_value,
         }
 
         self.enable_breakpoint = self.declare_parameter("enable_breakpoint", True).get_parameter_value().bool_value
@@ -210,7 +211,19 @@ class AutoThrustRecorder(Node):
         self.get_logger().info(f"Disarming thrust: {self.disarming_thrust.mean()}")
         if self.disarming_thrust.mean() < 0.0:
             self.disarming_timer.cancel()
-            self.actuator_controller.set_arming(False)
+            rate = self.create_rate(30)
+            timeout = 300
+            timeout_counter = 0
+
+            future = self.actuator_controller.set_arming(False)
+            while not future.done():
+                rate.sleep()
+                timeout_counter += 1
+                if timeout_counter > timeout:
+                    self.get_logger().error("disarming timeout...")
+                    break
+            rate.destroy()
+
             self.get_logger().info("Disarming complete.")
             self.disarming_timer = None
             #self.plot()
@@ -291,6 +304,9 @@ class AutoThrustRecorder(Node):
                 break
         self.get_logger().info("Arming complete.")
         timeout_counter = 0
+
+        rate.destroy()
+        rate = self.create_rate(60.0)
 
         while current_control.mean() < self.scheduler.get_current_control().mean():
             rate.sleep()
