@@ -30,31 +30,61 @@ class AutoThrustRecorder(Node):
             "0deg_short": [126.67, 14.089, 0.6691],
             "linear": [0.0, 1.0, 0.0],
             "tilt0deg_fold15deg": [124.45, 17.182, 0.6627],
-            "tilt8deg_fold15deg": [127.1, 15.612, 0.6906] #127.1x2 + 15.612x + 0.6906
+            "tilt8deg_fold15deg": [127.1, 15.612, 0.6906], #127.1x2 + 15.612x + 0.6906
+            "tilt15deg_fold15deg": [107.09, 18.039, 0.5855], #107.09x2 + 18.039x + 0.5855
+            "tilt30deg_fold15deg": [92.596, 17.961, 0.5213], #92.596x2 + 17.961x + 0.5213
         }
 
+
         self.scheduler_params = {
-            "step_size": self.declare_parameter("step_size", 0.5).get_parameter_value().double_value,
-            "min_thrust": self.declare_parameter("min_thrust", 16.0).get_parameter_value().double_value,
-            "max_thrust": self.declare_parameter("max_thrust", 20.0).get_parameter_value().double_value,
-            "step_duration": self.declare_parameter("step_duration", 3.0).get_parameter_value().double_value,
+            "step_size": self.declare_parameter("step_size", 0.01).get_parameter_value().double_value,
+            "min_thrust": self.declare_parameter("min_thrust", 0.0).get_parameter_value().double_value,
+            "max_thrust": self.declare_parameter("max_thrust", 0.4).get_parameter_value().double_value,
+            "step_duration": self.declare_parameter("step_duration", 1.0).get_parameter_value().double_value,
             "thrust_coef": self.declare_parameter("thrust_coef", thrust_coefs["tilt8deg_fold15deg"]).get_parameter_value().double_array_value,
         }
 
-        self.enable_breakpoint = self.declare_parameter("enable_breakpoint", True).get_parameter_value().bool_value
+        coef_name = self.declare_parameter("coef_name", "").get_parameter_value().string_value
+        if coef_name in thrust_coefs:
+            self.scheduler_params["thrust_coef"] = thrust_coefs[coef_name]
+        elif coef_name == "":
+            pass
+        else:
+            self.get_logger().error(f"Invalid coef_name: {coef_name}")
+            self.get_logger().error("Valid coef_names:")
+            for coef_name in thrust_coefs:
+                self.get_logger().error(f"  - {coef_name}")
+            self.get_logger().error("Using tilt0deg_fold15deg as default.")
+            self.scheduler_params["thrust_coef"] = thrust_coefs["tilt0deg_fold15deg"]
+
+        self.enable_breakpoint = self.declare_parameter("enable_breakpoint", False).get_parameter_value().bool_value
         
         self.filename_prefix = self.declare_parameter("filename_prefix", "thrust").get_parameter_value().string_value
 
         self.repeat_count = 0
         self.num_repetitions = self.declare_parameter("num_repetitions", 1).get_parameter_value().integer_value
 
+        self.mode = self.declare_parameter("mode", "linear").get_parameter_value().string_value
+        if self.mode not in ["polynomial", "linear"]:
+            self.get_logger().error(f"Invalid mode: {self.mode}")
+            self.get_logger().error("Valid modes: polynomial, linear")
+            self.get_logger().error("Using polynomial mode as default.")
+            self.mode = "polynomial"
+
         self.get_logger().info(f"Filename prefix: {self.filename_prefix}")
-        self.get_logger().info(f"Step size: {self.scheduler_params['step_size']}")
-        self.get_logger().info(f"Min thrust: {self.scheduler_params['min_thrust']}")
-        self.get_logger().info(f"Max thrust: {self.scheduler_params['max_thrust']}")
-        self.get_logger().info(f"Step duration: {self.scheduler_params['step_duration']}")
-        self.get_logger().info(f"Thrust coef: {self.scheduler_params['thrust_coef']}")
+        self.get_logger().info(f"Mode: {self.mode}")
+
+        if self.mode == "polynomial":            
+            self.get_logger().info(f"Step size: {self.scheduler_params['step_size']}")
+            self.get_logger().info(f"Min thrust: {self.scheduler_params['min_thrust']}")
+            self.get_logger().info(f"Max thrust: {self.scheduler_params['max_thrust']}")
+            self.get_logger().info(f"Step duration: {self.scheduler_params['step_duration']}")
+            self.get_logger().info(f"Thrust coef: {self.scheduler_params['thrust_coef']}")
+        elif self.mode == "linear":
+            pass
+
         self.get_logger().info(f"Num repetitions: {self.num_repetitions}")
+        self.get_logger().info(f"Enable breakpoint: {self.enable_breakpoint}")
 
         self.initialize_logger()
         self.start_recording()
@@ -70,7 +100,7 @@ class AutoThrustRecorder(Node):
             self.repetition_average_log_exporter = CSVExporter(self.repetition_average_logger, "repetition_average_log.csv")
 
     def start_recording(self):
-        if True: 
+        if self.mode == "polynomial":
             #"""
             self.scheduler = BreakpointScheduler(
             node = self,
