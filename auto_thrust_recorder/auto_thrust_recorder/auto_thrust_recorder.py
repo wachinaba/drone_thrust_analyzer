@@ -3,10 +3,10 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import WrenchStamped
 from std_srvs.srv import Trigger
-
+import numpy as np
 import datetime
 
-from auto_thrust_recorder.scheduler.stepwise_scheduler import StepwiseThrustRatioScheduler, StepwiseThrustScheduler, PolynomialModelThrustController, LinearThrustController
+from auto_thrust_recorder.scheduler.stepwise_scheduler import StepwiseThrustRatioScheduler, StepwiseThrustScheduler, PolynomialModelThrustController, LinearThrustController, ThrustMultiplier
 from auto_thrust_recorder.scheduler.breakpoint_scheduler import BreakpointScheduler
 from auto_thrust_recorder.logger.average_logger import AverageLogger
 from auto_thrust_recorder.logger.raw_logger import RawLogger
@@ -35,7 +35,6 @@ class AutoThrustRecorder(Node):
             "tilt30deg_fold15deg": [92.596, 17.961, 0.5213], #92.596x2 + 17.961x + 0.5213
         }
 
-
         self.scheduler_params = {
             "step_size": self.declare_parameter("step_size", 0.01).get_parameter_value().double_value,
             "min_thrust": self.declare_parameter("min_thrust", 0.0).get_parameter_value().double_value,
@@ -61,6 +60,8 @@ class AutoThrustRecorder(Node):
         
         self.filename_prefix = self.declare_parameter("filename_prefix", "thrust").get_parameter_value().string_value
 
+        self.thrust_multiplier = self.declare_parameter("thrust_multiplier", [1.0, 1.0, 1.0, 1.0]).get_parameter_value().double_array_value
+
         self.repeat_count = 0
         self.num_repetitions = self.declare_parameter("num_repetitions", 1).get_parameter_value().integer_value
 
@@ -83,6 +84,7 @@ class AutoThrustRecorder(Node):
         elif self.mode == "linear":
             pass
 
+        self.get_logger().info(f"Thrust multiplier: {self.thrust_multiplier}")
         self.get_logger().info(f"Num repetitions: {self.num_repetitions}")
         self.get_logger().info(f"Enable breakpoint: {self.enable_breakpoint}")
 
@@ -108,9 +110,11 @@ class AutoThrustRecorder(Node):
             min_thrust = self.scheduler_params["min_thrust"],
             max_thrust = self.scheduler_params["max_thrust"],
             step_duration = self.scheduler_params["step_duration"],
-            thrust_controller = PolynomialModelThrustController(
-                node = self,
-                thrust_coef = self.scheduler_params["thrust_coef"],
+            thrust_controller = ThrustMultiplier(
+                base_controller = PolynomialModelThrustController(
+                    thrust_coef = self.scheduler_params["thrust_coef"],
+                ),
+                multiplier = np.array(self.thrust_multiplier),
             ),
             on_breakpoint_callback = self.breakpoint_callback
             )
@@ -128,9 +132,11 @@ class AutoThrustRecorder(Node):
             min_thrust = self.scheduler_params["min_thrust"],
             max_thrust = self.scheduler_params["max_thrust"],
             step_duration = self.scheduler_params["step_duration"],
-            thrust_controller = LinearThrustController(
-                node = self,
-                thrust_coef = [1.0, 0.0],
+            thrust_controller = ThrustMultiplier(
+                base_controller = LinearThrustController(
+                    thrust_coef = [1.0, 0.0],
+                ),
+                multiplier = np.array(self.thrust_multiplier),
             ),
             on_breakpoint_callback = self.breakpoint_callback
             )
@@ -238,8 +244,8 @@ class AutoThrustRecorder(Node):
         plotter.show()
 
     def disarming_callback(self):
-        self.get_logger().info(f"Disarming thrust: {self.disarming_thrust.mean()}")
-        if self.disarming_thrust.mean() < 0.0:
+        self.get_logger().info(f"Disarming thrust: {self.disarming_thrust.max()}")
+        if self.disarming_thrust.max() < 0.01:
             self.disarming_timer.cancel()
             rate = self.create_rate(30)
             timeout = 300
@@ -278,6 +284,7 @@ class AutoThrustRecorder(Node):
         self.actuator_controller.update_control()
 
         self.disarming_thrust -= 0.01
+        self.disarming_thrust = np.clip(self.disarming_thrust, 0.0, 0.5)
 
     def breakpoint_callback(self):
         if not self.enable_breakpoint:
