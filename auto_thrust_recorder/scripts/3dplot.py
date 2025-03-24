@@ -7,7 +7,7 @@ import argparse
 import numpy as np
 
 
-def create_scatter_plots(directory, resampling_ratio=1.0):
+def create_scatter_plots(directory, resampling_ratio=1.0, keyword="right"):
     """
     指定されたディレクトリ内のCSVファイルからデータを抽出し、リサンプリング後、2つの散布図を作成します。
     distance vs torque_x のグラフにはエラーバーと散布図を追加します。
@@ -18,7 +18,7 @@ def create_scatter_plots(directory, resampling_ratio=1.0):
     """
 
     all_data = []
-    for filepath in glob.glob(os.path.join(directory, '*right_raw*.csv')):
+    for filepath in glob.glob(os.path.join(directory, f'*{keyword}_raw*.csv')):
         match = re.search(r'(\d+\.\d+)R_.*', os.path.basename(filepath))
         if match:
             distance = float(match.group(1))
@@ -89,10 +89,12 @@ if __name__ == '__main__':
     parser.add_argument('directory', type=str, help='Path to the directory containing CSV files.')
     parser.add_argument('--ratio', type=float, default=1.0,
                         help='Resampling ratio (0.0 < ratio <= 1.0). Default is 1.0 (no resampling).')
+    parser.add_argument('--keyword', type=str, default="right",
+                        help='Keyword to filter CSV files. Default is "right".')
     args = parser.parse_args()
 
     if not 0.0 < args.ratio <= 1.0:
         print("Error: Resampling ratio must be between 0.0 and 1.0.")
         exit(1)
 
-    create_scatter_plots(args.directory, args.ratio)
+    create_scatter_plots(args.directory, args.ratio, args.keyword)
