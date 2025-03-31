@@ -361,7 +361,7 @@ class AutoThrustRecorder(Node):
         return
     
     def sensor_update_callback(self, msg: WrenchStamped):
-        if not self.scheduler.ready_to_record() or not self.actuator_controller.is_moving_control():
+        if not self.scheduler.ready_to_record() or self.actuator_controller.is_moving_control():
             return
         
         current_control = self.actuator_controller.get_current_control().tolist()
