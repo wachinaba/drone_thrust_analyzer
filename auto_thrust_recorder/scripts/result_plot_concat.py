@@ -293,17 +293,39 @@ def calc_mean_and_std_error(g, col):
 def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
     unique_tilt_angles = sorted(df['tilt_angle'].unique())
     unique_prop_spacings = sorted(df['prop_spacing'].unique())
-    
+
     # 回帰直線用の色とマーカーを設定
     total_conditions = len(unique_tilt_angles) * len(unique_prop_spacings)
     palette = sns.color_palette("tab10", n_colors=total_conditions)
     markers = ['o', 's', 'D', '^', 'v', 'P', '*', 'X', 'h', 'd']
 
-    fig, axes = plt.subplots(2, 2, figsize=(7, 9))
+    num_tilt_angles = len(unique_tilt_angles) + 1
+    if num_tilt_angles <= 2:
+        nrows, ncols = 1, 2
+    elif num_tilt_angles <= 4:
+        nrows, ncols = 2, 2
+    elif num_tilt_angles <= 6:
+        nrows, ncols = 2, 3
+    else:
+        nrows = 3
+        ncols = (num_tilt_angles + 2) // 3  # ceil(num_tilt_angles / 3)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7*ncols, 9*nrows)) # サイズ調整
     axes = axes.flatten()
-    
+
+    # 不要なグラフを削除
+    for i in range(num_tilt_angles, len(axes)):
+        fig.delaxes(axes[i])
+    # axes = axes[:num_tilt_angles] #必要な要素数だけに絞る
+
+    # 最後のサブプロットを作成
+    if num_tilt_angles < len(axes): # グラフが余っているなら最後のサブプロットを使用
+        ax_all = axes[-1]
+    else: # グラフが足りないなら新規に作成
+        fig, ax_all = plt.subplots(1, 1, figsize=(7, 9))
+
     condition_idx = 0  # カラーパレットのインデックス
-    
+
     # 各 tilt_angle ごとにプロット
     for idx, tilt_angle in enumerate(unique_tilt_angles):
         ax = axes[idx]
@@ -315,16 +337,16 @@ def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
             if group.empty:
                 print(f"警告: 条件 (tilt_angle={tilt_angle}, prop_spacing={prop_spacing}) に該当するデータがありません。")
                 continue
-            
+
             # 各distanceごとに加重平均と正しいエラーバーを計算
             agg_df = group.groupby('distance').apply(lambda g: calc_mean_and_std_error(g, col)).reset_index()
-            
+
             # マーカーのインデックス
             try:
                 marker_idx = unique_prop_spacings.index(prop_spacing) % len(markers)
             except ValueError:
                 marker_idx = 0
-            
+
             # 散布図
             sns.scatterplot(
                 data=agg_df,
@@ -337,7 +359,7 @@ def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
                 edgecolor='w',
                 ax=ax
             )
-            
+
             # エラーバー
             ax.errorbar(
                 agg_df['distance'],
@@ -348,7 +370,7 @@ def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
                 elinewidth=1,
                 capsize=3
             )
-            
+
             # 回帰直線
             X = agg_df['distance'].values.reshape(-1, 1)
             y_vals = agg_df['mean_offset'].values
@@ -375,16 +397,15 @@ def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
                 )
             else:
                 print(f"警告: 条件 (tilt_angle={tilt_angle}, prop_spacing={prop_spacing}) のデータが不十分で回帰直線を描画できません。")
-            
+
             condition_idx += 1
-        
+
         ax.set_title(f'Tilt Angle: {tilt_angle}°', fontsize=16)
         ax.set_xlabel('Distance [R]', fontsize=14)
         ax.set_ylabel(f'Average {col_display} [{col_unit}]', fontsize=14)
         ax.legend(title='Prop Spacing')
-    
+
     # 最後のサブプロットに全条件の回帰直線のみをプロット
-    ax = axes[-1]
     condition_idx = 0
     for tilt_angle in unique_tilt_angles:
         for prop_spacing in unique_prop_spacings:
@@ -395,9 +416,9 @@ def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
             if group.empty:
                 print(f"警告: 条件 (tilt_angle={tilt_angle}, prop_spacing={prop_spacing}) に該当するデータがありません。")
                 continue
-            
+
             agg_df = group.groupby('distance').apply(lambda g: calc_mean_and_std_error(g, col)).reset_index()
-            
+
             X = agg_df['distance'].values.reshape(-1, 1)
             y_vals = agg_df['mean_offset'].values
             if len(X) > 1 and np.std(X) > 0:
@@ -406,7 +427,7 @@ def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
                 slope = model.coef_[0]
                 y_pred = model.predict(5.0 - X)
                 print(f"slope: {slope}, palette index: {condition_idx}")
-                
+
                 color = palette[condition_idx % len(palette)]
                 label = f'θ={tilt_angle}°,L={prop_spacing}R'
 
@@ -414,9 +435,9 @@ def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
                 if prop_spacing == 3.7:
                     linestyle = "-"
 
-                ax.plot(agg_df['distance'], y_pred, color=color, linestyle=linestyle, linewidth=2, label=label)
-                ax.set_ylim(-0.3, 0.3)
-                ax.text(
+                ax_all.plot(agg_df['distance'], y_pred, color=color, linestyle=linestyle, linewidth=2, label=label)
+                ax_all.set_ylim(-0.3, 0.3)
+                ax_all.text(
                     agg_df['distance'].max(),
                     y_pred[-1],
                     f"slope={slope:.2f}",
@@ -429,12 +450,12 @@ def plot_distance_vs_offset_grid(df, col, col_unit, col_display):
                 print(f"警告: 条件 (tilt_angle={tilt_angle}, prop_spacing={prop_spacing}) のデータが不十分で回帰直線を描画できません。")
 
             condition_idx += 1
-    
-    ax.set_title('Regression Lines', fontsize=16)
-    ax.set_xlabel('Distance', fontsize=14)
-    ax.set_ylabel(f'Average {col_display} [{col_unit}]', fontsize=14)
-    ax.legend(ncol=1)
-    
+
+    ax_all.set_title('Regression Lines', fontsize=16)
+    ax_all.set_xlabel('Distance', fontsize=14)
+    ax_all.set_ylabel(f'Average {col_display} [{col_unit}]', fontsize=14)
+    ax_all.legend(ncol=1)
+
     plt.tight_layout()
     plt.show()
 
