@@ -32,6 +32,7 @@ class AutoThrustRecorder(Node):
             "tilt0deg_fold15deg": [124.45, 17.182, 0.6627],
             "tilt8deg_fold15deg": [127.1, 15.612, 0.6906], #127.1x2 + 15.612x + 0.6906
             "tilt15deg_fold15deg": [107.09, 18.039, 0.5855], #107.09x2 + 18.039x + 0.5855
+            "tilt23deg_fold15deg": [104.91, 17.476, 0.5441], #104.91x2 + 17.476x + 0.5441
             "tilt30deg_fold15deg": [92.596, 17.961, 0.5213], #92.596x2 + 17.961x + 0.5213
         }
 
@@ -112,6 +113,7 @@ class AutoThrustRecorder(Node):
             step_duration = self.scheduler_params["step_duration"],
             thrust_controller = ThrustMultiplier(
                 base_controller = PolynomialModelThrustController(
+                    node = self,
                     thrust_coef = self.scheduler_params["thrust_coef"],
                 ),
                 multiplier = np.array(self.thrust_multiplier),
@@ -374,6 +376,7 @@ class AutoThrustRecorder(Node):
             "control_2": current_control[2],
             "control_3": current_control[3],
             "control": average_control,
+            "target_thrust": self.scheduler.get_current_thrust(),
             "force_x": msg.wrench.force.x,
             "force_y": msg.wrench.force.y,
             "force_z": msg.wrench.force.z,

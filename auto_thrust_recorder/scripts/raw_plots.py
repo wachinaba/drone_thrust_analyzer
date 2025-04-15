@@ -30,17 +30,17 @@ def create_scatter_plots(directory, resampling_ratio=1.0, keywords=["right"], fo
 
     for keyword in keywords:
         for filepath in glob.glob(os.path.join(directory, f'*{keyword}_raw*.csv')):
-            match = re.search(r'(\d+\.\d+)R_.*', os.path.basename(filepath))
+            match = re.search(r'(\d+\.\d+).*', os.path.basename(filepath))
             if match:
                 distance = float(match.group(1))
                 try:
                     df = pd.read_csv(filepath)
-                    if 'force_z' in df.columns and 'torque_x' in df.columns:
+                    if 'force_z' in df.columns and 'torque_x' in df.columns and 'force_y' in df.columns:
                         for _, row in df.iterrows():
                             # force_z フィルタリング
                             if filter_row(row['force_z'], row['control'], force_z_min, force_z_max, control_min, control_max):
-                                all_data.append([keyword, distance, row['force_z'], row['torque_x'], row['control']])
-                                all_data_by_keyword[keyword].append([distance, row['force_z'], row['torque_x'], row['control']])
+                                all_data.append([keyword, distance, row['force_z'], row['torque_x'], row['control'], row['force_y']])
+                                all_data_by_keyword[keyword].append([distance, row['force_z'], row['torque_x'], row['control'], row['force_y']])
                     else:
                         print(f"Warning: 'force_z' or 'torque_x' not found in {filepath}")
                 except pd.errors.EmptyDataError:
@@ -52,12 +52,12 @@ def create_scatter_plots(directory, resampling_ratio=1.0, keywords=["right"], fo
         print("No valid data found.")
         return
 
-    df_all = pd.DataFrame(all_data, columns=['keyword', 'distance', 'force_z', 'torque_x', 'control'])
+    df_all = pd.DataFrame(all_data, columns=['keyword', 'distance', 'force_z', 'torque_x', 'control', 'force_y'])
 
     # リサンプリング (キーワードごと)
     df_resampled_by_keyword = {}
     for keyword in keywords:
-        df_keyword = pd.DataFrame(all_data_by_keyword[keyword], columns=['distance', 'force_z', 'torque_x', 'control'])
+        df_keyword = pd.DataFrame(all_data_by_keyword[keyword], columns=['distance', 'force_z', 'torque_x', 'control', 'force_y'])
         if 0.0 < resampling_ratio < 1.0:
             df_resampled = df_keyword.groupby('distance').apply(
                 lambda x: x.sample(frac=resampling_ratio, random_state=42)
@@ -87,11 +87,15 @@ def create_scatter_plots(directory, resampling_ratio=1.0, keywords=["right"], fo
     # torque_x / force_z を計算 (0除算対策)
     df_all_resampled['torque_x_div_force_z'] = df_all_resampled.apply(lambda row: row['torque_x'] / row['force_z'] if row['force_z'] != 0 else np.nan, axis=1)
 
+    # torque_x - force_y * 0.08
+    df_all_resampled['compensated_torque_x'] = df_all_resampled.apply(lambda row: row['torque_x'] + row['force_y'] * 0.08 if row['force_z'] != 0 else np.nan, axis=1)
+
     for keyword in keywords:
         df_resampled_by_keyword[keyword]['torque_x_div_force_z'] = df_resampled_by_keyword[keyword].apply(lambda row: row['torque_x'] / row['force_z'] if row['force_z'] != 0 else np.nan, axis=1)
+        df_resampled_by_keyword[keyword]['compensated_torque_x'] = df_resampled_by_keyword[keyword].apply(lambda row: row['torque_x'] + row['force_y'] * 0.08 if row['force_z'] != 0 else np.nan, axis=1)
 
     num_rows = len(keywords) + 1
-    num_cols = 5 
+    num_cols = 6 
     fig, axes = plt.subplots(num_rows, num_cols, figsize=(24, 4 * num_rows))  # figsizeも調整
 
     # キーワードごとのプロット
@@ -139,6 +143,16 @@ def create_scatter_plots(directory, resampling_ratio=1.0, keywords=["right"], fo
         axes[i, 4].set_xlabel('Control')
         axes[i, 4].set_ylabel('Force Z')
         axes[i, 4].set_title(f'Control vs. Force Z ({keyword})')
+
+        # distance vs compensated_torque_x
+        axes[i, 5].errorbar(df_grouped['distance'], df_grouped['mean'], yerr=df_grouped['std'], fmt='o', capsize=5, label='Mean with Std Dev', color='red')
+        axes[i, 5].scatter(df_resampled['distance'], df_resampled['compensated_torque_x'], c=df_resampled['distance'], cmap='viridis', alpha=0.5, label='Raw Data')
+        axes[i, 5].set_xlabel('Distance (R)')
+        axes[i, 5].set_ylabel('Compensated Torque X')
+        axes[i, 5].set_title(f'Compensated Torque X vs. Distance ({keyword})')
+        axes[i, 5].legend()
+        axes[i, 5].set_xlim(0, 5.2)
+        axes[i, 5].set_ylim(-0.4, 0.4)
 
 
     # 全データのプロット (最終行)

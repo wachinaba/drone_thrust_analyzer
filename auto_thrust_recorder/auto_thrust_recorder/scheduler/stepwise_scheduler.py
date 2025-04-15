@@ -140,6 +140,9 @@ class StepwiseThrustScheduler(Scheduler):
 
     def ready_to_record(self) -> bool:
         return self.current_thrust >= self.min_thrust
+    
+    def get_current_thrust(self) -> float:
+        return self.current_thrust
 
 
 class PolynomialModelThrustController:

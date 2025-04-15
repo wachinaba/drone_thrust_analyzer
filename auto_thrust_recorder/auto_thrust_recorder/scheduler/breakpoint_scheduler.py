@@ -82,5 +82,8 @@ class BreakpointScheduler(Scheduler):
     def get_current_control(self) -> np.ndarray:
         return self.thrust_controller(self.current_thrust)
 
+    def get_current_thrust(self) -> float:
+        return self.current_thrust
+
     def ready_to_record(self) -> bool:
         return self.ready
