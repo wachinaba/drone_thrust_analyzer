@@ -12,7 +12,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def polynomial_with_derivative_constraint(x, y, degree, derivative_zero_at=5.0):
+def polynomial_with_derivative_constraint(x, y, degree, derivative_zero_at=2.5):
     """
     点(x, y)に対して、指定された点derivative_zero_atで導関数が0になる制約付き多項式近似を行う関数。
     点を通る制約は廃止.
