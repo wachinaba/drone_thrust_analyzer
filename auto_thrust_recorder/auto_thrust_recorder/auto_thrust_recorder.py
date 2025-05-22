@@ -66,6 +66,8 @@ class AutoThrustRecorder(Node):
         self.repeat_count = 0
         self.num_repetitions = self.declare_parameter("num_repetitions", 1).get_parameter_value().integer_value
 
+        self.sensor_reversed = self.declare_parameter("sensor_reversed", False).get_parameter_value().bool_value
+
         self.mode = self.declare_parameter("mode", "linear").get_parameter_value().string_value
         if self.mode not in ["polynomial", "linear"]:
             self.get_logger().error(f"Invalid mode: {self.mode}")
@@ -88,6 +90,7 @@ class AutoThrustRecorder(Node):
         self.get_logger().info(f"Thrust multiplier: {self.thrust_multiplier}")
         self.get_logger().info(f"Num repetitions: {self.num_repetitions}")
         self.get_logger().info(f"Enable breakpoint: {self.enable_breakpoint}")
+        self.get_logger().info(f"Sensor reversed: {self.sensor_reversed}")
 
         self.initialize_logger()
         self.start_recording()
@@ -384,6 +387,12 @@ class AutoThrustRecorder(Node):
             "torque_y": msg.wrench.torque.y,
             "torque_z": msg.wrench.torque.z,
         }
+        if self.sensor_reversed:
+            row["force_x"] = -row["force_x"]
+            row["force_y"] = -row["force_y"]
+            row["torque_x"] = -row["torque_x"]
+            row["torque_y"] = -row["torque_y"]
+            
         self.raw_logger.log(row)
         self.repetition_average_logger.log(row)
         self.average_logger.log(row)
