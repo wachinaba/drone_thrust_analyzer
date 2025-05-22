@@ -9,18 +9,20 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-def find_csv_files(keywords, directory='.'):
+def find_csv_files(keywords, directory='.', and_keywords=False):
     """CSVファイルをキーワードに基づいて再帰的に検索する関数 (Pathlibを使用)。"""
     files = []
     for keyword in keywords:
         search_pattern = f"*{keyword}*.csv"
         files.extend(str(file) for file in Path(directory).rglob(search_pattern))  #Pathオブジェクトを文字列に変換
+    if and_keywords:
+        files = [file for file in files if all(keyword in file for keyword in keywords)]
     return files
 
 def extract_parameters(filename):
     """ファイル名から距離、角度、キーワードを抽出する関数。
     キーワードは正規表現で使用されます。"""
-    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z]+)_.*\.csv"
+    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z]+)_height=(\d+\.?\d*)\[mm\].*\.csv"
     print(matcher)
     match = re.match(matcher, filename, re.IGNORECASE)
     if match:
@@ -29,12 +31,14 @@ def extract_parameters(filename):
         fold_angle = int(match.group(3))
         prop_spacing = float(match.group(4))
         keyword = match.group(5)
+        height = float(match.group(6))
         return {
             'distance': distance,
             'tilt_angle': tilt_angle,
             'fold_angle': fold_angle,
             'prop_spacing': prop_spacing,
-            'keyword': keyword
+            'keyword': keyword,
+            'height': height
         }
     else:
         return None
@@ -85,6 +89,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="CSVデータを処理し、結合するアプリケーション")
     parser.add_argument('-k', '--keywords', nargs='+', type=str, default=['raw'], help="検索するファイル名に含まれるキーワードのリスト（例: 'raw', 'processed')")
     parser.add_argument('-d', '--directory', type=str, default='.', help="CSVファイルを検索するディレクトリ（デフォルト: カレントディレクトリ）")
+    parser.add_argument('-a', '--and_keywords', action='store_true', help="AND条件でファイルを検索する")
     parser.add_argument('--output', type=str, required=True, help="すべてのプレフィックスの処理結果を1つのCSVファイルにまとめてエクスポートするファイル名")
     return parser.parse_args()
 
@@ -105,7 +110,7 @@ def main():
     args = parse_arguments()
 
     # ファイルの検索
-    csv_files = find_csv_files(args.keywords, args.directory)
+    csv_files = find_csv_files(args.keywords, args.directory, args.and_keywords)
     if not csv_files:
         print(f"キーワード '{args.keywords}' を含むCSVファイルが見つかりません。")
         sys.exit(1)
@@ -118,9 +123,9 @@ def main():
         filename = os.path.basename(file)
         params = extract_parameters(filename)
         if params:
-            distance, tilt_angle, fold_angle, prop_spacing = params['distance'], params['tilt_angle'], params['fold_angle'], params['prop_spacing']
+            distance, tilt_angle, fold_angle, prop_spacing, height = params['distance'], params['tilt_angle'], params['fold_angle'], params['prop_spacing'], params['height']
             keyword = params['keyword']
-            grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword)].append(file)
+            grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height)].append(file)
         else:
             print(f"ファイル '{filename}' からパラメータを抽出できませんでした。スキップします。")
 
@@ -158,9 +163,9 @@ def main():
     combined_data = []
 
     # 各グループの処理
-    for (distance, tilt_angle, fold_angle, prop_spacing, keyword) in sorted_parameters:
-        print(f"\nパラメータ: 距離={distance}, チルト角={tilt_angle}, 折りたたみ角={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}")
-        files = grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword)]
+    for (distance, tilt_angle, fold_angle, prop_spacing, keyword, height) in sorted_parameters:
+        print(f"\nパラメータ: 距離={distance}, チルト角={tilt_angle}, 折りたたみ角={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}, 高さ={height}")
+        files = grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height)]
 
         combined_data_group = []
         for file in files:
@@ -201,7 +206,7 @@ def main():
             df_processed.loc[:, 'fold_angle'] = fold_angle
             df_processed.loc[:, 'prop_spacing'] = prop_spacing
             df_processed.loc[:, 'keyword'] = keyword
-
+            df_processed.loc[:, 'height'] = height
             for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z']:
                 df_processed[f"{col}_partial_variance"] = df_processed.groupby('target_thrust')[col].transform("var")
 
@@ -240,7 +245,7 @@ def main():
         grouped_stats['fold_angle'] = fold_angle
         grouped_stats['prop_spacing'] = prop_spacing
         grouped_stats['keyword'] = keyword
-
+        grouped_stats['height'] = height
         combined_data.append(grouped_stats)
 
     # すべてのパラメータのデータを1つのCSVにエクスポート
