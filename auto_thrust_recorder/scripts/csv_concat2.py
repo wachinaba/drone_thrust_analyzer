@@ -22,7 +22,7 @@ def find_csv_files(keywords, directory='.', and_keywords=False):
 def extract_parameters(filename):
     """ファイル名から距離、角度、キーワードを抽出する関数。
     キーワードは正規表現で使用されます。"""
-    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z]+)_height=(\d+\.?\d*)\[mm\].*\.csv"
+    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z_]+)_height=(\d+\.?\d*)\[mm\].*\.csv"
     print(matcher)
     match = re.match(matcher, filename, re.IGNORECASE)
     if match:
