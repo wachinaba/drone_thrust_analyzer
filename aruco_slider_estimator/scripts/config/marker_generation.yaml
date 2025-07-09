@@ -1,0 +1,27 @@
+# ARマーカー生成設定ファイル
+
+# 基本設定
+dictionary: DICT_4X4_100
+marker_size_mm: 50.0
+output_format: png
+dpi: 300
+
+# ベース側マーカー
+base_markers:
+  start_id: 0
+  end_id: 4
+  spacing_mm: 200.0
+  layout: linear
+
+# スライダ側マーカー
+slider_markers:
+  start_id: 50
+  end_id: 53
+  spacing_mm: 100.0
+  layout: grid
+
+# 出力設定
+output:
+  individual_markers: true
+  board_layout: true
+  config_files: true 
