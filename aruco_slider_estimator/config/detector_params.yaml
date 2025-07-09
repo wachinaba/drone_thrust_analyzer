@@ -1,0 +1,52 @@
+# ArUco検出器パラメータ設定ファイル
+# OpenCV 4 ArucoDetector用
+
+# 適応的閾値処理のパラメータ
+adaptiveThreshWinSizeMin: 3
+adaptiveThreshWinSizeMax: 23
+adaptiveThreshWinSizeStep: 10
+
+# 適応的閾値処理の定数
+adaptiveThreshConstant: 7
+
+# 最小マーカー周長比
+minMarkerPerimeterRate: 0.03
+
+# 最大マーカー周長比
+maxMarkerPerimeterRate: 4.0
+
+# 多角形近似精度
+polygonalApproxAccuracyRate: 0.03
+
+# 最小コーナー距離
+minCornerDistanceRate: 0.05
+
+# 最小マーカー間距離
+minMarkerDistanceRate: 0.05
+
+# 最小マーカー間距離（ピクセル）
+minDistanceToBorder: 3
+
+# 最小マーカー周長
+minMarkerPerimeterRate: 0.03
+
+# 最大マーカー周長
+maxMarkerPerimeterRate: 4.0
+
+# コーナー検出の精度
+cornerRefinementWinSize: 5
+
+# コーナー検出の最大反復回数
+cornerRefinementMaxIterations: 30
+
+# コーナー検出の精度閾値
+cornerRefinementMinAccuracy: 0.1
+
+# マーカー検出の最小マーカー数
+minMarkerPerimeterRate: 0.03
+
+# マーカー検出の最大マーカー数
+maxMarkerPerimeterRate: 4.0
+
+# エラー修正率
+errorCorrectionRate: 0.6 

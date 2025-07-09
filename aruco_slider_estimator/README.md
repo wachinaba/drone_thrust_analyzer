@@ -1,0 +1,183 @@
+# ARマーカー式スライダ位置推定システム
+
+## 概要
+
+本パッケージは、ARマーカー（ArUcoマーカー）を用いて直線運動するスライダの精密な位置を推定するROS 2パッケージです。
+
+静止したベース部分と移動するスライダ部分の両方にマーカーを設置し、カメラからの単一画像内で両者を同時に認識することで、カメラ自体の微小な振動（ブレ）成分を計算過程で相殺し、ロバストで高精度なスライダのワールド座標系における位置姿勢（Pose）をリアルタイムで提供します。
+
+## システム構成
+
+### ハードウェア構成
+
+- **PC**: ROS 2および本パッケージを実行するコンピュータ
+- **カメラ**: スライダに固定され、スライダと共に移動する。ベースとスライダのマーカーを同時に撮影可能な画角を持つこと
+- **ベース側マーカー群**: ベースに、スライダの移動軸と平行な一直線上に、等間隔で複数設置される。ワールド座標系の基準となる
+- **スライダ側マーカー群**: スライダ本体に、複数個が剛体として固定される。スライダ座標系の基準となる
+
+### ソフトウェア要件
+
+- **OS**: Ubuntu 22.04 (推奨)
+- **ROS**: ROS 2 Humble Hawksbill (推奨)
+- **主要ライブラリ**: OpenCV 4.x, tf2
+
+## インストール
+
+### 依存関係のインストール
+
+```bash
+sudo apt update
+sudo apt install python3-opencv python3-yaml
+```
+
+### パッケージのビルド
+
+```bash
+cd ~/colcon_ws
+colcon build --packages-select aruco_slider_estimator
+source install/setup.bash
+```
+
+## 使用方法
+
+### 1. マーカー設定ファイルの準備
+
+#### ベース側マーカー設定 (`config/base_board_config.json`)
+
+```json
+{
+  "marker_size_mm": 50.0,
+  "markers": [
+    {
+      "id": 0,
+      "translation": [0.0, 0.0, 0.0]
+    },
+    {
+      "id": 1,
+      "translation": [200.0, 0.0, 0.0]
+    }
+  ]
+}
+```
+
+#### スライダ側マーカー設定 (`config/slider_board_config.json`)
+
+```json
+{
+  "marker_size_mm": 50.0,
+  "markers": [
+    {
+      "id": 50,
+      "translation": [0.0, 0.0, 0.0]
+    },
+    {
+      "id": 51,
+      "translation": [100.0, 0.0, 0.0]
+    }
+  ]
+}
+```
+
+**重要**: ベース側マーカー群とスライダ側マーカー群で使用するIDの範囲は、重複しないように割り当ててください。
+
+### 2. カメラキャリブレーション
+
+本システムの精度はカメラキャリブレーションの正確さに大きく依存します。事前に以下のコマンドでカメラキャリブレーションを実行してください：
+
+```bash
+ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025
+```
+
+### 3. ノードの起動
+
+```bash
+ros2 launch aruco_slider_estimator estimator.launch.py
+```
+
+### 4. カスタムパラメータでの起動
+
+```bash
+ros2 launch aruco_slider_estimator estimator.launch.py \
+  marker_dictionary:=DICT_4X4_100 \
+  base_board_config:=/path/to/base_config.json \
+  slider_board_config:=/path/to/slider_config.json \
+  world_frame_id:=world \
+  slider_frame_id:=slider_base
+```
+
+## トピック
+
+### 入力トピック
+
+| トピック名 | メッセージ型 | 説明 |
+| :---- | :---- | :---- |
+| `/camera/image_raw` | sensor_msgs/msg/Image | カメラからの生画像 |
+| `/camera/camera_info` | sensor_msgs/msg/CameraInfo | カメラの内部パラメータと歪み係数 |
+
+### 出力トピック
+
+| トピック名 | メッセージ型 | 説明 |
+| :---- | :---- | :---- |
+| `~/output/slider_pose` | geometry_msgs/msg/PoseStamped | 推定されたスライダのPose |
+| `~/output/debug_image` | sensor_msgs/msg/Image | 検出したマーカーや座標軸が描画されたデバッグ用画像 |
+| `/tf` | tf2_msgs/msg/TFMessage | ワールド座標系からスライダ座標系への座標変換情報 |
+
+## パラメータ
+
+| パラメータ名 | 型 | デフォルト値 | 説明 |
+| :---- | :---- | :---- | :---- |
+| `marker_dictionary` | string | `DICT_4X4_100` | 使用するArUcoマーカーの辞書名 |
+| `base_board_config` | string | `config/base_board_config.json` | ベース側マーカー群の定義ファイルへのパス |
+| `slider_board_config` | string | `config/slider_board_config.json` | スライダ側マーカー群の定義ファイルへのパス |
+| `detector_params_file` | string | `config/detector_params.yaml` | ArUco検出器のパラメータファイルへのパス |
+| `world_frame_id` | string | `world` | ワールド座標系のフレーム名 |
+| `slider_frame_id` | string | `slider_base` | スライダ座標系のフレーム名 |
+| `publish_tf` | bool | `true` | `/tfトピックをパブリッシュするかどうかのフラグ |
+| `show_debug_image` | bool | `true` | デバッグ用画像をパブリッシュするかどうかのフラグ |
+
+## 可視化
+
+### RVizでの可視化
+
+1. RVizを起動：
+```bash
+ros2 run rviz2 rviz2
+```
+
+2. 以下の設定を追加：
+   - **TF**: ワールド座標系とスライダ座標系の変換を表示
+   - **Image**: `/aruco_slider_estimator/output/debug_image`トピックを表示
+
+### デバッグ画像の確認
+
+```bash
+ros2 run rqt_image_view rqt_image_view
+```
+
+## トラブルシューティング
+
+### マーカーが検出されない
+
+1. カメラキャリブレーションが正しく行われているか確認
+2. マーカーのサイズと設定ファイルの`marker_size_mm`が一致しているか確認
+3. マーカーのIDが設定ファイルと一致しているか確認
+4. 照明条件を改善
+
+### Pose推定が不安定
+
+1. より多くのマーカーを配置
+2. マーカーの配置を最適化（直線的でない配置を試す）
+3. 検出器パラメータを調整
+
+### 座標系が正しくない
+
+1. マーカーの物理配置と設定ファイルの座標が一致しているか確認
+2. ワールド座標系とスライダ座標系の定義を確認
+
+## ライセンス
+
+MIT License
+
+## 貢献
+
+バグ報告や機能要望は、GitHubのIssueでお知らせください。 
