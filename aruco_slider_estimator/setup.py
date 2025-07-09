@@ -18,6 +18,18 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/estimator.launch.py',
         ]),
+        ('share/' + package_name + '/scripts', [
+            'scripts/generate_markers.py',
+            'scripts/generate_board.py',
+            'scripts/generate_all.py',
+        ]),
+        ('share/' + package_name + '/scripts/config', [
+            'scripts/config/marker_generation.yaml',
+        ]),
+        ('share/' + package_name + '/scripts/config/templates', [
+            'scripts/config/templates/base_board_template.yaml',
+            'scripts/config/templates/slider_board_template.yaml',
+        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
