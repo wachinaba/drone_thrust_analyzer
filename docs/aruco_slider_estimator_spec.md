@@ -168,8 +168,136 @@ estimator\_nodeは、同期した画像とカメラ情報を受け取るたび�
 
 * 例: ベース側マーカー: ID 0-49 / スライダ側マーカー: ID 50-99
 
-## **7\. 補足事項**
+## **7\. ARマーカー作成用スクリプト**
+
+### **7.1. 概要**
+
+本パッケージには、ArUcoマーカーの生成を自動化するスクリプト群が含まれる。これにより、システムに必要なマーカーを簡単に作成し、印刷用の最適化された画像を生成できる。
+
+### **7.2. スクリプト構成**
+
+| スクリプト名 | 機能 |
+| :---- | :---- |
+| generate\_markers.py | 単一マーカーの生成 |
+| generate\_board.py | マーカーボードの生成 |
+| generate\_all.py | 設定ファイルからの一括生成 |
+
+### **7.3. ディレクトリ構成**
+
+```
+aruco_slider_estimator/
+├── scripts/
+│   ├── generate_markers.py
+│   ├── generate_board.py
+│   ├── generate_all.py
+│   └── config/
+│       ├── marker_generation.yaml
+│       ├── templates/
+│       │   ├── base_board_template.yaml
+│       │   └── slider_board_template.yaml
+├── output/
+│   ├── markers/
+│   │   ├── base/
+│   │   └── slider/
+│   ├── boards/
+│   └── configs/
+```
+
+### **7.4. 設定ファイル仕様**
+
+#### **marker\_generation.yaml**
+
+```yaml
+# 基本設定
+dictionary: DICT_4X4_100
+marker_size_mm: 50.0
+output_format: png
+dpi: 300
+
+# ベース側マーカー
+base_markers:
+  start_id: 0
+  end_id: 4
+  spacing_mm: 200.0
+  layout: linear
+
+# スライダ側マーカー
+slider_markers:
+  start_id: 50
+  end_id: 53
+  spacing_mm: 100.0
+  layout: grid
+
+# 出力設定
+output:
+  individual_markers: true
+  board_layout: true
+  config_files: true
+```
+
+#### **パラメータ詳細**
+
+| パラメータ | 型 | 説明 |
+| :---- | :---- | :---- |
+| dictionary | string | 使用するArUco辞書名 |
+| marker\_size\_mm | float | マーカーの物理サイズ（mm） |
+| output\_format | string | 出力形式（png, pdf, svg） |
+| dpi | int | 印刷解像度 |
+| base\_markers.start\_id | int | ベース側マーカーの開始ID |
+| base\_markers.end\_id | int | ベース側マーカーの終了ID |
+| base\_markers.spacing\_mm | float | ベース側マーカー間隔（mm） |
+| base\_markers.layout | string | レイアウト（linear, grid） |
+| slider\_markers.start\_id | int | スライダ側マーカーの開始ID |
+| slider\_markers.end\_id | int | スライダ側マーカーの終了ID |
+| slider\_markers.spacing\_mm | float | スライダ側マーカー間隔（mm） |
+| slider\_markers.layout | string | レイアウト（linear, grid） |
+
+### **7.5. 使用方法**
+
+#### **単一マーカー生成**
+
+```bash
+python3 scripts/generate_markers.py --id 0 --size 50 --dictionary DICT_4X4_100
+```
+
+#### **マーカーボード生成**
+
+```bash
+python3 scripts/generate_board.py --type base --start-id 0 --end-id 4 --spacing 200
+```
+
+#### **一括生成**
+
+```bash
+python3 scripts/generate_all.py --config config/marker_generation.yaml
+```
+
+### **7.6. 出力ファイル**
+
+#### **個別マーカー**
+- `output/markers/base/marker_0.png`
+- `output/markers/base/marker_1.png`
+- `output/markers/slider/marker_50.png`
+
+#### **マーカーボード**
+- `output/boards/base_board.png`
+- `output/boards/slider_board.png`
+
+#### **設定ファイル**
+- `output/configs/base_board_config.json`
+- `output/configs/slider_board_config.json`
+
+### **7.7. 印刷仕様**
+
+* **解像度**: 300 DPI（推奨）
+* **用紙サイズ**: A4（210mm × 297mm）
+* **マージン**: 10mm
+* **色**: 黒白（モノクロ）
+* **印刷設定**: スケール100%、回転なし
+
+## **8\. 補足事項**
 
 * **カメラキャリブレーション:** 本システムの精度はカメラキャリブレーションの正確さに大きく依存する。事前にros2 run camera\_calibration cameracalibrator等を用いて、camera\_infoを正確に求めておくことが必須である。  
 * **堅牢性:** Pose推定にはsolvePnPRansacを使用する。この関数はRANSACアルゴリズムに基づき、マーカーの誤検出などの外れ値（outlier）データを除外して計算を行うため、ロバストなPose推定が可能である。  
 * **可視化:** RViz上で/tfとデバッグ画像を可視化することで、システムの動作状況を直感的に確認できる。
+* **マーカー作成:** 本パッケージに含まれるスクリプトを使用することで、システムに必要なマーカーを簡単に作成できる。印刷時は高解像度（300 DPI以上）での印刷を推奨する。

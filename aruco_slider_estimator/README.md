@@ -40,7 +40,33 @@ source install/setup.bash
 
 ## 使用方法
 
-### 1. マーカー設定ファイルの準備
+### 1. ARマーカーの生成
+
+本パッケージには、ArUcoマーカーの生成を自動化するスクリプトが含まれています。
+
+#### 単一マーカーの生成
+
+```bash
+python3 scripts/generate_markers.py --id 0 --size 200 --dictionary DICT_4X4_100
+```
+
+#### マーカーボードの生成
+
+```bash
+# ベース側マーカーボード
+python3 scripts/generate_board.py --type base --start-id 0 --end-id 4 --spacing 200
+
+# スライダ側マーカーボード
+python3 scripts/generate_board.py --type slider --start-id 50 --end-id 53 --spacing 100
+```
+
+#### 一括生成
+
+```bash
+python3 scripts/generate_all.py --config scripts/config/marker_generation.yaml
+```
+
+### 2. マーカー設定ファイルの準備
 
 #### ベース側マーカー設定 (`config/base_board_config.json`)
 
@@ -80,7 +106,7 @@ source install/setup.bash
 
 **重要**: ベース側マーカー群とスライダ側マーカー群で使用するIDの範囲は、重複しないように割り当ててください。
 
-### 2. カメラキャリブレーション
+### 3. カメラキャリブレーション
 
 本システムの精度はカメラキャリブレーションの正確さに大きく依存します。事前に以下のコマンドでカメラキャリブレーションを実行してください：
 
@@ -88,13 +114,13 @@ source install/setup.bash
 ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025
 ```
 
-### 3. ノードの起動
+### 4. ノードの起動
 
 ```bash
 ros2 launch aruco_slider_estimator estimator.launch.py
 ```
 
-### 4. カスタムパラメータでの起動
+### 5. カスタムパラメータでの起動
 
 ```bash
 ros2 launch aruco_slider_estimator estimator.launch.py \
@@ -103,6 +129,31 @@ ros2 launch aruco_slider_estimator estimator.launch.py \
   slider_board_config:=/path/to/slider_config.json \
   world_frame_id:=world \
   slider_frame_id:=slider_base
+```
+
+## 出力ファイル
+
+### マーカー生成スクリプトの出力
+
+一括生成スクリプトを実行すると、以下のファイルが生成されます：
+
+```
+output/
+├── markers/
+│   ├── base/
+│   │   ├── marker_0.png
+│   │   ├── marker_1.png
+│   │   └── ...
+│   └── slider/
+│       ├── marker_50.png
+│       ├── marker_51.png
+│       └── ...
+├── boards/
+│   ├── base_board.png
+│   └── slider_board.png
+└── configs/
+    ├── base_board_config.json
+    └── slider_board_config.json
 ```
 
 ## トピック
