@@ -5,6 +5,7 @@ dictionary: DICT_4X4_100
 marker_size_mm: 50.0
 output_format: png
 dpi: 300
+margin: 0  # マージン（ピクセル、0で余白なし）
 
 # ベース側マーカー
 base_markers:

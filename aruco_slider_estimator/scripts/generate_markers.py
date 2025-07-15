@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 def generate_marker(marker_id: int, dictionary_name: str = 'DICT_4X4_100', 
-                   marker_size_pixels: int = 200, output_path: str = None) -> np.ndarray:
+                   marker_size_pixels: int = 200, output_path: str = None, margin: int = 0) -> np.ndarray:
     """
     指定したIDのArUcoマーカーを生成する
     
@@ -25,6 +25,7 @@ def generate_marker(marker_id: int, dictionary_name: str = 'DICT_4X4_100',
         dictionary_name: 辞書名
         marker_size_pixels: マーカーサイズ（ピクセル）
         output_path: 出力パス（Noneの場合は画像を返すのみ）
+        margin: マージン（ピクセル、0で余白なし）
     
     Returns:
         生成されたマーカー画像
@@ -36,11 +37,14 @@ def generate_marker(marker_id: int, dictionary_name: str = 'DICT_4X4_100',
     # マーカーの生成
     marker_image = aruco.generateImageMarker(dictionary, marker_id, marker_size_pixels)
     
-    # 白い背景を追加（印刷用）
-    margin = 50  # マージン（ピクセル）
-    final_size = marker_size_pixels + 2 * margin
-    final_image = np.ones((final_size, final_size), dtype=np.uint8) * 255
-    final_image[margin:margin+marker_size_pixels, margin:margin+marker_size_pixels] = marker_image
+    if margin > 0:
+        # 白い背景を追加（印刷用）
+        final_size = marker_size_pixels + 2 * margin
+        final_image = np.ones((final_size, final_size), dtype=np.uint8) * 255
+        final_image[margin:margin+marker_size_pixels, margin:margin+marker_size_pixels] = marker_image
+    else:
+        # 余白なし
+        final_image = marker_image
     
     # ファイルに保存
     if output_path:
@@ -51,7 +55,7 @@ def generate_marker(marker_id: int, dictionary_name: str = 'DICT_4X4_100',
 
 
 def generate_markers_batch(start_id: int, end_id: int, dictionary_name: str = 'DICT_4X4_100',
-                          marker_size_pixels: int = 200, output_dir: str = None) -> None:
+                          marker_size_pixels: int = 200, output_dir: str = None, margin: int = 0) -> None:
     """
     指定した範囲のマーカーを一括生成する
     
@@ -61,6 +65,7 @@ def generate_markers_batch(start_id: int, end_id: int, dictionary_name: str = 'D
         dictionary_name: 辞書名
         marker_size_pixels: マーカーサイズ（ピクセル）
         output_dir: 出力ディレクトリ
+        margin: マージン（ピクセル、0で余白なし）
     """
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -71,7 +76,7 @@ def generate_markers_batch(start_id: int, end_id: int, dictionary_name: str = 'D
         else:
             output_path = None
         
-        generate_marker(marker_id, dictionary_name, marker_size_pixels, output_path)
+        generate_marker(marker_id, dictionary_name, marker_size_pixels, output_path, margin)
 
 
 def main():
@@ -83,6 +88,7 @@ def main():
     parser.add_argument('--size', type=int, default=200, help='マーカーサイズ（ピクセル）')
     parser.add_argument('--dictionary', type=str, default='DICT_4X4_100', 
                        help='使用する辞書名')
+    parser.add_argument('--margin', type=int, default=0, help='マージン（ピクセル、0で余白なし）')
     parser.add_argument('--output', type=str, help='出力ファイルパス（単一マーカー時）')
     parser.add_argument('--output-dir', type=str, help='出力ディレクトリ（一括生成時）')
     
@@ -94,7 +100,7 @@ def main():
         if args.output is None:
             args.output = f"marker_{args.id}.png"
         
-        generate_marker(args.id, args.dictionary, args.size, args.output)
+        generate_marker(args.id, args.dictionary, args.size, args.output, args.margin)
         
     elif args.start_id is not None and args.end_id is not None:
         # 一括生成
@@ -102,7 +108,7 @@ def main():
             args.output_dir = "markers"
         
         generate_markers_batch(args.start_id, args.end_id, args.dictionary, 
-                             args.size, args.output_dir)
+                             args.size, args.output_dir, args.margin)
         
     else:
         print("エラー: --id または --start-id と --end-id を指定してください")

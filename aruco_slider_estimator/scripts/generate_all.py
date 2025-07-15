@@ -120,6 +120,7 @@ def generate_all_markers(config_path: str, output_dir: str = "output") -> None:
     marker_size_mm = config.get('marker_size_mm', 50.0)
     dpi = config.get('dpi', 300)
     marker_size_pixels = mm_to_pixels(marker_size_mm, dpi)
+    margin = config.get('margin', 0)  # マージン設定（デフォルト0で余白なし）
     
     # ベース側マーカーの生成
     base_config = config.get('base_markers', {})
@@ -146,12 +147,12 @@ def generate_all_markers(config_path: str, output_dir: str = "output") -> None:
         # ベース側マーカー
         for marker_id in range(base_start_id, base_end_id + 1):
             output_path = os.path.join(output_dir, "markers", "base", f"marker_{marker_id}.png")
-            generate_marker(marker_id, dictionary, marker_size_pixels, output_path)
+            generate_marker(marker_id, dictionary, marker_size_pixels, output_path, margin)
         
         # スライダ側マーカー
         for marker_id in range(slider_start_id, slider_end_id + 1):
             output_path = os.path.join(output_dir, "markers", "slider", f"marker_{marker_id}.png")
-            generate_marker(marker_id, dictionary, marker_size_pixels, output_path)
+            generate_marker(marker_id, dictionary, marker_size_pixels, output_path, margin)
     
     # マーカーボードの生成
     if output_config.get('board_layout', True):
