@@ -33,6 +33,7 @@ setup(
     entry_points={
         'console_scripts': [
             'velocity_publisher = dynamixel_linear_slider.velocity_publisher:main',
+            'velocity_sine_publisher = dynamixel_linear_slider.velocity_sine_publisher:main',
         ],
     },
 )
