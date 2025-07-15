@@ -77,6 +77,7 @@ def generate_launch_description():
         executable='estimator_node',
         name='estimator_node',
         output='screen',
+        arguments=['--ros-args', '--log-level', 'estimator_node:=info'],
         parameters=[{
             'marker_dictionary': LaunchConfiguration('marker_dictionary'),
             'base_board_config': LaunchConfiguration('base_board_config'),
