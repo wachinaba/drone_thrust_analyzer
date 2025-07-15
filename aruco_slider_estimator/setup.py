@@ -17,11 +17,14 @@ setup(
         ]),
         ('share/' + package_name + '/launch', [
             'launch/estimator.launch.py',
+            'launch/camera.launch.py',
+            'launch/camera_with_info.launch.py',
         ]),
         ('share/' + package_name + '/scripts', [
             'scripts/generate_markers.py',
             'scripts/generate_board.py',
             'scripts/generate_all.py',
+            'scripts/camera_calibration.py',
         ]),
         ('share/' + package_name + '/scripts/config', [
             'scripts/config/marker_generation.yaml',

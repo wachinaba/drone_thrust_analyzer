@@ -110,17 +110,57 @@ python3 scripts/generate_all.py --config scripts/config/marker_generation.yaml
 
 本システムの精度はカメラキャリブレーションの正確さに大きく依存します。事前に以下のコマンドでカメラキャリブレーションを実行してください：
 
+#### GUI付きキャリブレーション（推奨）
+
+本パッケージに含まれるGUI付きキャリブレーションスクリプトを使用：
+
+```bash
+# デフォルト設定で実行
+python3 scripts/camera_calibration.py
+
+# カスタム設定で実行
+python3 scripts/camera_calibration.py --camera 0 --board-size 8 6 --square-size 0.025
+```
+
+**操作方法:**
+- **Space**: チェッカーボードが検出された状態でフレームをキャプチャ
+- **Enter**: キャリブレーション実行（最低10枚の画像が必要）
+- **Esc**: 終了
+
+**注意事項:**
+- チェッカーボードが検出されると緑色のコーナーが表示されます
+- 様々な角度からチェッカーボードを撮影してください
+- キャリブレーション結果は`camera_info_YYYYMMDD_HHMMSS.yaml`として保存されます
+
+#### ROS 2標準キャリブレーション
+
 ```bash
 ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025
 ```
 
-### 4. ノードの起動
+### 4. カメラノードの起動
+
+キャリブレーションで生成されたYAMLファイルを使用してカメラノードを起動します：
+
+```bash
+# camera_info_urlを使用する方法（推奨）
+ros2 launch aruco_slider_estimator camera_with_info.launch.py \
+  camera_info_file:=/path/to/camera_info_YYYYMMDD_HHMMSS.yaml \
+  camera_id:=0
+
+# または、直接パラメータとして指定する方法
+ros2 launch aruco_slider_estimator camera.launch.py \
+  camera_info_file:=/path/to/camera_info_YYYYMMDD_HHMMSS.yaml \
+  camera_id:=0
+```
+
+### 5. 推定ノードの起動
 
 ```bash
 ros2 launch aruco_slider_estimator estimator.launch.py
 ```
 
-### 5. カスタムパラメータでの起動
+### 6. カスタムパラメータでの起動
 
 ```bash
 ros2 launch aruco_slider_estimator estimator.launch.py \
