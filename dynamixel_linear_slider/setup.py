@@ -30,10 +30,19 @@ setup(
     description='Dynamixel linear slider velocity control package',
     license='TODO: License declaration',
     tests_require=['pytest'],
-    entry_points={
-        'console_scripts': [
-            'velocity_publisher = dynamixel_linear_slider.velocity_publisher:main',
-            'velocity_sine_publisher = dynamixel_linear_slider.velocity_sine_publisher:main',
-        ],
-    },
+            entry_points={
+            'console_scripts': [
+                'velocity_publisher = dynamixel_linear_slider.velocity_publisher:main',
+                'velocity_sine_publisher = dynamixel_linear_slider.velocity_sine_publisher:main',
+                'dynamixel_handler_controller = dynamixel_linear_slider.dynamixel_handler_controller:main',
+                'dynamixel_handler_odometry_node = dynamixel_linear_slider.dynamixel_handler_odometry_node:main',
+                'dynamixel_driver_node = dynamixel_linear_slider.dynamixel_driver_node:main',
+                'dynamixel_odometry_node = dynamixel_linear_slider.dynamixel_odometry_node:main',
+                'sensor_fusion_node = dynamixel_linear_slider.sensor_fusion_node:main',
+                'trajectory_generator_node = dynamixel_linear_slider.trajectory_generator_node:main',
+                'position_controller_node = dynamixel_linear_slider.position_controller_node:main',
+                'pose_to_position_converter_node = dynamixel_linear_slider.pose_to_position_converter_node:main',
+                'velocity_command_converter_node = dynamixel_linear_slider.velocity_command_converter_node:main',
+            ],
+        },
 )
