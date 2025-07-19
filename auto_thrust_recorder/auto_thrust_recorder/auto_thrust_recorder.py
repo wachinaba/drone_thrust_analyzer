@@ -68,6 +68,8 @@ class AutoThrustRecorder(Node):
 
         self.sensor_reversed = self.declare_parameter("sensor_reversed", False).get_parameter_value().bool_value
 
+        self.autoexit = self.declare_parameter("autoexit", True).get_parameter_value().bool_value
+
         self.mode = self.declare_parameter("mode", "linear").get_parameter_value().string_value
         if self.mode not in ["polynomial", "linear"]:
             self.get_logger().error(f"Invalid mode: {self.mode}")
@@ -91,6 +93,7 @@ class AutoThrustRecorder(Node):
         self.get_logger().info(f"Num repetitions: {self.num_repetitions}")
         self.get_logger().info(f"Enable breakpoint: {self.enable_breakpoint}")
         self.get_logger().info(f"Sensor reversed: {self.sensor_reversed}")
+        self.get_logger().info(f"Auto exit: {self.autoexit}")
 
         self.initialize_logger()
         self.start_recording()
@@ -400,6 +403,12 @@ class AutoThrustRecorder(Node):
     def perform_shutdown(self):
         self.get_logger().info("Disarming...")
         self.actuator_controller.set_arming(False)
+        
+        if self.autoexit:
+            self.get_logger().info("All measurements completed. Auto exit enabled. Shutting down...")
+            rclpy.try_shutdown()
+        else:
+            self.get_logger().info("All measurements completed. Auto exit disabled. Node will continue running.")
         
 
 def main():
