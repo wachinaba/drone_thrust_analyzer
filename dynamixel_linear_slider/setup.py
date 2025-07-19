@@ -43,6 +43,10 @@ setup(
                 'position_controller_node = dynamixel_linear_slider.position_controller_node:main',
                 'pose_to_position_converter_node = dynamixel_linear_slider.pose_to_position_converter_node:main',
                 'velocity_command_converter_node = dynamixel_linear_slider.velocity_command_converter_node:main',
+                'dynamixel_simulator_node = dynamixel_linear_slider.dynamixel_simulator_node:main',
+                'simulator_test_publisher = dynamixel_linear_slider.simulator_test_publisher:main',
+                'dynamixel_handler_position_controller_node = dynamixel_linear_slider.dynamixel_handler_position_controller_node:main',
+                'position_test_publisher_node = dynamixel_linear_slider.position_test_publisher_node:main',
             ],
         },
 )
