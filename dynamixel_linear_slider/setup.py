@@ -47,6 +47,7 @@ setup(
                 'simulator_test_publisher = dynamixel_linear_slider.simulator_test_publisher:main',
                 'dynamixel_handler_position_controller_node = dynamixel_linear_slider.dynamixel_handler_position_controller_node:main',
                 'position_test_publisher_node = dynamixel_linear_slider.position_test_publisher_node:main',
+                'position_command_and_wait_node = dynamixel_linear_slider.position_command_and_wait_node:main',
             ],
         },
 )
