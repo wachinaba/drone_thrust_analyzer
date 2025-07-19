@@ -140,16 +140,19 @@ class ArucoSliderEstimator(Node):
     def _init_camera(self):
         """カメラの初期化"""
         # OpenCVカメラの初期化
+        """
         self.cap = cv2.VideoCapture(self.camera_id)
         if not self.cap.isOpened():
             self.get_logger().error(f"Failed to open camera {self.camera_id}")
             raise RuntimeError(f"Camera {self.camera_id} not available")
-        
-        # カメラ設定
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 576)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+            # カメラ設定
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 576)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+        """
+
+        self.cap = cv2.VideoCapture("http://localhost:5000/video_feed")
         
         # カメラ情報の読み込み
         self.camera_matrix = None
