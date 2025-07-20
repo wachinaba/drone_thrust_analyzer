@@ -22,8 +22,8 @@ class SensorFusionNode(Node):
         super().__init__('sensor_fusion_node')
         
         # パラメータの取得
-        self.declare_parameter('alpha', 0.985)
-        self.declare_parameter('drift_bias', 0.001)  # m/s
+        self.declare_parameter('alpha', 0.97)
+        self.declare_parameter('drift_bias', 0.00)  # m/s
         self.declare_parameter('control_frequency', 100.0)
         
         self.alpha = self.get_parameter('alpha').value

@@ -169,6 +169,9 @@ class TrajectoryGeneratorNode(Node):
 
     
     def trajectory_timer_callback(self):
+        if not self.has_received_position:
+            return
+
         """軌道生成タイマーコールバック（台形制御版）"""
         current_time = time.time()
         

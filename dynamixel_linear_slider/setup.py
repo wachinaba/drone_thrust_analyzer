@@ -17,6 +17,7 @@ def package_files(directory, data_files):
     return data_files
 
 data_files = package_files('launch/', data_files)
+data_files = package_files('config/', data_files)
 
 setup(
     name=package_name,
@@ -48,6 +49,7 @@ setup(
                 'dynamixel_handler_position_controller_node = dynamixel_linear_slider.dynamixel_handler_position_controller_node:main',
                 'position_test_publisher_node = dynamixel_linear_slider.position_test_publisher_node:main',
                 'position_command_and_wait_node = dynamixel_linear_slider.position_command_and_wait_node:main',
+                'extended_position_estimator_node = dynamixel_linear_slider.extended_position_estimator_node:main',
             ],
         },
 )

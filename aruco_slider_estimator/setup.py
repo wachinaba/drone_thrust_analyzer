@@ -14,6 +14,7 @@ setup(
             'config/base_board_config.json',
             'config/slider_board_config.json',
             'config/detector_params.yaml',
+            'config/emeet_c960.yaml',
         ]),
         ('share/' + package_name + '/launch', [
             'launch/estimator.launch.py',
