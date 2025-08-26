@@ -86,6 +86,11 @@ class TrajectoryGeneratorNode(Node):
     
     def estimated_position_callback(self, msg):
         """推定位置のコールバック"""
+        if not self.has_received_position:
+            # 初回の推定位置を目標位置として設定
+            self.target_position = msg.data
+            self.initial_position = msg.data
+
         self.current_position = msg.data
         self.has_received_position = True
     

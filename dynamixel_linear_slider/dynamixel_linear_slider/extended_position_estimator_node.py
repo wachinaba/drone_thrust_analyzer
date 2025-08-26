@@ -157,13 +157,12 @@ class ExtendedPositionEstimatorNode(Node):
             self.get_logger().debug('Dynamixel states not valid')
             return False
 
-        # モータ速度が0でない場合は原点リセットしない
+        # モータ速度が0でない場合は警告を出力
         if abs(self.current_velocity_deg_s) > self.velocity_zero_threshold:
             self.get_logger().debug(
                 f'Motor velocity not zero: {self.current_velocity_deg_s:.2f} deg/s, '
                 f'threshold: {self.velocity_zero_threshold} deg/s'
             )
-            return False
         
         # ARマーカーデータが不足している場合
         if not self.ar_marker_valid or len(self.ar_marker_buffer) < 5:  # 最低5個のデータが必要
