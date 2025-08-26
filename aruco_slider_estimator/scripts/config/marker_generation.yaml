@@ -10,7 +10,7 @@ margin: 0  # マージン（ピクセル、0で余白なし）
 # ベース側マーカー
 base_markers:
   start_id: 0
-  end_id: 4
+  end_id: 10
   spacing_mm: 200.0
   layout: linear
 
