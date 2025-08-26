@@ -21,6 +21,9 @@ class AutoThrustRecorder(Node):
         self.force_sensor = force_sensor
         self.actuator_controller = actuator_controller
 
+        # -15deg_fold15deg: y = 110.97x2 + 18.971x + 0.5445
+        # -30deg_fold15deg: y = 96.732x2 + 16.219x + 0.7684
+
         thrust_coefs = {
             "0deg_long": [117.9, 21.811, 0.5403],
             "15deg_long": [113.8, 22.766, 0.6355],
@@ -29,6 +32,8 @@ class AutoThrustRecorder(Node):
             "30deg_short": [91.475, 21.633, 0.4504],
             "0deg_short": [126.67, 14.089, 0.6691],
             "linear": [0.0, 1.0, 0.0],
+            "tilt-15deg_fold15deg": [110.97, 18.971, 0.5445],
+            "tilt-30deg_fold15deg": [96.732, 16.219, 0.7684],
             "tilt0deg_fold15deg": [124.45, 17.182, 0.6627],
             "tilt8deg_fold15deg": [127.1, 15.612, 0.6906], #127.1x2 + 15.612x + 0.6906
             "tilt15deg_fold15deg": [107.09, 18.039, 0.5855], #107.09x2 + 18.039x + 0.5855
