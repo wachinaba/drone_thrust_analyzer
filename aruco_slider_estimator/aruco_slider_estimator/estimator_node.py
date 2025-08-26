@@ -45,7 +45,7 @@ class ArucoSliderEstimator(Node):
         # self.bridge = CvBridge()
         
         # タイマーの作成（カメラ画像の取得用）
-        self.timer = self.create_timer(0.033, self._camera_timer_callback)  # 30 FPS
+        self.timer = self.create_timer(0.16, self._camera_timer_callback)  # 6 FPS
         
         self.get_logger().info('ArucoSliderEstimator initialized successfully')
     
