@@ -94,7 +94,7 @@ def generate_launch_description():
     force_sensor_node = Node(
         package='force_sensor_pkg',
         executable='zef6a_sensor_driver_continuous',
-        name='force_sensor_driver_continuous',
+        name='force_sensor_node',
         output='screen',
     )
     
