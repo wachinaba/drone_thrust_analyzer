@@ -22,7 +22,7 @@ def find_csv_files(keywords, directory='.', and_keywords=False):
 def extract_parameters(filename):
     """ファイル名から距離、角度、キーワードを抽出する関数。
     キーワードは正規表現で使用されます。"""
-    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(-?\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z_]+)_height=(\d+\.?\d*)\[mm\]_wallspacing=(\d+\.?\d*)\[m\]_.*\.csv"
+    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z_]+)_height=(\d+\.?\d*)\[mm\]_wallspacing=(\d+\.?\d*)\[m\]_.*\.csv"
     print(matcher)
     match = re.match(matcher, filename, re.IGNORECASE)
     if match:
@@ -228,19 +228,19 @@ def main():
         # target_thrustでグループ化して統計量を計算
         grouped_stats = concatenated_group.groupby('target_thrust').agg(
             sample_count=('target_thrust', 'count'),
-            control=('control', 'mean'),
-            force_x=('force_x', 'mean'),
-            force_y=('force_y', 'mean'),
-            force_z=('force_z', 'mean'),
-            torque_x=('torque_x', 'mean'),
-            torque_y=('torque_y', 'mean'),
-            torque_z=('torque_z', 'mean'),
-            variance_force_x=('force_x_partial_variance', 'mean'),
-            variance_force_y=('force_y_partial_variance', 'mean'),
-            variance_force_z=('force_z_partial_variance', 'mean'),
-            variance_torque_x=('torque_x_partial_variance', 'mean'),
-            variance_torque_y=('torque_y_partial_variance', 'mean'),
-            variance_torque_z=('torque_z_partial_variance', 'mean')
+            control=('control', 'median'),
+            force_x=('force_x', 'median'),
+            force_y=('force_y', 'median'),
+            force_z=('force_z', 'median'),
+            torque_x=('torque_x', 'median'),
+            torque_y=('torque_y', 'median'),
+            torque_z=('torque_z', 'median'),
+            variance_force_x=('force_x_partial_variance', 'median'),
+            variance_force_y=('force_y_partial_variance', 'median'),
+            variance_force_z=('force_z_partial_variance', 'median'),
+            variance_torque_x=('torque_x_partial_variance', 'median'),
+            variance_torque_y=('torque_y_partial_variance', 'median'),
+            variance_torque_z=('torque_z_partial_variance', 'median')
         ).reset_index()
 
         # パラメータ情報を追加

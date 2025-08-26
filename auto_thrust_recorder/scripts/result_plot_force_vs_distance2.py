@@ -5,23 +5,6 @@ import numpy as np
 import argparse
 import os
 import japanize_matplotlib
-from matplotlib.colors import LinearSegmentedColormap
-
-def create_custom_colormap():
-    """
-    マイナスが青、中心が黒、プラスが赤になるカスタムカラーマップを作成する関数
-    
-    Returns:
-        custom_cmap: カスタムカラーマップ
-    """
-    # 色の定義（青→黒→赤）
-    colors = ['#FF0000', '#BB7700', '#202020', '#3399EB', '#0000FF']
-    n_bins = 256  # 色の段階数
-    
-    # LinearSegmentedColormapを作成
-    custom_cmap = LinearSegmentedColormap.from_list('custom_blue_black_red', colors, N=n_bins)
-    
-    return custom_cmap
 
 def calculate_weighted_variance(values, weights):
     """
@@ -40,14 +23,14 @@ def calculate_weighted_variance(values, weights):
     
     return weighted_variance
 
-def calculate_normal_distribution_variance(sample_counts, variance_torque_x):
+def calculate_normal_distribution_variance(sample_counts, variance_force_y):
     """
-    各測定が正規分布に従うとして、sample_countとvariance_torque_xを使った
+    各測定が正規分布に従うとして、sample_countとvariance_force_yを使った
     重み付き平均の分散を計算する関数
     
     Args:
         sample_counts: 各測定点のサンプル数
-        variance_torque_x: 各測定点の分散
+        variance_force_y: 各測定点の分散
     
     Returns:
         weighted_mean_variance: 重み付き平均の分散
@@ -58,7 +41,7 @@ def calculate_normal_distribution_variance(sample_counts, variance_torque_x):
     
     # 重み付き平均の分散を計算
     # V(weighted_mean) = Σ(w_i² × σ_i²) / (Σw_i)²
-    weighted_mean_variance = np.sum((sample_counts**2) * variance_torque_x) / (np.sum(sample_counts))**2
+    weighted_mean_variance = np.sum((sample_counts**2) * variance_force_y) / (np.sum(sample_counts))**2
     
     # 有効サンプルサイズを計算
     # neff = (Σw_i)² / Σ(w_i²)
@@ -66,30 +49,30 @@ def calculate_normal_distribution_variance(sample_counts, variance_torque_x):
     
     return weighted_mean_variance, effective_sample_size
 
-def calculate_combined_normal_variance(torque_x_values, variance_torque_x_values):
+def calculate_combined_normal_variance(force_y_values, variance_force_y_values):
     """
     複数の正規分布を合成したときの分散を計算する関数
     N1(μ1, σ1^2), N2(μ2, σ2^2), ..., Ni の正規分布を合成
     
     Args:
-        torque_x_values: 各正規分布の平均値（μ）
-        variance_torque_x_values: 各正規分布の分散（σ^2）
+        force_y_values: 各正規分布の平均値（μ）
+        variance_force_y_values: 各正規分布の分散（σ^2）
     
     Returns:
         combined_variance: 合成された正規分布の分散
     """
-    if len(torque_x_values) == 0:
+    if len(force_y_values) == 0:
         return 0
     
     # 各正規分布の平均を計算
-    mean_of_means = np.mean(torque_x_values)
+    mean_of_means = np.mean(force_y_values)
     
     # 合成分散の計算
     # 1. 各正規分布の分散の平均（測定誤差の分散）
-    mean_variance = np.mean(variance_torque_x_values)
+    mean_variance = np.mean(variance_force_y_values)
     
     # 2. 各正規分布の平均値の分散（グループ間の分散）
-    variance_of_means = np.var(torque_x_values, ddof=1)  # 不偏分散
+    variance_of_means = np.var(force_y_values, ddof=1)  # 不偏分散
     
     # 3. 合成分散 = 測定誤差の分散 + グループ間の分散
     combined_variance = mean_variance + variance_of_means
@@ -121,7 +104,7 @@ def create_heatmap_data(group_df):
         target_thrust_data = group_df[group_df['target_thrust'] == target_thrust]
         
         if len(target_thrust_data) > 0:
-            # 各distance値に対してtorque_xの中央値を計算
+            # 各distance値に対してforce_yの中央値を計算
             distance_torque_pairs = []
             for distance in distance_values:
                 # 特定のtarget_thrustとdistanceの組み合わせのデータを抽出
@@ -130,14 +113,14 @@ def create_heatmap_data(group_df):
                 
                 if len(subset) > 0:
                     # 中央値を計算（平行移動前）
-                    torque_x_median = subset['torque_x'].median()
-                    distance_torque_pairs.append((distance, torque_x_median))
+                    force_y_median = subset['force_y'].median()
+                    distance_torque_pairs.append((distance, force_y_median))
             
             # 距離でソート
             distance_torque_pairs.sort(key=lambda x: x[0])
             
             if len(distance_torque_pairs) >= 3:
-                # 距離とtorque_x値を分離
+                # 距離とforce_y値を分離
                 sorted_distances = [pair[0] for pair in distance_torque_pairs]
                 sorted_torques = [pair[1] for pair in distance_torque_pairs]
                 
@@ -168,7 +151,7 @@ def calculate_derivative(x_values, y_values):
     
     Args:
         x_values: x座標の値（距離）
-        y_values: y座標の値（torque_x）
+        y_values: y座標の値（force_y）
     
     Returns:
         derivative_values: 微分値
@@ -191,32 +174,6 @@ def calculate_derivative(x_values, y_values):
             derivative_values[i] = (y_values[i+1] - y_values[i-1]) / (x_values[i+1] - x_values[i-1])
     
     return derivative_values
-
-def calculate_drone_body_distance(rotor_distance, drone_offset):
-    """
-    ロータと壁の距離からドローン本体と壁の距離を計算する関数
-    
-    Args:
-        rotor_distance: ロータ端と壁の距離 [R]
-        drone_offset: ロータ中心からドローン本体中心までの距離 [m]
-    
-    Returns:
-        drone_body_distance: ドローン本体と壁の距離 [m]
-    """
-    return (rotor_distance + 1.0) * 0.0254 * 3.5 + drone_offset
-
-def calculate_normalized_moment(torque_x, arm_length):
-    """
-    モーメントをアーム長で割ってNormalized Momentを計算する関数
-    
-    Args:
-        torque_x: 壁効果モーメント [Nm]
-        arm_length: ドローン中心からロータ中心までの距離 [m]
-    
-    Returns:
-        normalized_moment: 正規化されたモーメント [N]（力の単位）
-    """
-    return torque_x / arm_length
 
 def apply_moving_average(x_values, y_values, window_size=5):
     """
@@ -352,7 +309,7 @@ def create_derivative_heatmap_data(group_df):
         target_thrust_data = group_df[group_df['target_thrust'] == target_thrust]
         
         if len(target_thrust_data) > 0:
-            # 各distance値に対してtorque_xの中央値を計算
+            # 各distance値に対してforce_yの中央値を計算
             distance_torque_pairs = []
             for distance in distance_values:
                 # 特定のtarget_thrustとdistanceの組み合わせのデータを抽出
@@ -361,14 +318,14 @@ def create_derivative_heatmap_data(group_df):
                 
                 if len(subset) > 0:
                     # 中央値を計算（平行移動前）
-                    torque_x_median = subset['torque_x'].median()
-                    distance_torque_pairs.append((distance, torque_x_median))
+                    force_y_median = subset['force_y'].median()
+                    distance_torque_pairs.append((distance, force_y_median))
             
             # 距離でソート
             distance_torque_pairs.sort(key=lambda x: x[0])
             
             if len(distance_torque_pairs) >= 3:
-                # 距離とtorque_x値を分離
+                # 距離とforce_y値を分離
                 sorted_distances = [pair[0] for pair in distance_torque_pairs]
                 sorted_torques = [pair[1] for pair in distance_torque_pairs]
                 
@@ -399,7 +356,7 @@ def create_derivative_heatmap_data(group_df):
 
 def main():
     # コマンドライン引数の解析
-    parser = argparse.ArgumentParser(description='CSVファイルからtorque_x vs distanceのプロットを作成')
+    parser = argparse.ArgumentParser(description='CSVファイルからforce_y vs distanceのプロットを作成')
     parser.add_argument('csv_file', help='入力CSVファイルのパス')
     parser.add_argument('--output', '-o', help='出力画像ファイルのパス（指定しない場合は表示のみ）')
     parser.add_argument('--dpi', type=int, default=300, help='画像のDPI（デフォルト: 300）')
@@ -408,16 +365,8 @@ def main():
     parser.add_argument('--kernel', choices=['gaussian', 'epanechnikov', 'uniform'], default='gaussian',
                        help='カーネルタイプ（smoothing=kernelの場合、デフォルト: gaussian）')
     parser.add_argument('--bandwidth', type=float, help='カーネルのバンド幅（自動計算の場合は指定不要）')
-    parser.add_argument('--drone-offset', type=float, default=0.0, 
-                       help='ロータからドローン本体中心までの距離 [R]（デフォルト: 0.0）')
-    parser.add_argument('--arm-length', type=float, default=0.0889, 
-                       help='ドローン中心からロータ中心までの距離 [m]（デフォルト: 0.0889）')
     
     args = parser.parse_args()
-
-    print(f"drone offset: {args.drone_offset}")
-    print(f"arm length: {args.arm_length}" )
-
     
     # CSVファイルの存在確認
     if not os.path.exists(args.csv_file):
@@ -434,7 +383,7 @@ def main():
         return 1
     
     # 必要な列の存在確認
-    required_columns = ['torque_x', 'distance', 'tilt_angle', 'wall_spacing', 'variance_torque_x', 'sample_count', 'target_thrust']
+    required_columns = ['force_y', 'distance', 'tilt_angle', 'wall_spacing', 'variance_force_y', 'sample_count', 'target_thrust']
     missing_columns = [col for col in required_columns if col not in df.columns]
     
     if missing_columns:
@@ -443,14 +392,14 @@ def main():
         return 1
     
     # 関連する列を数値型に変換
-    cols_to_numeric = ['torque_x', 'distance', 'tilt_angle', 'wall_spacing', 'variance_torque_x', 'sample_count', 'target_thrust']
+    cols_to_numeric = ['force_y', 'distance', 'tilt_angle', 'wall_spacing', 'variance_force_y', 'sample_count', 'target_thrust']
     
     for col in cols_to_numeric:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
     # NaNを含む行を削除
-    df_clean = df.dropna(subset=['torque_x', 'distance', 'tilt_angle', 'wall_spacing', 'variance_torque_x', 'sample_count', 'target_thrust'])
+    df_clean = df.dropna(subset=['force_y', 'distance', 'tilt_angle', 'wall_spacing', 'variance_force_y', 'sample_count', 'target_thrust'])
     
     if df_clean.empty:
         print("エラー: 有効なデータがありません。")
@@ -477,7 +426,7 @@ def main():
         
         if len(max_distance_data) > 0:
             # 最大distance地点の平均値を計算
-            max_distance_mean = np.average(max_distance_data['torque_x'])
+            max_distance_mean = np.average(max_distance_data['force_y'])
             # 平行移動量を計算（最大distance地点を0にする）
             offset = max_distance_mean
         else:
@@ -491,31 +440,31 @@ def main():
             if len(distance_data) == 0:
                 continue
                 
-            # 平行移動を適用したtorque_x値を計算
-            torque_x_adjusted = distance_data['torque_x'] - offset
+            # 平行移動を適用したforce_y値を計算
+            force_y_adjusted = distance_data['force_y']#  - offset
             
             # 平均を計算（平行移動後）
-            weighted_mean = np.average(torque_x_adjusted)
+            weighted_mean = np.average(force_y_adjusted)
 
-            median = np.median(torque_x_adjusted)
+            median = np.median(force_y_adjusted)
             
             # 統計的な分散を計算（平行移動後）
             # 方法1: 各データポイントの分散を重み付き平均（測定誤差の分散）
-            measurement_variance = np.average(distance_data['variance_torque_x'])
+            measurement_variance = np.average(distance_data['variance_force_y'])
             
-            # 方法2: グループ内のtorque_x値の重み付き分散（グループ間の分散）
-            group_variance = np.average((torque_x_adjusted - weighted_mean) ** 2)
+            # 方法2: グループ内のforce_y値の重み付き分散（グループ間の分散）
+            group_variance = np.average((force_y_adjusted - weighted_mean) ** 2)
             
             # 方法3: 正規分布を仮定した重み付き平均の分散（新しい方法）
             normal_dist_variance, effective_sample_size = calculate_normal_distribution_variance(
                 distance_data['sample_count'].values, 
-                distance_data['variance_torque_x'].values
+                distance_data['variance_force_y'].values
             )
             
             # 方法4: 複数の正規分布を合成した分散（サンプルサイズ無視）
             combined_normal_variance = calculate_combined_normal_variance(
-                torque_x_adjusted.values,
-                distance_data['variance_torque_x'].values
+                force_y_adjusted.values,
+                distance_data['variance_force_y'].values
             )
             
             # 総分散 = 測定誤差の分散 + グループ間の分散
@@ -528,9 +477,9 @@ def main():
                 'tilt_angle': tilt_angle,
                 'wall_spacing': wall_spacing,
                 'distance': distance,
-                'torque_x_mean': weighted_mean,
-                'torque_x_median': median,
-                'torque_x_variance': total_variance,
+                'force_y_mean': weighted_mean,
+                'force_y_median': median,
+                'force_y_variance': total_variance,
                 'measurement_variance': measurement_variance,
                 'group_variance': group_variance,
                 'normal_dist_variance': normal_dist_variance,
@@ -544,70 +493,33 @@ def main():
     results_df = pd.DataFrame(results)
     
     # プロットの作成
-    fig, ax1 = plt.subplots(figsize=(10, 4.5))
+    plt.figure(figsize=(8, 6))
     
-    # 2つ目の横軸を作成（twiny）
-    ax2 = ax1.twiny()
-    
-    # 2つ目の縦軸を作成（twinx）
-    ax3 = ax1.twinx()
-    
-    # 表示するチルト角度を指定
-    target_tilt_angles = [0, 15, 30]
+    # tilt_angleごとに色を割り当て、wall_spacingごとに線の種類を割り当て
+    unique_tilt_angles = sorted(results_df['tilt_angle'].unique())
     unique_wall_spacings = sorted(results_df['wall_spacing'].unique())
     
-    # 実際のデータに存在するチルト角を取得
-    actual_tilt_angles = sorted(results_df['tilt_angle'].unique())
-
-    actual_tilt_angles = [-30, -15, 0, 15, 30]
-    
-    # カスタムカラーマップを作成
-    custom_cmap = create_custom_colormap()
-    
-    # 色のマップを作成（実際のデータに存在する角度に対して）
-    colors = custom_cmap(np.linspace(0, 1.0, len(actual_tilt_angles)))
-    color_map = {angle: colors[i] for i, angle in enumerate(actual_tilt_angles)}
+    # tilt_angleごとに色を割り当て
+    colors = plt.cm.brg(np.linspace(0, 1.0, len(unique_tilt_angles)))
+    color_map = {angle: colors[i] for i, angle in enumerate(unique_tilt_angles)}
     
     # wall_spacingごとに線の種類を割り当て
-    linestyles = ['-', '--']
+    linestyles = ['-', '--', '-.', ':']
     linestyle_map = {spacing: linestyles[i % len(linestyles)] for i, spacing in enumerate(unique_wall_spacings)}
     
-    # マーカーもtilt_angleごとに割り当て（実際のデータに存在する角度に対して）
+    # マーカーもtilt_angleごとに割り当て
     markers = ['o', 's', '^', 'v', 'D', 'p', '*', 'h', 'H', '+']
-    marker_map = {angle: markers[i % len(markers)] for i, angle in enumerate(actual_tilt_angles)}
+    marker_map = {angle: markers[i % len(markers)] for i, angle in enumerate(unique_tilt_angles)}
     
-    # 凡例用の要素を格納するリスト
-    legend_elements = []
-    
-    # 線の種類の凡例要素を追加
-    if len(unique_wall_spacings) > 1:
-        for i, wall_spacing in enumerate(unique_wall_spacings):
-            legend_line = plt.Line2D([], [], color='black', 
-                                    linestyle=linestyles[i], 
-                                    linewidth=2, 
-                                    label=f'Wall spacing: {wall_spacing}m')
-            legend_elements.append(legend_line)
-    
-    # チルト角度の凡例要素を追加（target_tilt_anglesの順序で）
-    for i, tilt_angle in enumerate(target_tilt_angles):
-        if tilt_angle in color_map:  # 実際のデータに存在する角度のみ
-            legend_marker = plt.Line2D([], [], color=color_map[tilt_angle], 
-                                      linestyle='-', 
-                                      marker=marker_map[tilt_angle], 
-                                      markersize=8,
-                                      label=f'Tilt: {tilt_angle}°')
-            legend_elements.append(legend_marker)
-    
-    for tilt_angle in target_tilt_angles:
+    for tilt_angle in unique_tilt_angles:
         for wall_spacing in unique_wall_spacings:
-
             pair_data = results_df[(results_df['tilt_angle'] == tilt_angle) & 
                                   (results_df['wall_spacing'] == wall_spacing)].sort_values('distance')
             
             if len(pair_data) > 0:
                 # 平滑化を適用
                 x_values = pair_data['distance'].values
-                y_values = -pair_data['torque_x_mean'].values
+                y_values = -pair_data['force_y_mean'].values
                 
                 if args.smoothing == 'kernel':
                     # サンプル数を取得
@@ -626,40 +538,25 @@ def main():
                     offset = smoothed_y[max_distance_idx]
                     
                     # 平行移動を適用
-                    final_y = smoothed_y - offset
+                    final_y = smoothed_y#  - offset
                     
-                    # 元のモーメントをプロット（左の縦軸）
-                    line1 = ax1.plot(smoothed_x, final_y, 
-                                   color=color_map[tilt_angle], 
-                                   linestyle=linestyle_map[wall_spacing],
-                                   linewidth=2, alpha=1.0)
+                    # 平滑化された線をプロット
+                    plt.plot(smoothed_x, final_y, 
+                            color=color_map[tilt_angle], 
+                            linestyle=linestyle_map[wall_spacing],
+                            linewidth=2,
+                            label=f'Tilt: {tilt_angle}°, Wall: {wall_spacing}')
                     
-                    # 真の値の位置にマーカーをプロット（元のモーメント）
-                    ax1.scatter(pair_data['distance'], -pair_data['torque_x_mean'] - offset, 
+                    # 真の値の位置にマーカーをプロット
+                    plt.scatter(pair_data['distance'], -pair_data['force_y_mean'], # - offset, 
                                marker=marker_map[tilt_angle], 
                                color=color_map[tilt_angle],
                                s=50, alpha=0.3, zorder=5)
-                    
-                    """
-                    # Normalized Momentを計算してプロット（右の縦軸）
-                    normalized_y = calculate_normalized_moment(final_y, args.arm_length)
-                    line2 = ax3.plot(smoothed_x, normalized_y, 
-                                   color=color_map[tilt_angle], 
-                                   linestyle=linestyle_map[wall_spacing],
-                                   linewidth=2, alpha=0.7)
-                    
-                    # 真の値の位置にマーカーをプロット（Normalized Moment）
-                    normalized_true_y = calculate_normalized_moment(-pair_data['torque_x_mean'] - offset, args.arm_length)
-                    ax3.scatter(pair_data['distance'], normalized_true_y, 
-                               marker=marker_map[tilt_angle], 
-                               color=color_map[tilt_angle],
-                               s=30, alpha=0.5, zorder=5)
-                    """
             
             # エラーバー（標準偏差）を表示
             """
             std_values = np.sqrt(pair_data['combined_normal_variance'])
-            plt.errorbar(pair_data['distance'], -pair_data['torque_x_mean'],
+            plt.errorbar(pair_data['distance'], -pair_data['force_y_mean'],
                         yerr=std_values,
                         fmt='none',
                         color=colors[i],
@@ -668,45 +565,15 @@ def main():
             """
     
     # グラフの設定
-    ax1.set_xlabel('Rotor End-Wall Distance [R]', fontsize=18)
-    ax1.set_ylabel('Wall Effect Moment [Nm]', fontsize=18)
-    ax1.legend(handles=legend_elements, loc='upper right', fontsize=14, ncol=2)
-    ax1.grid(True, linestyle='--', alpha=0.7)
+    plt.xlabel('Distance [R]', fontsize=18)
+    plt.ylabel('Wall Effect Force [N]', fontsize=18)
+    plt.legend(loc='upper right', fontsize=14)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.ylim(-0.15, 0.25) 
     
     # 軸の目盛りラベルのフォントサイズも設定
-    ax1.tick_params(axis='both', which='major', labelsize=18)
-    ax1.tick_params(axis='y')
-    
-    # 2つ目の横軸（ドローン本体と壁の距離）の設定
-    # 現在のx軸の範囲を取得
-    x_min, x_max = ax1.get_xlim()
-    
-    # ドローン本体と壁の距離の範囲を計算
-    drone_body_x_min = calculate_drone_body_distance(x_min, args.drone_offset)
-    drone_body_x_max = calculate_drone_body_distance(x_max, args.drone_offset)
-    
-    # 2つ目の横軸の範囲を設定
-    print(f"x_min: {x_min}, x_max: {x_max}")
-    print(f"drone_body_x_min: {drone_body_x_min}, drone_body_x_max: {drone_body_x_max}")
-
-    ax2.set_xlim(drone_body_x_min, drone_body_x_max)
-    ax2.set_xlabel('Drone Center-Wall Distance [m]', fontsize=18)
-    ax2.tick_params(axis='x', which='major', labelsize=18)
-
-    y_min, y_max = ax1.get_ylim()
-
-    normalized_moment_min = calculate_normalized_moment(y_min, args.arm_length)
-    normalized_moment_max = calculate_normalized_moment(y_max, args.arm_length)
-    print(f"y_min: {y_min}, y_max: {y_max}")
-    print(f"normalized_moment_min: {normalized_moment_min}, normalized_moment_max: {normalized_moment_max}")
-    ax3.set_ylim(normalized_moment_min, normalized_moment_max)
-    ax3.set_ylabel('Normalized Wall Effect [N]', fontsize=18)
-    ax3.tick_params(axis='y', labelsize=18)
-    
-    # 2つ目の横軸の目盛りを設定（適切な間隔で）
-    # drone_body_ticks = np.linspace(drone_body_x_min, drone_body_x_max, 6)
-    # ax2.set_xticks(drone_body_ticks)
-    # ax2.set_xticklabels([f'{tick:.3f}' for tick in drone_body_ticks])
+    plt.xticks(fontsize=18)
+    plt.yticks(fontsize=18)
 
     """    
     # 合成分散の範囲をテキストで表示
@@ -732,8 +599,6 @@ def main():
     else:
         plt.show()
     
-    plt.close(fig)
-    
     # 微分グラフの作成
     print("\n=== 微分グラフの作成 ===")
     
@@ -751,8 +616,8 @@ def main():
             if len(distance_data) == 0:
                 continue
                 
-            # 元のtorque_x値の平均を計算（平行移動前）
-            weighted_mean = np.average(distance_data['torque_x'])
+            # 元のforce_y値の平均を計算（平行移動前）
+            weighted_mean = np.average(distance_data['force_y'])
             
             distance_torque_pairs.append((distance, weighted_mean))
         
@@ -760,7 +625,7 @@ def main():
         distance_torque_pairs.sort(key=lambda x: x[0])
         
         if len(distance_torque_pairs) >= 3:
-            # 距離とtorque_x値を分離
+            # 距離とforce_y値を分離
             sorted_distances = [pair[0] for pair in distance_torque_pairs]
             sorted_torques = [pair[1] for pair in distance_torque_pairs]
             
@@ -798,7 +663,7 @@ def main():
                             'tilt_angle': tilt_angle,
                             'wall_spacing': wall_spacing,
                             'distance': distance,
-                            'torque_x_derivative': derivative
+                            'force_y_derivative': derivative
                         })
     
     # 微分結果をDataFrameに変換
@@ -806,36 +671,9 @@ def main():
     
     if len(derivative_df) > 0:
         # 微分グラフの作成
-        fig_derivative, ax1_derivative = plt.subplots(figsize=(12, 8))
+        plt.figure(figsize=(12, 8))
         
-        # 2つ目の横軸を作成（twiny）
-        ax2_derivative = ax1_derivative.twiny()
-        
-        # 2つ目の縦軸を作成（twinx）
-        ax3_derivative = ax1_derivative.twinx()
-        
-        # 微分グラフ用の凡例要素を格納するリスト
-        derivative_legend_elements = []
-        
-        # 線の種類の凡例要素を追加
-        for i, wall_spacing in enumerate(unique_wall_spacings):
-            legend_line = plt.Line2D([], [], color='black', 
-                                    linestyle=linestyles[i], 
-                                    linewidth=2, 
-                                    label=f'Wall: {wall_spacing}m')
-            derivative_legend_elements.append(legend_line)
-        
-        # チルト角度の凡例要素を追加（target_tilt_anglesの順序で）
-        for i, tilt_angle in enumerate(target_tilt_angles):
-            if tilt_angle in color_map:  # 実際のデータに存在する角度のみ
-                legend_marker = plt.Line2D([], [], color=color_map[tilt_angle], 
-                                          linestyle='-', 
-                                          marker=marker_map[tilt_angle], 
-                                          markersize=8,
-                                          label=f'Tilt: {tilt_angle}°')
-                derivative_legend_elements.append(legend_marker)
-        
-        for tilt_angle in target_tilt_angles:
+        for tilt_angle in unique_tilt_angles:
             for wall_spacing in unique_wall_spacings:
                 pair_data = derivative_df[(derivative_df['tilt_angle'] == tilt_angle) & 
                                         (derivative_df['wall_spacing'] == wall_spacing)].sort_values('distance')
@@ -843,7 +681,7 @@ def main():
                 if len(pair_data) > 0:
                     # 平滑化を適用
                     x_values = pair_data['distance'].values
-                    y_values = pair_data['torque_x_derivative'].values
+                    y_values = pair_data['force_y_derivative'].values
                     
                     if args.smoothing == 'kernel':
                         # サンプル数を取得
@@ -864,62 +702,30 @@ def main():
                         # 平行移動を適用
                         final_y = smoothed_y - offset
                         
-                        # 元の微分値をプロット（左の縦軸）
-                        line1 = ax1_derivative.plot(smoothed_x, final_y, 
-                                       color=color_map[tilt_angle], 
-                                       linestyle=linestyle_map[wall_spacing],
-                                       linewidth=2, alpha=0.7)
+                        # 平滑化された線をプロット
+                        plt.plot(smoothed_x, final_y, 
+                                color=color_map[tilt_angle], 
+                                linestyle=linestyle_map[wall_spacing],
+                                linewidth=2,
+                                label=f'Tilt: {tilt_angle}°, Wall: {wall_spacing}')
                         
-                        # 平滑化されたデータの位置にマーカーをプロット（元の微分値）
-                        ax1_derivative.scatter(smoothed_x, final_y, 
+                        # 真の値の位置にマーカーをプロット（微分グラフでは元データの位置に）
+                        # 微分グラフでは元データの位置にマーカーを配置するのは複雑なので、
+                        # 平滑化されたデータの位置にマーカーを配置
+                        plt.scatter(smoothed_x, final_y, 
                                    marker=marker_map[tilt_angle], 
                                    color=color_map[tilt_angle],
                                    s=50, alpha=0.7, zorder=5)
-                        
-                        # Normalized微分値を計算してプロット（右の縦軸）
-                        normalized_derivative_y = calculate_normalized_moment(final_y, args.arm_length)
-                        line2 = ax3_derivative.plot(smoothed_x, normalized_derivative_y, 
-                                       color=color_map[tilt_angle], 
-                                       linestyle=linestyle_map[wall_spacing],
-                                       linewidth=2, alpha=0.7)
-                        
-                        # 平滑化されたデータの位置にマーカーをプロット（Normalized微分値）
-                        ax3_derivative.scatter(smoothed_x, normalized_derivative_y, 
-                                   marker=marker_map[tilt_angle], 
-                                   color=color_map[tilt_angle],
-                                   s=30, alpha=0.5, zorder=5)
         
         # グラフの設定
-        ax1_derivative.set_xlabel('Rotor-Wall Distance [R]', fontsize=18)
-        ax1_derivative.set_ylabel('Wall Effect Moment Derivative [Nm/R]', fontsize=18, color='blue')
-        ax1_derivative.legend(handles=derivative_legend_elements, loc='upper right', fontsize=14, ncol=2)
-        ax1_derivative.grid(True, linestyle='--', alpha=0.7)
+        plt.xlabel('壁との距離 [R]', fontsize=18)
+        plt.ylabel('壁効果モーメントの微分 [Nm/R]', fontsize=18)
+        plt.legend(loc='upper right', fontsize=14)
+        plt.grid(True, linestyle='--', alpha=0.7)
         
         # 軸の目盛りラベルのフォントサイズも設定
-        ax1_derivative.tick_params(axis='both', which='major', labelsize=18)
-        ax1_derivative.tick_params(axis='y', labelcolor='blue')
-        
-        # 2つ目の縦軸（Normalized微分値）の設定
-        ax3_derivative.set_ylabel('Normalized Wall Effect Derivative [N/R]', fontsize=18, color='red')
-        ax3_derivative.tick_params(axis='y', labelcolor='red', labelsize=18)
-        
-        # 2つ目の横軸（ドローン本体と壁の距離）の設定
-        # 現在のx軸の範囲を取得
-        x_min, x_max = ax1_derivative.get_xlim()
-        
-        # ドローン本体と壁の距離の範囲を計算
-        drone_body_x_min = calculate_drone_body_distance(x_min, args.drone_offset)
-        drone_body_x_max = calculate_drone_body_distance(x_max, args.drone_offset)
-        
-        # 2つ目の横軸の範囲を設定
-        ax2_derivative.set_xlim(drone_body_x_min, drone_body_x_max)
-        ax2_derivative.set_xlabel('Drone Body-Wall Distance [R]', fontsize=18)
-        ax2_derivative.tick_params(axis='x', which='major', labelsize=18)
-        
-        # 2つ目の横軸の目盛りを設定（適切な間隔で）
-        drone_body_ticks = np.linspace(drone_body_x_min, drone_body_x_max, 6)
-        ax2_derivative.set_xticks(drone_body_ticks)
-        ax2_derivative.set_xticklabels([f'{tick:.1f}' for tick in drone_body_ticks])
+        plt.xticks(fontsize=18)
+        plt.yticks(fontsize=18)
         
         # レイアウトの調整
         plt.tight_layout()
@@ -934,7 +740,7 @@ def main():
         else:
             plt.show()
         
-        plt.close(fig_derivative)
+        plt.close()
     
     # ヒートマップの作成
     print("\n=== ヒートマップの作成 ===")
@@ -989,40 +795,37 @@ def main():
         elif n_cols == 1:
             axes = axes.reshape(-1, 1)
         
-            # カスタムカラーマップを作成
-    custom_cmap = create_custom_colormap()
-    
-    # 各グループに対してヒートマップを作成
-    for idx, ((tilt_angle, wall_spacing), group_df) in enumerate(grouped_data):
-        row = idx // n_cols
-        col = idx % n_cols
-        ax = axes[row, col]
-        
-        # ヒートマップデータを作成
-        heatmap_matrix, distance_values, target_thrust_values = create_heatmap_data(group_df)
-        
-        if not np.isnan(heatmap_matrix).all():
-            # ヒートマップをプロット（統一された色のスケールを使用）
-            im = ax.imshow(-heatmap_matrix, cmap=custom_cmap, aspect='auto', 
-                          extent=[min(distance_values), max(distance_values), 
-                                 min(target_thrust_values), max(target_thrust_values)],
-                          origin='lower', vmin=vmin, vmax=vmax)
+        # 各グループに対してヒートマップを作成
+        for idx, ((tilt_angle, wall_spacing), group_df) in enumerate(grouped_data):
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = axes[row, col]
             
-            # カラーバーを追加
-            cbar = plt.colorbar(im, ax=ax)
-            cbar.set_label('壁効果モーメント [Nm]', fontsize=12)
+            # ヒートマップデータを作成
+            heatmap_matrix, distance_values, target_thrust_values = create_heatmap_data(group_df)
             
-            # 軸ラベルを設定
-            ax.set_xlabel('壁との距離 [R]', fontsize=12)
-            ax.set_ylabel('目標推力 [N]', fontsize=12)
-            ax.set_title(f'Tilt: {tilt_angle}°, Wall: {wall_spacing}m', fontsize=14)
-            
-            # グリッドを追加
-            ax.grid(True, alpha=0.3)
-        else:
-            ax.text(0.5, 0.5, 'No Data', ha='center', va='center', 
-                   transform=ax.transAxes, fontsize=14)
-            ax.set_title(f'Tilt: {tilt_angle}°, Wall: {wall_spacing}m', fontsize=14)
+            if not np.isnan(heatmap_matrix).all():
+                # ヒートマップをプロット（統一された色のスケールを使用）
+                im = ax.imshow(-heatmap_matrix, cmap='RdBu_r', aspect='auto', 
+                              extent=[min(distance_values), max(distance_values), 
+                                     min(target_thrust_values), max(target_thrust_values)],
+                              origin='lower', vmin=vmin, vmax=vmax)
+                
+                # カラーバーを追加
+                cbar = plt.colorbar(im, ax=ax)
+                cbar.set_label('壁効果モーメント [Nm]', fontsize=12)
+                
+                # 軸ラベルを設定
+                ax.set_xlabel('壁との距離 [R]', fontsize=12)
+                ax.set_ylabel('目標推力 [N]', fontsize=12)
+                ax.set_title(f'Tilt: {tilt_angle}°, Wall: {wall_spacing}m', fontsize=14)
+                
+                # グリッドを追加
+                ax.grid(True, alpha=0.3)
+            else:
+                ax.text(0.5, 0.5, 'No Data', ha='center', va='center', 
+                       transform=ax.transAxes, fontsize=14)
+                ax.set_title(f'Tilt: {tilt_angle}°, Wall: {wall_spacing}m', fontsize=14)
         
         # 使用されていないsubplotを非表示にする
         for idx in range(n_groups, n_rows * n_cols):
@@ -1090,9 +893,6 @@ def main():
         elif n_cols == 1:
             axes = axes.reshape(-1, 1)
         
-        # 微分ヒートマップ用のカスタムカラーマップを作成
-        derivative_custom_cmap = create_custom_colormap()
-        
         # 各グループに対して微分ヒートマップを作成
         for idx, ((tilt_angle, wall_spacing), group_df) in enumerate(grouped_data):
             row = idx // n_cols
@@ -1104,7 +904,7 @@ def main():
             
             if not np.isnan(derivative_matrix).all():
                 # 微分ヒートマップをプロット（統一された色のスケールを使用）
-                im = ax.imshow(derivative_matrix, cmap=derivative_custom_cmap, aspect='auto', 
+                im = ax.imshow(derivative_matrix, cmap='RdBu_r', aspect='auto', 
                               extent=[min(distance_values), max(distance_values), 
                                      min(target_thrust_values), max(target_thrust_values)],
                               origin='lower', vmin=vmin, vmax=vmax)
@@ -1157,8 +957,8 @@ def main():
     print(f"(Tilt Angle, Wall Distance)のペア数: {len(unique_pairs)}")
     
     print(f"Distanceの範囲: {results_df['distance'].min():.3f} - {results_df['distance'].max():.3f}")
-    print(f"Torque Xの範囲: {results_df['torque_x_mean'].min():.3f} - {results_df['torque_x_mean'].max():.3f}")
-    print(f"総分散の範囲: {results_df['torque_x_variance'].min():.6f} - {results_df['torque_x_variance'].max():.6f}")
+    print(f"Torque Xの範囲: {results_df['force_y_mean'].min():.3f} - {results_df['force_y_mean'].max():.3f}")
+    print(f"総分散の範囲: {results_df['force_y_variance'].min():.6f} - {results_df['force_y_variance'].max():.6f}")
     print(f"測定誤差分散の範囲: {results_df['measurement_variance'].min():.6f} - {results_df['measurement_variance'].max():.6f}")
     print(f"グループ間分散の範囲: {results_df['group_variance'].min():.6f} - {results_df['group_variance'].max():.6f}")
     print(f"正規分布仮定分散の範囲: {results_df['normal_dist_variance'].min():.6f} - {results_df['normal_dist_variance'].max():.6f}")

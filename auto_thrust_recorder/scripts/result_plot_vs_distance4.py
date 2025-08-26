@@ -543,15 +543,6 @@ def main():
     # 結果をDataFrameに変換
     results_df = pd.DataFrame(results)
     
-    # プロットの作成
-    fig, ax1 = plt.subplots(figsize=(10, 4.5))
-    
-    # 2つ目の横軸を作成（twiny）
-    ax2 = ax1.twiny()
-    
-    # 2つ目の縦軸を作成（twinx）
-    ax3 = ax1.twinx()
-    
     # 表示するチルト角度を指定
     target_tilt_angles = [0, 15, 30]
     unique_wall_spacings = sorted(results_df['wall_spacing'].unique())
@@ -568,25 +559,28 @@ def main():
     colors = custom_cmap(np.linspace(0, 1.0, len(actual_tilt_angles)))
     color_map = {angle: colors[i] for i, angle in enumerate(actual_tilt_angles)}
     
-    # wall_spacingごとに線の種類を割り当て
-    linestyles = ['-', '--']
-    linestyle_map = {spacing: linestyles[i % len(linestyles)] for i, spacing in enumerate(unique_wall_spacings)}
-    
     # マーカーもtilt_angleごとに割り当て（実際のデータに存在する角度に対して）
     markers = ['o', 's', '^', 'v', 'D', 'p', '*', 'h', 'H', '+']
     marker_map = {angle: markers[i % len(markers)] for i, angle in enumerate(actual_tilt_angles)}
     
-    # 凡例用の要素を格納するリスト
-    legend_elements = []
+    # サブプロットの行数と列数を計算
+    n_wall_spacings = len(unique_wall_spacings)
+    n_cols = min(3, n_wall_spacings)  # 最大3列
+    n_rows = (n_wall_spacings + n_cols - 1) // n_cols  # 必要な行数を計算
     
-    # 線の種類の凡例要素を追加
-    if len(unique_wall_spacings) > 1:
-        for i, wall_spacing in enumerate(unique_wall_spacings):
-            legend_line = plt.Line2D([], [], color='black', 
-                                    linestyle=linestyles[i], 
-                                    linewidth=2, 
-                                    label=f'Wall spacing: {wall_spacing}m')
-            legend_elements.append(legend_line)
+    # サブプロット用のfigureを作成
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+    
+    # 1次元配列の場合は2次元配列に変換
+    if n_wall_spacings == 1:
+        axes = np.array([axes])
+    elif n_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif n_cols == 1:
+        axes = axes.reshape(-1, 1)
+    
+    # チルト角度の凡例要素を格納するリスト
+    legend_elements = []
     
     # チルト角度の凡例要素を追加（target_tilt_anglesの順序で）
     for i, tilt_angle in enumerate(target_tilt_angles):
@@ -598,9 +592,20 @@ def main():
                                       label=f'Tilt: {tilt_angle}°')
             legend_elements.append(legend_marker)
     
-    for tilt_angle in target_tilt_angles:
-        for wall_spacing in unique_wall_spacings:
-
+    # 各wall spacingごとにサブプロットを作成
+    for wall_idx, wall_spacing in enumerate(unique_wall_spacings):
+        row = wall_idx // n_cols
+        col = wall_idx % n_cols
+        ax = axes[row, col]
+        
+        # 2つ目の横軸を作成（twiny）
+        ax2 = ax.twiny()
+        
+        # 2つ目の縦軸を作成（twinx）
+        ax3 = ax.twinx()
+        
+        # このwall spacingのデータのみを処理
+        for tilt_angle in target_tilt_angles:
             pair_data = results_df[(results_df['tilt_angle'] == tilt_angle) & 
                                   (results_df['wall_spacing'] == wall_spacing)].sort_values('distance')
             
@@ -629,13 +634,13 @@ def main():
                     final_y = smoothed_y - offset
                     
                     # 元のモーメントをプロット（左の縦軸）
-                    line1 = ax1.plot(smoothed_x, final_y, 
+                    line1 = ax.plot(smoothed_x, final_y, 
                                    color=color_map[tilt_angle], 
-                                   linestyle=linestyle_map[wall_spacing],
+                                   linestyle='-',
                                    linewidth=2, alpha=1.0)
                     
                     # 真の値の位置にマーカーをプロット（元のモーメント）
-                    ax1.scatter(pair_data['distance'], -pair_data['torque_x_mean'] - offset, 
+                    ax.scatter(pair_data['distance'], -pair_data['torque_x_mean'] - offset, 
                                marker=marker_map[tilt_angle], 
                                color=color_map[tilt_angle],
                                s=50, alpha=0.3, zorder=5)
@@ -645,7 +650,7 @@ def main():
                     normalized_y = calculate_normalized_moment(final_y, args.arm_length)
                     line2 = ax3.plot(smoothed_x, normalized_y, 
                                    color=color_map[tilt_angle], 
-                                   linestyle=linestyle_map[wall_spacing],
+                                   linestyle='-',
                                    linewidth=2, alpha=0.7)
                     
                     # 真の値の位置にマーカーをプロット（Normalized Moment）
@@ -659,68 +664,55 @@ def main():
             # エラーバー（標準偏差）を表示
             """
             std_values = np.sqrt(pair_data['combined_normal_variance'])
-            plt.errorbar(pair_data['distance'], -pair_data['torque_x_mean'],
+            ax.errorbar(pair_data['distance'], -pair_data['torque_x_mean'],
                         yerr=std_values,
                         fmt='none',
-                        color=colors[i],
+                        color=color_map[tilt_angle],
                         alpha=0.5,
                         capsize=5)
             """
-    
-    # グラフの設定
-    ax1.set_xlabel('Rotor End-Wall Distance [R]', fontsize=18)
-    ax1.set_ylabel('Wall Effect Moment [Nm]', fontsize=18)
-    ax1.legend(handles=legend_elements, loc='upper right', fontsize=14, ncol=2)
-    ax1.grid(True, linestyle='--', alpha=0.7)
-    
-    # 軸の目盛りラベルのフォントサイズも設定
-    ax1.tick_params(axis='both', which='major', labelsize=18)
-    ax1.tick_params(axis='y')
-    
-    # 2つ目の横軸（ドローン本体と壁の距離）の設定
-    # 現在のx軸の範囲を取得
-    x_min, x_max = ax1.get_xlim()
-    
-    # ドローン本体と壁の距離の範囲を計算
-    drone_body_x_min = calculate_drone_body_distance(x_min, args.drone_offset)
-    drone_body_x_max = calculate_drone_body_distance(x_max, args.drone_offset)
-    
-    # 2つ目の横軸の範囲を設定
-    print(f"x_min: {x_min}, x_max: {x_max}")
-    print(f"drone_body_x_min: {drone_body_x_min}, drone_body_x_max: {drone_body_x_max}")
+        
+        # 各サブプロットの設定
+        ax.set_xlabel('Rotor End-Wall Distance [R]', fontsize=14)
+        ax.set_ylabel('Wall Effect Moment [Nm]', fontsize=14)
+        ax.set_title(f'Wall Spacing: {wall_spacing}m', fontsize=16)
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=10, ncol=1)
+        ax.grid(True, linestyle='--', alpha=0.7)
+        
+        # 軸の目盛りラベルのフォントサイズも設定
+        ax.tick_params(axis='both', which='major', labelsize=12)
+        
+        # 2つ目の横軸（ドローン本体と壁の距離）の設定
+        # 現在のx軸の範囲を取得
+        x_min, x_max = ax.get_xlim()
+        
+        # ドローン本体と壁の距離の範囲を計算
+        drone_body_x_min = calculate_drone_body_distance(x_min, args.drone_offset)
+        drone_body_x_max = calculate_drone_body_distance(x_max, args.drone_offset)
+        
+        # 2つ目の横軸の範囲を設定
+        ax2.set_xlim(drone_body_x_min, drone_body_x_max)
+        ax2.set_xlabel('Drone Center-Wall Distance [m]', fontsize=14)
+        ax2.tick_params(axis='x', which='major', labelsize=12)
 
-    ax2.set_xlim(drone_body_x_min, drone_body_x_max)
-    ax2.set_xlabel('Drone Center-Wall Distance [m]', fontsize=18)
-    ax2.tick_params(axis='x', which='major', labelsize=18)
+        y_min, y_max = ax.get_ylim()
 
-    y_min, y_max = ax1.get_ylim()
-
-    normalized_moment_min = calculate_normalized_moment(y_min, args.arm_length)
-    normalized_moment_max = calculate_normalized_moment(y_max, args.arm_length)
-    print(f"y_min: {y_min}, y_max: {y_max}")
-    print(f"normalized_moment_min: {normalized_moment_min}, normalized_moment_max: {normalized_moment_max}")
-    ax3.set_ylim(normalized_moment_min, normalized_moment_max)
-    ax3.set_ylabel('Normalized Wall Effect [N]', fontsize=18)
-    ax3.tick_params(axis='y', labelsize=18)
+        normalized_moment_min = calculate_normalized_moment(y_min, args.arm_length)
+        normalized_moment_max = calculate_normalized_moment(y_max, args.arm_length)
+        ax3.set_ylim(normalized_moment_min, normalized_moment_max)
+        ax3.set_ylabel('Normalized Wall Effect [N]', fontsize=14)
+        ax3.tick_params(axis='y', labelsize=12)
     
-    # 2つ目の横軸の目盛りを設定（適切な間隔で）
-    # drone_body_ticks = np.linspace(drone_body_x_min, drone_body_x_max, 6)
-    # ax2.set_xticks(drone_body_ticks)
-    # ax2.set_xticklabels([f'{tick:.3f}' for tick in drone_body_ticks])
-
-    """    
-    # 合成分散の範囲をテキストで表示
-    combined_variance_min = results_df['combined_normal_variance'].min()
-    combined_variance_max = results_df['combined_normal_variance'].max()
-    combined_variance_text = f'Combined Variance Range:\n{combined_variance_min:.6f} - {combined_variance_max:.6f}'
+    # 使用されていないサブプロットを非表示にする
+    for wall_idx in range(n_wall_spacings, n_rows * n_cols):
+        row = wall_idx // n_cols
+        col = wall_idx % n_cols
+        axes[row, col].set_visible(False)
     
-    # テキストボックスをグラフの左上に配置
-    plt.text(0.02, 0.98, combined_variance_text,
-             transform=plt.gca().transAxes,
-             verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
-             fontsize=18)
-    """
+    # デバッグ情報の表示
+    print(f"Wall spacings: {unique_wall_spacings}")
+    print(f"Number of wall spacings: {n_wall_spacings}")
+    print(f"Subplot layout: {n_rows} rows x {n_cols} columns")
     
     # レイアウトの調整
     plt.tight_layout()
