@@ -16,7 +16,7 @@ seven_segment_reader_node:
     processing_interval: 0.1  # 秒
 
     # DOI領域数（ip_cam_cropping.pyで処理済み画像のDOI数）
-    doi_count: 1
+    doi_count: 4
 
     # ログ設定
     log_level: "INFO"
