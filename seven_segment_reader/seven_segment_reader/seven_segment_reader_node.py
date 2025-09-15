@@ -18,7 +18,7 @@ import time
 
 
 class SevenSegmentReaderNode(Node):
-    """7セグメントディスプレイ読み取りROS2ノード"""
+    """7セグメントディスプレイ読み取りROS2ノード（新しいアーキテクチャ対応）"""
     
     def __init__(self):
         super().__init__('seven_segment_reader_node')
@@ -32,7 +32,7 @@ class SevenSegmentReaderNode(Node):
         self.declare_parameter('iou_threshold', 0.5)
         self.declare_parameter('overlap_threshold', 0.7)
         self.declare_parameter('processing_interval', 0.1)  # 秒
-        self.declare_parameter('doi_regions', '')  # DOI領域の座標リスト（文字列）
+        self.declare_parameter('doi_count', 1)  # DOI領域の数
         self.declare_parameter('log_level', 'INFO')
         self.declare_parameter('log_file_prefix', 'seven_segment_detection')
         
@@ -53,32 +53,10 @@ class SevenSegmentReaderNode(Node):
         self.iou_threshold = float(self.get_parameter('iou_threshold').value)
         self.overlap_threshold = float(self.get_parameter('overlap_threshold').value)
         self.processing_interval = float(self.get_parameter('processing_interval').value)
-        # DOI領域の取得（文字列として取得して解析）
-        try:
-            doi_regions_str = self.get_parameter('doi_regions').value
-            self.get_logger().info(f"DOI領域文字列: {doi_regions_str}")
-            self.doi_regions = []
-            
-            if doi_regions_str and doi_regions_str.strip():
-                # カンマ区切りで分割して整数に変換
-                coords = [int(x.strip()) for x in doi_regions_str.split(',')]
-                
-                # 4要素ずつに分割して2次元配列に変換
-                for i in range(0, len(coords), 4):
-                    if i + 3 < len(coords):
-                        region = [coords[i], coords[i+1], coords[i+2], coords[i+3]]
-                        self.doi_regions.append(region)
-        except Exception as e:
-            self.get_logger().error(f"DOI領域の取得に失敗: {e}")
-            self.doi_regions = []
+        self.doi_count = int(self.get_parameter('doi_count').value)
         
-        # DOI領域の読み込み状況をログ出力
-        self.get_logger().info(f"DOI領域数: {len(self.doi_regions)}")
-        if self.doi_regions:
-            for i, region in enumerate(self.doi_regions):
-                self.get_logger().info(f"領域 {i+1}: {region}")
-        else:
-            self.get_logger().warn("DOI領域が設定されていません")
+        # DOI領域数のログ出力
+        self.get_logger().info(f"DOI領域数: {self.doi_count}")
         
         # Roboflowモデルの初期化
         try:
@@ -107,7 +85,7 @@ class SevenSegmentReaderNode(Node):
         # ログ設定
         self.setup_logging()
         
-        self.get_logger().info("7セグメントディスプレイ読み取りノードが開始されました")
+        self.get_logger().info("7セグメントディスプレイ読み取りノードが開始されました（新しいアーキテクチャ）")
         self.get_logger().info(f"サーバーURL: {self.server_url}")
         self.get_logger().info(f"処理間隔: {self.processing_interval}秒")
         
@@ -194,29 +172,44 @@ class SevenSegmentReaderNode(Node):
         
         return filtered_predictions
     
-    def extract_region(self, frame, region):
-        """指定された領域を抽出"""
-        start_point = region[0]
-        end_point = region[1]
-        x1, y1 = min(start_point[0], end_point[0]), min(start_point[1], end_point[1])
-        x2, y2 = max(start_point[0], end_point[0]), max(start_point[1], end_point[1])
-        return frame[y1:y2, x1:x2]
+    def split_processed_image(self, processed_image):
+        """処理済みの複数DOI画像を個別のDOI画像に分割"""
+        if processed_image is None:
+            return []
+        
+        h, w = processed_image.shape[:2]
+        
+        # 正方形画像のサイズを計算（すべてのDOI画像は同じサイズ）
+        doi_size = h  # 高さ=幅（正方形）
+        
+        # DOI領域数に基づいて分割
+        doi_images = []
+        for i in range(self.doi_count):
+            x_start = i * doi_size
+            x_end = (i + 1) * doi_size
+            
+            if x_end <= w:
+                doi_image = processed_image[:, x_start:x_end]
+                doi_images.append(doi_image)
+            else:
+                self.get_logger().warn(f"DOI領域 {i+1} の分割に失敗: 画像幅が不足")
+                break
+        
+        return doi_images
     
-    def read_seven_segment(self, frame, region, region_index):
-        """指定された領域の7セグメント表示を読み取る"""
+    def read_seven_segment(self, doi_image, region_index):
+        """DOI画像の7セグメント表示を読み取る"""
         if self.model is None:
             return "MODEL_NOT_LOADED"
         
-        # 領域を抽出
-        roi = self.extract_region(frame, region)
-        if roi.size == 0:
-            self.logger.warning(f"領域 {region_index}: ROIサイズが0です")
+        if doi_image is None or doi_image.size == 0:
+            self.logger.warning(f"領域 {region_index}: DOI画像が無効です")
             return "ERROR"
         
         try:
             # 推論実行
             results = self.model.infer(
-                image=roi,
+                image=doi_image,
                 confidence=self.confidence_threshold,
                 iou_threshold=self.iou_threshold
             )
@@ -244,97 +237,12 @@ class SevenSegmentReaderNode(Node):
             result = ''.join(detected_digits) if detected_digits else "NO_DETECTION"
             self.logger.info(f"領域 {region_index}: 検出結果: {result}")
             
-            # 検出結果を画像に描画
-            self.draw_detection_results(frame, region, filtered_predictions, result, region_index)
-            
             return result
             
         except Exception as e:
             self.logger.error(f"領域 {region_index}: 推論エラー: {e}")
             return "ERROR"
     
-    def draw_detection_results(self, frame, region, predictions, result, region_index):
-        """検出結果を画像に描画"""
-        try:
-            # 領域の座標を取得
-            start_point = region[0]
-            end_point = region[1]
-            x1, y1 = min(start_point[0], end_point[0]), min(start_point[1], end_point[1])
-            x2, y2 = max(start_point[0], end_point[0]), max(start_point[1], end_point[1])
-            
-            # 領域の境界線を描画
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            
-            # 領域番号を描画
-            cv2.putText(frame, f"Region {region_index}", (x1, y1 - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # 検出結果を描画
-            cv2.putText(frame, f"Result: {result}", (x1, y2 + 25), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # 各検出結果のバウンディングボックスを描画
-            for prediction in predictions:
-                # バウンディングボックスの座標を計算
-                bbox_x = int(prediction.x - prediction.width / 2)
-                bbox_y = int(prediction.y - prediction.height / 2)
-                bbox_w = int(prediction.width)
-                bbox_h = int(prediction.height)
-                
-                # グローバル座標に変換
-                global_x1 = x1 + bbox_x
-                global_y1 = y1 + bbox_y
-                global_x2 = global_x1 + bbox_w
-                global_y2 = global_y1 + bbox_h
-                
-                # バウンディングボックスを描画
-                cv2.rectangle(frame, (global_x1, global_y1), (global_x2, global_y2), (255, 0, 0), 1)
-                
-                # クラス名と信頼度を描画
-                label = f"{prediction.class_name}: {prediction.confidence:.2f}"
-                cv2.putText(frame, label, (global_x1, global_y1 - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-                
-        except Exception as e:
-            self.logger.error(f"描画エラー: {e}")
-    
-    def draw_frame_info(self, frame, server_time, delay_ms, frame_count):
-        """フレーム情報を画像に描画"""
-        try:
-            # フレーム情報を描画
-            info_text = f"Frame: {frame_count} | Delay: {delay_ms:.1f}ms"
-            cv2.putText(frame, info_text, (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # サーバータイムスタンプを描画
-            timestamp_text = f"Server: {server_time.strftime('%H:%M:%S.%f')[:-3]}"
-            cv2.putText(frame, timestamp_text, (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-        except Exception as e:
-            self.logger.error(f"フレーム情報描画エラー: {e}")
-    
-    def draw_doi_regions(self, frame):
-        """DOI領域を画像に描画"""
-        try:
-            for i, region_coords in enumerate(self.doi_regions):
-                # 座標を取得
-                x1, y1, x2, y2 = region_coords
-                
-                # DOI領域の境界線を描画（緑色）
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                
-                # 領域番号を描画
-                cv2.putText(frame, f"DOI Region {i+1}", (x1, y1 - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                
-                # 座標情報を描画
-                coord_text = f"({x1},{y1})-({x2},{y2})"
-                cv2.putText(frame, coord_text, (x1, y2 + 20), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                
-        except Exception as e:
-            self.logger.error(f"DOI領域描画エラー: {e}")
     
     def format_seven_segment_number(self, digit_string):
         """7セグメント数字を適切な形式に変換（小数点を挿入）"""
@@ -369,8 +277,8 @@ class SevenSegmentReaderNode(Node):
             return
         
         # 画像デコード
-        frame = self.decode_image_from_base64(data["image"])
-        if frame is None:
+        processed_frame = self.decode_image_from_base64(data["image"])
+        if processed_frame is None:
             return
         
         self.frame_count += 1
@@ -387,30 +295,25 @@ class SevenSegmentReaderNode(Node):
         
         delay_ms = (current_time - server_time).total_seconds() * 1000
         
-        # DOI領域が設定されていない場合はスキップ
-        if not self.doi_regions:
-            self.get_logger().warn("DOI領域が設定されていません。パラメータで設定してください。")
+        # DOI領域数が設定されていない場合はスキップ
+        if self.doi_count <= 0:
+            self.get_logger().warn("DOI領域数が設定されていません。パラメータで設定してください。")
             return
         
-        # 表示用フレームのコピーを作成
-        display_frame = frame.copy()
+        # 処理済み画像を個別のDOI画像に分割
+        doi_images = self.split_processed_image(processed_frame)
         
-        # フレーム情報を描画
-        self.draw_frame_info(display_frame, server_time, delay_ms, self.frame_count)
+        if len(doi_images) != self.doi_count:
+            self.get_logger().warn(f"DOI画像の分割に失敗: 期待値={self.doi_count}, 実際={len(doi_images)}")
+            return
         
-        # DOI領域を描画
-        self.draw_doi_regions(display_frame)
-        
-        # 各領域の7セグメント表示を読み取り
+        # 各DOI画像の7セグメント表示を読み取り
         detection_results = []
         numeric_values = []
         
-        for i, region_coords in enumerate(self.doi_regions):
-            # 座標をタプルに変換
-            region = [(region_coords[0], region_coords[1]), (region_coords[2], region_coords[3])]
-            
+        for i, doi_image in enumerate(doi_images):
             # 7セグメント読み取り
-            digit = self.read_seven_segment(frame, region, i+1)
+            digit = self.read_seven_segment(doi_image, i+1)
             formatted_digit = self.format_seven_segment_number(digit)
             detection_results.append(formatted_digit)
             
@@ -423,12 +326,9 @@ class SevenSegmentReaderNode(Node):
                     numeric_values.append(float('nan'))
             except ValueError:
                 numeric_values.append(float('nan'))
-            
-            # 検出結果をフレームに描画（新しい描画システムを使用）
-            # self.draw_detection_on_frame(display_frame, region, i+1, formatted_digit)
         
-        # 画像を表示
-        cv2.imshow('7-Segment Detection', display_frame)
+        # 画像を表示（デバッグ用）
+        cv2.imshow('Processed DOI Images', processed_frame)
         cv2.waitKey(1)
         
         # ROSメッセージのパブリッシュ
@@ -439,7 +339,8 @@ class SevenSegmentReaderNode(Node):
             'frame_count': self.frame_count,
             'server_timestamp': data['timestamp'],
             'client_timestamp': current_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-            'delay_ms': delay_ms
+            'delay_ms': delay_ms,
+            'doi_count': self.doi_count
         })
         self.detection_pub.publish(detection_msg)
         

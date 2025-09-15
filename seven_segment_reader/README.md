@@ -10,6 +10,18 @@
 - ROS2トピックでの結果パブリッシュ
 - 遅延補正機能
 
+## アーキテクチャ
+
+```
+カメラ → ip_cam_cropping.py → DOIクロッピング → 回転 → 後加工 → 複数画像送信 → seven_segment_reader_node.py → AI判定
+```
+
+**アーキテクチャの利点:**
+- ネットワーク帯域の大幅削減（全画像 → 処理済みDOI画像のみ）
+- 処理効率の向上（事前クロッピング・回転・後加工）
+- AI判定精度の向上（正方形画像、適切なサイズ）
+- 複数DOIの同時処理
+
 ## 前提条件
 
 - ROS2 Humble
@@ -36,24 +48,36 @@ source install/setup.bash
 
 ## 使用方法
 
-### 1. IPカメラサーバーの起動
+### 1. DOI設定の作成
 
-Windows側でIPカメラサーバーを起動：
+初回起動時またはDOI領域を変更する場合：
 
 ```bash
-python webcam_ip.py --host 127.0.0.1 --port 5000
+cd seven_segment_reader
+source venv/bin/activate
+python scripts/ip_cam_cropping.py --create-config
 ```
 
-### 2. ROS2ノードの起動
+### 2. IPカメラクロッピングサーバーの起動
 
-#### 方法1: 起動スクリプトを使用
+**重要**: WSL2ではIPカメラサーバーを手動で起動する必要があります。
+
+```bash
+cd seven_segment_reader
+source venv/bin/activate
+python scripts/ip_cam_cropping.py
+```
+
+### 3. ROS2ノードの起動
+
+別のターミナルでROS2ノードを起動：
 
 ```bash
 cd seven_segment_reader
 ./run_node.sh
 ```
 
-#### 方法2: 手動でlaunchファイルを実行
+または手動でlaunchファイルを実行：
 
 ```bash
 # 仮想環境をアクティベート
@@ -63,63 +87,56 @@ source venv/bin/activate
 source /opt/ros/humble/setup.bash
 source ../../../install/setup.bash
 
-# ノードを起動
-ros2 launch seven_segment_reader seven_segment_reader.launch.py \
-  server_url:=http://127.0.0.1:5000 \
-  processing_interval:=0.1
+# システムを起動
+ros2 launch seven_segment_reader seven_segment_reader.launch.py
 ```
 
-### 3. パラメータの設定
+### 4. パラメータの設定
 
 launchファイルで以下のパラメータを設定できます：
 
-- `server_url`: IPカメラサーバーのURL（デフォルト: http://127.0.0.1:5000）
+- `server_url`: IPカメラクロッピングサーバーのURL（デフォルト: http://127.0.0.1:5000）
 - `model_name`: Roboflowモデル名（デフォルト: 7-segment-display-gxhnj）
 - `model_version`: Roboflowモデルバージョン（デフォルト: 2）
+- `api_key`: Roboflow APIキー
 - `confidence_threshold`: 信頼度閾値（デフォルト: 0.5）
 - `iou_threshold`: IoU閾値（デフォルト: 0.5）
 - `overlap_threshold`: 重複検出の閾値（デフォルト: 0.7）
 - `processing_interval`: 処理間隔（秒）（デフォルト: 0.1）
+- `doi_count`: DOI領域数（デフォルト: 1）
 
-### 4. DOI領域の設定
+## DOI設定ファイル
 
-#### 方法1: DOI領域選択ツールを使用（推奨）
+`config/doi_config.json`でDOI領域を設定します：
 
-```bash
-cd seven_segment_reader
-./select_regions.sh
+```json
+{
+  "doi_regions": [
+    {
+      "name": "region_1",
+      "top_left": [237, 25],
+      "bottom_right": [544, 342],
+      "rotation_mode": "auto",
+      "rotation_angle": 0,
+      "output_size": 224
+    }
+  ],
+  "server_settings": {
+    "host": "127.0.0.1",
+    "port": 5000
+  }
+}
 ```
 
-または
+### 回転ルール
 
-```bash
-# 仮想環境をアクティベート
-source venv/bin/activate
-
-# DOI領域を選択
-python scripts/select_doi_regions.py
-
-# 既存の設定を読み込んで編集
-python scripts/select_doi_regions.py --load-existing
-
-# 別のサーバーを使用
-python scripts/select_doi_regions.py --server-url http://192.168.1.100:5000
-```
-
-#### 方法2: 手動で設定ファイルを編集
-
-`config/detector_params.yaml`でDOI領域を設定：
-
-```yaml
-doi_regions:
-  - [100, 100, 300, 200]  # 領域1: (100,100)から(300,200)
-  - [400, 100, 600, 200]  # 領域2: (400,100)から(600,200)
-  # 必要に応じて追加の領域を設定
-```
+- `top_left`が左上、`bottom_right`が右下: 正常、回転なし（0度）
+- `top_left`が右下、`bottom_right`が左上: 180度回転
+- `top_left`が左下、`bottom_right`が右上: 90度回転
+- `top_left`が右上、`bottom_right`が左下: 270度回転
 
 ## パブリッシュされるトピック
 
-- `/seven_segment/image` (sensor_msgs/Image): 検出結果が描画された画像
 - `/seven_segment/detection` (std_msgs/String): 検出結果のJSON文字列
 - `/seven_segment/values` (std_msgs/Float64MultiArray): 数値化された検出結果
 - `/seven_segment/timestamp` (std_msgs/String): サーバータイムスタンプ
@@ -134,7 +151,8 @@ doi_regions:
   "frame_count": 1234,
   "server_timestamp": "2024-01-01 12:00:00:123456",
   "client_timestamp": "2024-01-01 12:00:00:123",
-  "delay_ms": 5.2
+  "delay_ms": 5.2,
+  "doi_count": 2
 }
 ```
 
@@ -144,14 +162,20 @@ doi_regions:
 
 - インターネット接続を確認
 - モデル名とバージョンが正しいか確認
+- APIキーが正しく設定されているか確認
 
 ### 2. 画像が取得できない
 
-- IPカメラサーバーが起動しているか確認
+- IPカメラクロッピングサーバーが起動しているか確認
 - サーバーURLが正しいか確認
 - ファイアウォール設定を確認
 
-### 3. 検出精度が低い
+### 3. DOI設定エラー
+
+- `config/doi_config.json`が正しく作成されているか確認
+- DOI領域数と`doi_count`パラメータが一致しているか確認
+
+### 4. 検出精度が低い
 
 - 信頼度閾値を調整
 - DOI領域の設定を確認
@@ -164,20 +188,19 @@ seven_segment_reader/
 ├── package.xml
 ├── setup.py
 ├── requirements.txt
-├── run_node.sh
-├── select_regions.sh
+├── run_node.sh                    # 起動スクリプト
 ├── seven_segment_reader/
 │   ├── __init__.py
 │   └── seven_segment_reader_node.py
 ├── launch/
-│   └── seven_segment_reader.launch.py
+│   └── seven_segment_reader.launch.py  # launchファイル
 ├── config/
-│   └── detector_params.yaml
+│   ├── detector_params.yaml
+│   └── doi_config.json           # DOI設定
 ├── scripts/
-│   ├── webcam_ip.py
+│   ├── ip_cam_cropping.py        # IPカメラクロッピングサーバー
 │   ├── webcam_client.py
-│   ├── video_infer.py
-│   └── select_doi_regions.py
+│   └── video_infer.py
 └── venv/
     └── (仮想環境)
 ```
