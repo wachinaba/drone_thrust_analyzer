@@ -3,6 +3,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import WrenchStamped
 from std_srvs.srv import Trigger
+from std_msgs.msg import Float64MultiArray
 import numpy as np
 import datetime
 
@@ -13,13 +14,15 @@ from auto_thrust_recorder.logger.raw_logger import RawLogger
 from auto_thrust_recorder.exporter.csv_exporter import CSVExporter
 from auto_thrust_recorder.px4_bridge.actuator import ActuatorController
 from auto_thrust_recorder.sensor_bridge.force_sensor import ForceSensor
+from auto_thrust_recorder.sensor_bridge.seven_segment_sensor import FlowSensor
 from auto_thrust_recorder.plotter.average_plotter import AveragePlotter
 
 class AutoThrustRecorder(Node):
-    def __init__(self, force_sensor: ForceSensor, actuator_controller: ActuatorController):
+    def __init__(self, force_sensor: ForceSensor, actuator_controller: ActuatorController, flow_sensor: FlowSensor = None):
         super().__init__("auto_thrust_recorder")
         self.force_sensor = force_sensor
         self.actuator_controller = actuator_controller
+        self.flow_sensor = flow_sensor
 
         # -15deg_fold15deg: y = 110.97x2 + 18.971x + 0.5445
         # -30deg_fold15deg: y = 96.732x2 + 16.219x + 0.7684
@@ -75,6 +78,9 @@ class AutoThrustRecorder(Node):
 
         self.autoexit = self.declare_parameter("autoexit", True).get_parameter_value().bool_value
 
+        # 7セグメントディスプレイ関連のパラメータ（後方互換性のため残す）
+        self.enable_seven_segment = self.declare_parameter("enable_seven_segment", True).get_parameter_value().bool_value
+
         self.mode = self.declare_parameter("mode", "linear").get_parameter_value().string_value
         if self.mode not in ["polynomial", "linear"]:
             self.get_logger().error(f"Invalid mode: {self.mode}")
@@ -99,6 +105,11 @@ class AutoThrustRecorder(Node):
         self.get_logger().info(f"Enable breakpoint: {self.enable_breakpoint}")
         self.get_logger().info(f"Sensor reversed: {self.sensor_reversed}")
         self.get_logger().info(f"Auto exit: {self.autoexit}")
+        self.get_logger().info(f"Enable seven segment: {self.enable_seven_segment}")
+        if self.flow_sensor:
+            self.get_logger().info("フローセンサーが有効です")
+        else:
+            self.get_logger().info("フローセンサーは無効です")
 
         self.initialize_logger()
         self.start_recording()
@@ -223,6 +234,10 @@ class AutoThrustRecorder(Node):
         self.actuator_controller.set_target_control(self.scheduler.get_current_control())
 
         self.force_sensor.set_on_sensor_update(self.sensor_update_callback)
+        
+        # フローセンサーのコールバックを設定
+        if self.flow_sensor:
+            self.flow_sensor.set_on_sensor_update(self.flow_sensor_update_callback)
     
     def change_thrust_callback(self):
         self.average_logger.next()
@@ -236,6 +251,10 @@ class AutoThrustRecorder(Node):
         self.average_logger.next()
         self.repetition_average_logger.next()
         self.force_sensor.set_on_sensor_update(None)
+        
+        # フローセンサーのコールバックを停止
+        if self.flow_sensor:
+            self.flow_sensor.set_on_sensor_update(None)
 
         self.get_logger().info("Complete recording...")
         try:
@@ -373,6 +392,10 @@ class AutoThrustRecorder(Node):
         self.get_logger().info("Resuming complete.")
         return
     
+    def flow_sensor_update_callback(self, data, timestamp, valid_count):
+        """フローセンサーのデータ更新コールバック"""
+        self.get_logger().debug(f"フローセンサーデータ更新: {valid_count}個の有効値")
+    
     def sensor_update_callback(self, msg: WrenchStamped):
         if not self.scheduler.ready_to_record() or self.actuator_controller.is_moving_control():
             return
@@ -395,6 +418,18 @@ class AutoThrustRecorder(Node):
             "torque_y": msg.wrench.torque.y,
             "torque_z": msg.wrench.torque.z,
         }
+        
+        # フローセンサーのデータを追加
+        if self.flow_sensor:
+            wind_speed_data = self.flow_sensor.get_wind_speed_data()
+            row.update(wind_speed_data)
+        else:
+            # フローセンサーが無効またはデータがない場合はNaNで埋める
+            max_elements = self.declare_parameter("max_elements", 4).get_parameter_value().integer_value
+            for i in range(max_elements):
+                row[f"seven_segment_value_{i}"] = float('nan')
+            row["seven_segment_count"] = 0
+            row["seven_segment_timestamp"] = float('nan')
         if self.sensor_reversed:
             row["force_x"] = -row["force_x"]
             row["force_y"] = -row["force_y"]
@@ -421,13 +456,15 @@ def main():
     executor = MultiThreadedExecutor(num_threads=3)
 
     actuator_controller = ActuatorController()
-    force_sensor = ForceSensor() 
+    force_sensor = ForceSensor()
+    flow_sensor = FlowSensor()
     
-    auto_thrust_recorder = AutoThrustRecorder(force_sensor, actuator_controller)
+    auto_thrust_recorder = AutoThrustRecorder(force_sensor, actuator_controller, flow_sensor)
 
     executor.add_node(auto_thrust_recorder)
     executor.add_node(actuator_controller)
     executor.add_node(force_sensor)
+    executor.add_node(flow_sensor)
 
     try:
         executor.spin()
@@ -440,6 +477,7 @@ def main():
 
         actuator_controller.destroy_node()
         force_sensor.destroy_node()
+        flow_sensor.destroy_node()
         auto_thrust_recorder.destroy_node()
 
         rclpy.try_shutdown()
