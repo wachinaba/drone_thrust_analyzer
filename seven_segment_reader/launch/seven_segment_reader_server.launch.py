@@ -14,10 +14,14 @@ def generate_launch_description():
     
     # 設定ファイルのパス
     config_file = os.path.join(pkg_share, 'config', 'detector_params_server.yaml')
+    secrets_file = os.path.join(pkg_share, 'config', 'secrets_server.yaml')
     
     # パラメータファイルの存在確認
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"設定ファイルが見つかりません: {config_file}")
+    
+    if not os.path.exists(secrets_file):
+        raise FileNotFoundError(f"シークレットファイルが見つかりません: {secrets_file}")
     
     return LaunchDescription([
         # 7セグメントディスプレイ読み取りノード（Inference Server版）
@@ -26,7 +30,7 @@ def generate_launch_description():
             executable='seven_segment_reader_server_node',
             name='seven_segment_reader_server_node',
             output='screen',
-            parameters=[config_file],
+            parameters=[config_file, secrets_file],
             remappings=[
                 ('seven_segment_detection', '/seven_segment/detection'),
                 ('seven_segment_values', '/seven_segment/values'),
