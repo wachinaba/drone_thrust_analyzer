@@ -39,6 +39,8 @@ class SevenSegmentReaderServerNode(Node):
         self.declare_parameter('log_file_prefix', 'seven_segment_detection')
         self.declare_parameter('use_gpu', True)  # GPU使用フラグ
         self.declare_parameter('gpu_device_id', 0)  # GPUデバイスID
+        self.declare_parameter('show_debug_window', True)  # デバッグウィンドウ表示
+        self.declare_parameter('show_bounding_boxes', True)  # バウンディングボックス表示
         
         # パラメータの取得（型変換を明示的に実行）
         self.server_url = self.get_parameter('server_url').value
@@ -61,12 +63,15 @@ class SevenSegmentReaderServerNode(Node):
         self.doi_count = int(self.get_parameter('doi_count').value)
         self.use_gpu = bool(self.get_parameter('use_gpu').value)
         self.gpu_device_id = int(self.get_parameter('gpu_device_id').value)
+        self.show_debug_window = bool(self.get_parameter('show_debug_window').value)
+        self.show_bounding_boxes = bool(self.get_parameter('show_bounding_boxes').value)
         
         # GPU設定の確認とログ出力
         self.device_info = self.setup_device()
-        self.get_logger().info(f"DOI領域数: {self.doi_count}")
-        self.get_logger().info(f"GPU設定: {self.device_info}")
-        self.get_logger().info(f"Inference Server URL: {self.inference_server_url}")
+        self.get_logger().info(f"DOI領域数: {self.doi_count}, GPU: {self.device_info['gpu_available']}, Server: {self.inference_server_url}")
+        
+        # APIキーの検証
+        self.validate_api_key()
         
         # Inference Serverの接続確認
         self.check_inference_server()
@@ -132,12 +137,26 @@ class SevenSegmentReaderServerNode(Node):
         
         return device_info
     
+    def validate_api_key(self):
+        """APIキーの検証"""
+        if not self.api_key or self.api_key.strip() == "":
+            self.get_logger().error("APIキーが設定されていません。config/detector_params_server.yamlでapi_keyを設定してください。")
+            return False
+        
+        # APIキーの形式をチェック（RoboflowのAPIキーは通常24文字）
+        if len(self.api_key) < 10:
+            self.get_logger().warn(f"APIキーの長さが短すぎます: {len(self.api_key)}文字")
+        
+        self.get_logger().info(f"APIキー設定済み: {self.api_key[:8]}...")
+        return True
+    
     def check_inference_server(self):
         """Inference Serverの接続確認"""
         try:
+            # ヘルスチェック
             response = requests.get(f"{self.inference_server_url}/health", timeout=5.0)
             if response.status_code == 200:
-                self.get_logger().info("Inference Serverに接続しました")
+                self.get_logger().info("Inference Server接続OK")
                 return True
             else:
                 self.get_logger().error(f"Inference Serverの応答が異常です: {response.status_code}")
@@ -219,15 +238,38 @@ class SevenSegmentReaderServerNode(Node):
         if len(predictions) <= 1:
             return predictions
         
-        sorted_predictions = sorted(predictions, key=lambda x: x['confidence'], reverse=True)
+        # 予測結果の形式を確認してソート
+        def get_confidence(pred):
+            if isinstance(pred, dict):
+                return pred.get('confidence', 0) or pred.get('score', 0)
+            return 0
+        
+        sorted_predictions = sorted(predictions, key=get_confidence, reverse=True)
         filtered_predictions = []
         
         for i, pred1 in enumerate(sorted_predictions):
+            if not isinstance(pred1, dict):
+                continue
+                
             should_keep = True
             
+            # バウンディングボックスの座標を取得
+            x1 = pred1.get('x', 0) or pred1.get('x_center', 0)
+            y1 = pred1.get('y', 0) or pred1.get('y_center', 0)
+            w1 = pred1.get('width', 0) or pred1.get('w', 0)
+            h1 = pred1.get('height', 0) or pred1.get('h', 0)
+            
             for pred2 in filtered_predictions:
-                box1 = (pred1['x'] - pred1['width']/2, pred1['y'] - pred1['height']/2, pred1['width'], pred1['height'])
-                box2 = (pred2['x'] - pred2['width']/2, pred2['y'] - pred2['height']/2, pred2['width'], pred2['height'])
+                if not isinstance(pred2, dict):
+                    continue
+                    
+                x2 = pred2.get('x', 0) or pred2.get('x_center', 0)
+                y2 = pred2.get('y', 0) or pred2.get('y_center', 0)
+                w2 = pred2.get('width', 0) or pred2.get('w', 0)
+                h2 = pred2.get('height', 0) or pred2.get('h', 0)
+                
+                box1 = (x1 - w1/2, y1 - h1/2, w1, h1)
+                box2 = (x2 - w2/2, y2 - h2/2, w2, h2)
                 
                 iou = self.calculate_iou(box1, box2)
                 
@@ -277,13 +319,15 @@ class SevenSegmentReaderServerNode(Node):
             if img_base64 is None:
                 return "ERROR"
             
-            # Inference Serverにリクエストを送信
+            # Inference Serverにリクエストを送信（V2 Route）
             payload = {
                 "model_id": f"{self.model_name}/{self.model_version}",
-                "image": {
-                    "type": "base64",
-                    "value": img_base64
-                },
+                "image": [
+                    {
+                        "type": "base64",
+                        "value": img_base64
+                    }
+                ],
                 "confidence": self.confidence_threshold,
                 "iou_threshold": self.iou_threshold
             }
@@ -291,20 +335,66 @@ class SevenSegmentReaderServerNode(Node):
             if self.api_key:
                 payload["api_key"] = self.api_key
             
+            # V2 Routeを使用（object_detectionタスク）
+            endpoint = f"{self.inference_server_url}/infer/object_detection"
+            headers = {"Content-Type": "application/json"}
+            
             response = requests.post(
-                f"{self.inference_server_url}/infer/{self.model_name}/{self.model_version}",
+                endpoint,
                 json=payload,
+                headers=headers,
                 timeout=10.0
             )
             
+            # V2 Routeが失敗した場合はV1 Routeを試行
+            if response.status_code != 200:
+                
+                # V1 Route用のペイロード
+                v1_payload = {
+                    "api_key": self.api_key,
+                    "confidence": self.confidence_threshold,
+                    "overlap": self.iou_threshold
+                }
+                
+                # V1 Route
+                v1_endpoint = f"{self.inference_server_url}/{self.model_name}/{self.model_version}"
+                
+                response = requests.post(
+                    v1_endpoint,
+                    json=img_base64,
+                    headers={"Content-Type": "application/json"},
+                    params=v1_payload,
+                    timeout=10.0
+                )
+            
             if response.status_code != 200:
                 self.logger.error(f"領域 {region_index}: Inference Serverエラー: {response.status_code}")
+                self.logger.error(f"レスポンス内容: {response.text}")
+                
+                # APIキーエラーの場合の特別な処理
+                if response.status_code == 401:
+                    self.logger.error("APIキーが無効です。RoboflowのAPIキーを確認してください。")
+                    self.logger.error("https://docs.roboflow.com/api-reference/authentication#retrieve-an-api-key")
+                
                 return "ERROR"
             
             result = response.json()
             
-            # 予測結果を処理
-            predictions = result.get('predictions', [])
+            # 予測結果を処理（レスポンス形式に応じて処理）
+            predictions = []
+            if isinstance(result, dict):
+                # V2 Routeの場合
+                predictions = result.get('predictions', [])
+            elif isinstance(result, list):
+                # リストの場合、最初の要素からpredictionsを取得
+                if len(result) > 0 and isinstance(result[0], dict):
+                    predictions = result[0].get('predictions', [])
+                else:
+                    # 直接予測結果のリストの場合
+                    predictions = result
+            else:
+                self.logger.error(f"予期しないレスポンス形式: {type(result)}")
+                return "ERROR"
             
             # 重複するバウンディングボックスをフィルタリング
             filtered_predictions = self.filter_overlapping_predictions(predictions)
@@ -312,7 +402,13 @@ class SevenSegmentReaderServerNode(Node):
             # 検出された数字を取得（小数点は除外）
             detected_digits = []
             for prediction in filtered_predictions:
-                class_name = prediction.get('class', '')
+                # 予測結果の形式を確認
+                if isinstance(prediction, dict):
+                    class_name = prediction.get('class', '') or prediction.get('class_name', '')
+                else:
+                    self.logger.warn(f"予期しない予測結果形式: {type(prediction)}")
+                    continue
+                
                 if class_name.lower() in ['dot', 'decimal', 'point', '.']:
                     continue
                 detected_digits.append(class_name)
@@ -321,21 +417,29 @@ class SevenSegmentReaderServerNode(Node):
             if len(detected_digits) > 1:
                 predictions_with_x = []
                 for prediction in filtered_predictions:
-                    class_name = prediction.get('class', '')
-                    if class_name.lower() in ['dot', 'decimal', 'point', '.']:
-                        continue
-                    predictions_with_x.append((prediction.get('x', 0), class_name))
+                    if isinstance(prediction, dict):
+                        class_name = prediction.get('class', '') or prediction.get('class_name', '')
+                        if class_name.lower() in ['dot', 'decimal', 'point', '.']:
+                            continue
+                        x_coord = prediction.get('x', 0) or prediction.get('x_center', 0)
+                        predictions_with_x.append((x_coord, class_name))
                 predictions_with_x.sort(key=lambda x: x[0])
                 detected_digits = [digit for _, digit in predictions_with_x]
             
             result_str = ''.join(detected_digits) if detected_digits else "NO_DETECTION"
-            self.logger.info(f"領域 {region_index}: 検出結果: {result_str}")
             
-            return result_str
+            # デバッグ表示用の情報を返す
+            debug_info = {
+                'result': result_str,
+                'predictions': filtered_predictions,
+                'detected_digits': detected_digits
+            }
+            
+            return debug_info
             
         except Exception as e:
             self.logger.error(f"領域 {region_index}: 推論エラー: {e}")
-            return "ERROR"
+            return {'result': 'ERROR', 'predictions': [], 'detected_digits': []}
     
     def format_seven_segment_number(self, digit_string):
         """7セグメント数字を適切な形式に変換（小数点を挿入）"""
@@ -359,6 +463,47 @@ class SevenSegmentReaderServerNode(Node):
             formatted = digit_string
         
         return formatted
+    
+    def draw_bounding_boxes(self, image, predictions, region_index):
+        """バウンディングボックスと検出結果を描画"""
+        if not self.show_bounding_boxes or not predictions:
+            return image
+        
+        # 色の設定（BGR形式）
+        colors = [
+            (0, 255, 0),    # 緑
+            (255, 0, 0),    # 青
+            (0, 0, 255),    # 赤
+            (255, 255, 0),  # シアン
+            (255, 0, 255),  # マゼンタ
+            (0, 255, 255),  # イエロー
+        ]
+        
+        for i, prediction in enumerate(predictions):
+            if not isinstance(prediction, dict):
+                continue
+            
+            # バウンディングボックスの座標を取得
+            x = int(prediction.get('x', 0) or prediction.get('x_center', 0))
+            y = int(prediction.get('y', 0) or prediction.get('y_center', 0))
+            w = int(prediction.get('width', 0) or prediction.get('w', 0))
+            h = int(prediction.get('height', 0) or prediction.get('h', 0))
+            confidence = prediction.get('confidence', 0) or prediction.get('score', 0)
+            class_name = prediction.get('class', '') or prediction.get('class_name', '')
+            
+            # バウンディングボックスを描画
+            color = colors[i % len(colors)]
+            cv2.rectangle(image, (x - w//2, y - h//2), (x + w//2, y + h//2), color, 2)
+            
+            # ラベルを描画
+            label = f"{class_name}: {confidence:.2f}"
+            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+            cv2.rectangle(image, (x - w//2, y - h//2 - label_size[1] - 5), 
+                         (x - w//2 + label_size[0], y - h//2), color, -1)
+            cv2.putText(image, label, (x - w//2, y - h//2 - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        return image
     
     def process_frame(self):
         """フレーム処理のメイン関数"""
@@ -401,10 +546,32 @@ class SevenSegmentReaderServerNode(Node):
         # 各DOI画像の7セグメント表示を読み取り
         detection_results = []
         numeric_values = []
+        debug_images = []
         
         for i, doi_image in enumerate(doi_images):
             # 7セグメント読み取り（Inference Server使用）
-            digit = self.infer_with_server(doi_image, i+1)
+            debug_info = self.infer_with_server(doi_image, i+1)
+            
+            if isinstance(debug_info, dict):
+                digit = debug_info['result']
+                predictions = debug_info['predictions']
+                
+                # バウンディングボックスを描画
+                if self.show_bounding_boxes:
+                    debug_image = doi_image.copy()
+                    debug_image = self.draw_bounding_boxes(debug_image, predictions, i+1)
+                    
+                    # 最終的な検出数値を画像に表示
+                    formatted_digit = self.format_seven_segment_number(digit)
+                    cv2.putText(debug_image, f"Region {i+1}: {formatted_digit}", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    debug_images.append(debug_image)
+                else:
+                    debug_images.append(doi_image)
+            else:
+                digit = debug_info
+                debug_images.append(doi_image)
+            
             formatted_digit = self.format_seven_segment_number(digit)
             detection_results.append(formatted_digit)
             
@@ -418,9 +585,12 @@ class SevenSegmentReaderServerNode(Node):
             except ValueError:
                 numeric_values.append(float('nan'))
         
-        # 画像を表示（デバッグ用）
-        cv2.imshow('Processed DOI Images', processed_frame)
-        cv2.waitKey(1)
+        # デバッグウィンドウを表示
+        if self.show_debug_window and debug_images:
+            # 個別のDOI画像を横に並べて表示
+            combined_image = np.hstack(debug_images)
+            cv2.imshow('7-Segment Detection Results', combined_image)
+            cv2.waitKey(1)
         
         # ROSメッセージのパブリッシュ
         # 検出結果メッセージ
@@ -448,9 +618,9 @@ class SevenSegmentReaderServerNode(Node):
         
         self.last_detection_time = current_time
         
-        # ログ出力
-        if self.frame_count % 10 == 0:  # 10フレームごとにログ出力
-            self.get_logger().info(f"フレーム {self.frame_count}: 検出結果 = {detection_results}, 遅延 = {delay_ms:.1f}ms")
+        # ログ出力（50フレームごと）
+        if self.frame_count % 50 == 0:
+            self.get_logger().info(f"フレーム {self.frame_count}: 検出結果 = {detection_results}")
 
 
 def main(args=None):
