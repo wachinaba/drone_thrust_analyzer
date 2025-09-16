@@ -25,6 +25,10 @@ seven_segment_reader_server_node:
     use_gpu: true  # GPU使用フラグ
     gpu_device_id: 0  # GPUデバイスID（複数GPUがある場合）
 
+    # デバッグ表示設定
+    show_debug_window: true  # デバッグウィンドウ表示
+    show_bounding_boxes: true  # バウンディングボックス表示
+
     # ログ設定
     log_level: "INFO"
     log_file_prefix: "seven_segment_detection"
