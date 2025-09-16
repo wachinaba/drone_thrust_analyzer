@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'seven_segment_reader_node = seven_segment_reader.seven_segment_reader_node:main',
+            'seven_segment_reader_server_node = seven_segment_reader.seven_segment_reader_server_node:main',
         ],
     },
 )
