@@ -27,6 +27,8 @@ class AutoThrustRecorder(Node):
         # -15deg_fold15deg: y = 110.97x2 + 18.971x + 0.5445
         # -30deg_fold15deg: y = 96.732x2 + 16.219x + 0.7684
 
+        # tilt0deg_fold0deg: y = 116.47x2 + 20.482x + 0.6069
+
         thrust_coefs = {
             "0deg_long": [117.9, 21.811, 0.5403],
             "15deg_long": [113.8, 22.766, 0.6355],
@@ -35,6 +37,7 @@ class AutoThrustRecorder(Node):
             "30deg_short": [91.475, 21.633, 0.4504],
             "0deg_short": [126.67, 14.089, 0.6691],
             "linear": [0.0, 1.0, 0.0],
+            "tilt0deg_fold0deg": [116.47, 20.482, 0.6069],
             "tilt-15deg_fold15deg": [110.97, 18.971, 0.5445],
             "tilt-30deg_fold15deg": [96.732, 16.219, 0.7684],
             "tilt0deg_fold15deg": [124.45, 17.182, 0.6627],
@@ -49,7 +52,7 @@ class AutoThrustRecorder(Node):
             "min_thrust": self.declare_parameter("min_thrust", 0.0).get_parameter_value().double_value,
             "max_thrust": self.declare_parameter("max_thrust", 0.4).get_parameter_value().double_value,
             "step_duration": self.declare_parameter("step_duration", 1.0).get_parameter_value().double_value,
-            "thrust_coef": self.declare_parameter("thrust_coef", thrust_coefs["tilt8deg_fold15deg"]).get_parameter_value().double_array_value,
+            "thrust_coef": self.declare_parameter("thrust_coef", thrust_coefs["tilt0deg_fold0deg"]).get_parameter_value().double_array_value,
         }
 
         coef_name = self.declare_parameter("coef_name", "").get_parameter_value().string_value
@@ -77,6 +80,7 @@ class AutoThrustRecorder(Node):
         self.sensor_reversed = self.declare_parameter("sensor_reversed", False).get_parameter_value().bool_value
 
         self.autoexit = self.declare_parameter("autoexit", True).get_parameter_value().bool_value
+        self.skip_sensor_calibration = self.declare_parameter("skip_sensor_calibration", False).get_parameter_value().bool_value
 
         # 7セグメントディスプレイ関連のパラメータ（後方互換性のため残す）
         self.enable_seven_segment = self.declare_parameter("enable_seven_segment", True).get_parameter_value().bool_value
@@ -105,6 +109,7 @@ class AutoThrustRecorder(Node):
         self.get_logger().info(f"Enable breakpoint: {self.enable_breakpoint}")
         self.get_logger().info(f"Sensor reversed: {self.sensor_reversed}")
         self.get_logger().info(f"Auto exit: {self.autoexit}")
+        self.get_logger().info(f"Skip sensor calibration: {self.skip_sensor_calibration}")
         self.get_logger().info(f"Enable seven segment: {self.enable_seven_segment}")
         if self.flow_sensor:
             self.get_logger().info("フローセンサーが有効です")
@@ -180,15 +185,18 @@ class AutoThrustRecorder(Node):
         wait.sleep()
         wait.destroy()
 
-        self.get_logger().info("Setting sensor offset...")
-        future = self.force_sensor.set_sensor_offset()
-        while not future.done():
-            rate.sleep()
-            timeout_counter += 1
-            if timeout_counter > timeout:
-                self.get_logger().error("sensor offset setting timeout...")
-                break
-        self.get_logger().info("Sensor offset set.")
+        if not self.skip_sensor_calibration:
+            self.get_logger().info("Setting sensor offset...")
+            future = self.force_sensor.set_sensor_offset()
+            while not future.done():
+                rate.sleep()
+                timeout_counter += 1
+                if timeout_counter > timeout:
+                    self.get_logger().error("sensor offset setting timeout...")
+                    break
+            self.get_logger().info("Sensor offset set.")
+        else:
+            self.get_logger().info("Skipping sensor offset calibration by parameter.")
         timeout_counter = 0
 
         self.get_logger().info("Setting offboard mode...")
@@ -353,14 +361,17 @@ class AutoThrustRecorder(Node):
         wait.sleep()
         wait.destroy()
 
-        future = self.force_sensor.set_sensor_offset()
-        while not future.done():
-            rate.sleep()
-            timeout_counter += 1
-            if timeout_counter > timeout:
-                self.get_logger().error("sensor offset setting timeout...")
-                break
-        self.get_logger().info("Sensor offset set.")
+        if not self.skip_sensor_calibration:
+            future = self.force_sensor.set_sensor_offset()
+            while not future.done():
+                rate.sleep()
+                timeout_counter += 1
+                if timeout_counter > timeout:
+                    self.get_logger().error("sensor offset setting timeout...")
+                    break
+            self.get_logger().info("Sensor offset set.")
+        else:
+            self.get_logger().info("Skipping sensor offset calibration by parameter.")
         timeout_counter = 0
 
         self.get_logger().info("Resuming...")
