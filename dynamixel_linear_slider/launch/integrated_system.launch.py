@@ -17,6 +17,15 @@ def generate_launch_description():
         default_value='false',
         description='Use simulation (Gazebo) clock if true'
     )
+    slider_params_arg = DeclareLaunchArgument(
+        'slider_params_file',
+        default_value=PathJoinSubstitution([
+            FindPackageShare('dynamixel_leadscrew_slider'),
+            'config',
+            'slider_params.yaml'
+        ]),
+        description='Leadscrew slider params YAML'
+    )
     
     # DynamixelHandler_ros2ノード
     dynamixel_handler_node = Node(
@@ -26,7 +35,7 @@ def generate_launch_description():
         emulate_tty=True,
         arguments=['--ros-args', '--log-level', 'dynamixel_handler:=WARN'],
         parameters=[{
-            'device_name': '/dev/ttyACM0',
+            'device_name': '/dev/ttyUSB0',
             'baudrate': 57600,
             'latency_timer': 16,
             'init/dummy_servo_list': [-1],
@@ -170,14 +179,66 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True
     )
+
+    # Leadscrewスライダ・コントローラ（dynamixel_leadscrew_slider）- 2台構成
+    leadscrew_slider_controller_bottom_node = Node(
+        package='dynamixel_leadscrew_slider',
+        executable='leadscrew_slider_controller',
+        name='leadscrew_slider_controller',
+        namespace='slider_bottom',
+        output='screen',
+        emulate_tty=True,
+        parameters=[
+            LaunchConfiguration('slider_params_file'),
+            {'motor.id': 2,
+            'homing.seek_current_ma': 800,
+            'homing.seek_current_ma_max': 800,
+            'homing.backoff_current_ma': 800,
+            'homing.timeout_s': 300.0,
+            'homing.max_seek_time_s': 300.0,
+            },
+        ],
+        remappings=[
+            ('/move_mm', '/slider_bottom/move_mm'),
+            ('/current_position', '/slider_bottom/current_position'),
+        ]
+    )
+    leadscrew_slider_controller_top_node = Node(
+        package='dynamixel_leadscrew_slider',
+        executable='leadscrew_slider_controller',
+        name='leadscrew_slider_controller',
+        namespace='slider_top',
+        output='screen',
+        emulate_tty=True,
+        parameters=[
+            LaunchConfiguration('slider_params_file'),
+            {
+                'motor.id': 3,
+                'homing.seek_current_ma': 1500,
+                'homing.seek_current_ma_max': 1500,
+                'homing.backoff_current_ma': 1500,
+                'homing.timeout_s': 300.0,
+                'homing.max_seek_time_s': 300.0,
+                'profile.max_vel_mm_s': 300.0,
+                'profile.max_acc_mm_s2': 1200.0,
+            },
+        ],
+        remappings=[
+            ('/move_mm', '/slider_top/move_mm'),
+            ('/current_position', '/slider_top/current_position'),
+        ]
+    )
     
     return LaunchDescription([
         use_sim_time_arg,
+        slider_params_arg,
         dynamixel_handler_node,
         estimator_node,
         extended_position_estimator_node,
         pose_to_position_converter_node,
         trajectory_generator_node,
         dynamixel_handler_position_controller_node,
+        leadscrew_slider_controller_bottom_node,
+        leadscrew_slider_controller_top_node,
         force_sensor_node,
     ]) 
