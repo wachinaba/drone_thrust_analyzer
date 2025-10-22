@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>dynamixel_leadscrew_slider</name>
+  <version>0.0.1</version>
+  <description>Leadscrew linear slider controller using DynamixelHandler-ros2 (XL-330). Current-control homing at both ends and extended-position control with mm commands.</description>
+
+  <maintainer email="wachinaba@gmail.com">wachinaba</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_srvs</depend>
+  <depend>dynamixel_handler_msgs</depend>
+  <depend>dynamixel_leadscrew_slider_msgs</depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+
+
