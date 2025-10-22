@@ -242,6 +242,7 @@ class PositionControllerNode(Node):
         
         # デバッグ情報の出力
         if (self.estimated_position_valid and self.target_position_valid):
+            """
             self.get_logger().debug(
                 f'Control: target={self.target_position:.4f}, '
                 f'estimated={self.estimated_position:.4f}, '
@@ -250,6 +251,7 @@ class PositionControllerNode(Node):
                 f'ff={self.feedforward_velocity:.4f}, '
                 f'command={velocity_command:.4f}'
             )
+            """
     
     def reset_integral(self):
         """積分項をリセット"""

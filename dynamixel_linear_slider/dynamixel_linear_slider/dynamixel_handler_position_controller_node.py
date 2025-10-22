@@ -167,11 +167,13 @@ class DynamixelHandlerPositionControllerNode(Node):
         
         self.movement_status_publisher.publish(status_msg)
         
+        """
         # デバッグ用ログ（状態変化時のみ出力）
         if self.is_moving:
             self.get_logger().info("Movement status: MOVING")
         else:
             self.get_logger().info("Movement status: STOPPED")
+        """
     
     def check_convergence(self):
         """収束判定"""
@@ -246,7 +248,7 @@ class DynamixelHandlerPositionControllerNode(Node):
     def apply_brake(self):
         """ブレーキ処理の実行"""
         self.publish_brake_command()
-        self.get_logger().info('Brake applied due to position convergence')
+        #self.get_logger().info('Brake applied due to position convergence')
         
     def publish_brake_command(self):
         """ブレーキコマンドの送信"""
@@ -255,7 +257,7 @@ class DynamixelHandlerPositionControllerNode(Node):
         dxl_msg.velocity_control.velocity_deg_s = [0.0]
         dxl_msg.velocity_control.profile_acc_deg_ss = []
         self.dynamixel_command_publisher.publish(dxl_msg)
-        self.get_logger().info('Brake command sent: velocity=0.0 deg/s')
+        #self.get_logger().info('Brake command sent: velocity=0.0 deg/s')
 
         
 def main(args=None):

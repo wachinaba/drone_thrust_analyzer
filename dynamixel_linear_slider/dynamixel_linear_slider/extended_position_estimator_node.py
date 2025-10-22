@@ -237,10 +237,12 @@ class ExtendedPositionEstimatorNode(Node):
             estimated_msg.data = estimated_position
             self.estimated_position_publisher.publish(estimated_msg)
             
+            """
             self.get_logger().info(
                 f'Estimated position: {estimated_position:.4f} m, '
                 f'Origin set: {self.is_origin_set}'
             )
+            """
         else:
             if not self.is_origin_set:
                 self.get_logger().warn('Waiting for origin reset...')
