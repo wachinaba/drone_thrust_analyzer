@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'seven_segment_reader_node = seven_segment_reader.seven_segment_reader_node:main',
             'seven_segment_reader_server_node = seven_segment_reader.seven_segment_reader_server_node:main',
+            'seven_segment_reader_http_client = seven_segment_reader.http_client:main',
         ],
     },
 )
