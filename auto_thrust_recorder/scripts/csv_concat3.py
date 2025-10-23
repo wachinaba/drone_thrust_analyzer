@@ -10,11 +10,23 @@ from datetime import datetime
 from pathlib import Path
 
 def find_csv_files(keywords, directory='.', and_keywords=False):
-    """CSVファイルをキーワードに基づいて再帰的に検索する関数 (Pathlibを使用)。"""
-    files = []
-    for keyword in keywords:
-        search_pattern = f"*{keyword}*.csv"
-        files.extend(str(file) for file in Path(directory).rglob(search_pattern))  #Pathオブジェクトを文字列に変換
+    """CSVファイルをキーワードに基づいて再帰的に検索する関数 (Pathlibを使用)。
+
+    directory は文字列またはディレクトリのリストを受け付ける。
+    複数ディレクトリが指定された場合は全てを走査し、重複は排除する。
+    """
+    directories = directory
+    if not isinstance(directories, (list, tuple, set)):
+        directories = [directories]
+
+    files_set = set()
+    for dir_path in directories:
+        for keyword in keywords:
+            search_pattern = f"*{keyword}*.csv"
+            for file in Path(dir_path).rglob(search_pattern):
+                files_set.add(str(file))  # Pathオブジェクトを文字列に変換
+
+    files = sorted(files_set)
     if and_keywords:
         files = [file for file in files if all(keyword in file for keyword in keywords)]
     return files
@@ -48,21 +60,36 @@ def extract_parameters(filename):
         return None
 
 def read_and_extract_data(file_path):
-    """CSVファイルを読み込み、必要なカラムを抽出する関数。"""
+    """CSVファイルを読み込み、必要なカラムを抽出する関数。
+
+    戻り値: (DataFrame | None, エラー理由文字列 | None)
+    """
+    REQUIRED_COLUMNS = ['time', 'control', 'force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z']
     try:
         df = pd.read_csv(file_path)
-        extracted_df = df.dropna()
+    except UnicodeDecodeError as e:
+        return None, f"UnicodeDecodeError: {e}"
+    except pd.errors.ParserError as e:
+        return None, f"ParserError: {e}"
+    except Exception as e:
+        return None, f"ReadError: {e}"
 
-        print(extracted_df.head())
-        if extracted_df.loc[0, 'control'] < 0.1:
-            # check if the sensor bias is too high
-            # calc norm of force, torque in the first row
+    try:
+        extracted_df = df.dropna()
+        if extracted_df.empty:
+            return None, "EmptyDataAfterDropNA"
+
+        missing = [c for c in REQUIRED_COLUMNS if c not in extracted_df.columns]
+        if missing:
+            return None, f"MissingColumns: {','.join(missing)}"
+
+        # センサバイアス除去のための安全な先頭行参照
+        if extracted_df.iloc[0]['control'] < 0.1:
             first_row = extracted_df.iloc[0].copy()
             force_norm = np.linalg.norm(first_row[['force_x', 'force_y', 'force_z']])
             torque_norm = np.linalg.norm(first_row[['torque_x', 'torque_y', 'torque_z']])
             if force_norm > 1.0 or torque_norm > 1.0:
                 print(f"Sensor bias is too high: {force_norm}, {torque_norm}")
-                # remove the bias with the first row
                 extracted_df['force_x'] = extracted_df['force_x'] - first_row['force_x']
                 extracted_df['force_y'] = extracted_df['force_y'] - first_row['force_y']
                 extracted_df['force_z'] = extracted_df['force_z'] - first_row['force_z']
@@ -82,17 +109,16 @@ def read_and_extract_data(file_path):
         extracted_df['control_increase_step'] = extracted_df['control_increase'].cumsum()
         extracted_df['step_start_time'] = extracted_df.groupby('control_increase_step')['time_elapsed'].transform('first')
         extracted_df['step_elapsed_time'] = extracted_df['time_elapsed'] - extracted_df['step_start_time']
-        
-        return extracted_df
+
+        return extracted_df, None
     except Exception as e:
-        print(f"Error reading {file_path}: {e}")
-        return None
+        return None, f"ProcessError: {e}"
 
 def parse_arguments():
     """コマンドライン引数の解析。"""
     parser = argparse.ArgumentParser(description="CSVデータを処理し、結合するアプリケーション")
     parser.add_argument('-k', '--keywords', nargs='+', type=str, default=['raw'], help="検索するファイル名に含まれるキーワードのリスト（例: 'raw', 'processed')")
-    parser.add_argument('-d', '--directory', type=str, default='.', help="CSVファイルを検索するディレクトリ（デフォルト: カレントディレクトリ）")
+    parser.add_argument('-d', '--directory', nargs='+', type=str, default=['.'], help="CSVファイルを検索するディレクトリ（複数指定可、デフォルト: 現在ディレクトリ）")
     parser.add_argument('-a', '--and_keywords', action='store_true', help="AND条件でファイルを検索する")
     parser.add_argument('--output', type=str, required=True, help="すべてのプレフィックスの処理結果を1つのCSVファイルにまとめてエクスポートするファイル名")
     return parser.parse_args()
@@ -123,6 +149,8 @@ def main():
 
     # ファイルをプレフィックスで分類
     grouped_files = defaultdict(list)
+    failed_param_files = []  # パラメータ抽出（ファイル名正規表現）に失敗
+    failed_data_files = []   # データ読み込み/抽出に失敗（理由付き）
     for file in csv_files:
         filename = os.path.basename(file)
         params = extract_parameters(filename)
@@ -134,9 +162,20 @@ def main():
             grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height, wall_spacing, flow_distance)].append(file)
         else:
             print(f"ファイル '{filename}' からパラメータを抽出できませんでした。スキップします。")
+            failed_param_files.append(file)
 
     if not grouped_files:
         print("有効なパラメータで分類されたファイルがありません。終了します。")
+        if failed_param_files:
+            print(f"\n[失敗] パラメータ抽出: {len(failed_param_files)} 件")
+            for f in failed_param_files:
+                print(f"  {f}  | 理由: ParameterRegexMismatch")
+        else:
+            print("\nパラメータ抽出に失敗したファイルはありませんでした。")
+        if failed_data_files:
+            print(f"\n[失敗] データ読み込み/抽出: {len(failed_data_files)} 件")
+            for f, reason in failed_data_files:
+                print(f"  {f}  | 理由: {reason}")
         sys.exit(1)
 
     print(f"分類されたパラメータの数: {len(grouped_files)}")
@@ -176,49 +215,78 @@ def main():
         combined_data_group = []
         for file in files:
             print(f"  処理中のファイル: {file}")
-            df = read_and_extract_data(file)
-            if df is None or df.empty:
+            df, err_reason = read_and_extract_data(file)
+            if df is None or (hasattr(df, 'empty') and df.empty):
                 print(f"  ファイル {file} の読み込みまたは抽出に失敗しました。スキップします。")
+                failed_data_files.append((file, err_reason or "EmptyDataFrame"))
                 continue
 
-            df_processed = df.copy()
+            try:
+                df_processed = df.copy()
 
-            df_processed = df_processed[df_processed['step_elapsed_time'] > 0.5]
-            
-            # プレフィックスを追加
-            key = (tilt_angle, fold_angle, prop_spacing)
-            if not key in thrust_coefs:
-                print(f"  thrust_coefsにキー {key} が存在しません。近いキーを探します。")
-                key_dist = float('inf')
-                for k in thrust_coefs.keys():
-                    dist = np.linalg.norm(np.array(k) - np.array(key))
-                    if dist < key_dist:
-                        key_dist = dist
-                        key = k
-                print(f"  近いキー: {key}")
-            else:
-                print(f"  キー {key} が見つかりました。")
+                # 任意列が存在しない場合は欠損列を作成して後段集計を安定化
+                optional_cols = ['seven_segment_value_0', 'seven_segment_value_1', 'seven_segment_value_2', 'seven_segment_value_3']
+                for col in optional_cols:
+                    if col not in df_processed.columns:
+                        df_processed[col] = np.nan
 
-            coefs = thrust_coefs[key]
-            df_processed.loc[:, 'target_thrust'] = (
-                df_processed['control'] ** 2 * coefs[0] +
-                df_processed['control'] * coefs[1] +
-                coefs[2]
-            )
-            
-            # 必要な列とパラメータを追加
-            df_processed.loc[:, 'distance'] = distance
-            df_processed.loc[:, 'tilt_angle'] = tilt_angle
-            df_processed.loc[:, 'fold_angle'] = fold_angle
-            df_processed.loc[:, 'prop_spacing'] = prop_spacing
-            df_processed.loc[:, 'keyword'] = keyword
-            df_processed.loc[:, 'height'] = height
-            df_processed.loc[:, 'wall_spacing'] = wall_spacing
-            df_processed.loc[:, 'flow_distance'] = flow_distance
-            for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z', 'seven_segment_value_0', 'seven_segment_value_1', 'seven_segment_value_2', 'seven_segment_value_3']:
-                df_processed[f"{col}_partial_variance"] = df_processed.groupby('target_thrust')[col].transform("var")
+                # seven_segment に名前を付与（"back" を含む場合は front/rear を入れ替え）
+                if 'back' in str(keyword).lower():
+                    name_map = {
+                        'front_in': 'seven_segment_value_3',
+                        'front_out': 'seven_segment_value_2',
+                        'rear_out': 'seven_segment_value_1',
+                        'rear_in': 'seven_segment_value_0',
+                    }
+                else:
+                    name_map = {
+                        'front_in': 'seven_segment_value_0',
+                        'front_out': 'seven_segment_value_1',
+                        'rear_out': 'seven_segment_value_2',
+                        'rear_in': 'seven_segment_value_3',
+                    }
+                for new_name, src_col in name_map.items():
+                    df_processed[new_name] = df_processed[src_col]
 
-            combined_data_group.append(df_processed)
+                df_processed = df_processed[df_processed['step_elapsed_time'] > 0.5]
+                
+                # プレフィックスを追加
+                key = (tilt_angle, fold_angle, prop_spacing)
+                if not key in thrust_coefs:
+                    print(f"  thrust_coefsにキー {key} が存在しません。近いキーを探します。")
+                    key_dist = float('inf')
+                    for k in thrust_coefs.keys():
+                        dist = np.linalg.norm(np.array(k) - np.array(key))
+                        if dist < key_dist:
+                            key_dist = dist
+                            key = k
+                    print(f"  近いキー: {key}")
+                else:
+                    print(f"  キー {key} が見つかりました。")
+
+                coefs = thrust_coefs[key]
+                df_processed.loc[:, 'target_thrust'] = (
+                    df_processed['control'] ** 2 * coefs[0] +
+                    df_processed['control'] * coefs[1] +
+                    coefs[2]
+                )
+                
+                # 必要な列とパラメータを追加
+                df_processed.loc[:, 'distance'] = distance
+                df_processed.loc[:, 'tilt_angle'] = tilt_angle
+                df_processed.loc[:, 'fold_angle'] = fold_angle
+                df_processed.loc[:, 'prop_spacing'] = prop_spacing
+                df_processed.loc[:, 'keyword'] = keyword
+                df_processed.loc[:, 'height'] = height
+                df_processed.loc[:, 'wall_spacing'] = wall_spacing
+                df_processed.loc[:, 'flow_distance'] = flow_distance
+                for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z', 'seven_segment_value_0', 'seven_segment_value_1', 'seven_segment_value_2', 'seven_segment_value_3', 'front_in', 'front_out', 'rear_out', 'rear_in']:
+                    df_processed[f"{col}_partial_variance"] = df_processed.groupby('target_thrust')[col].transform("var")
+
+                combined_data_group.append(df_processed)
+            except Exception as e:
+                print(f"  ファイル {file} の処理で例外が発生しました。スキップします。理由: {e}")
+                failed_data_files.append((file, f"ProcessError: {e}"))
 
         if not combined_data_group:
             print(f"  パラメータグループ (距離={distance}, 角度={tilt_angle}, 折曲={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}, 壁間隔={wall_spacing}, 流体距離={flow_distance}) に有効なデータがありません。")
@@ -243,6 +311,10 @@ def main():
             seven_segment_value_1=('seven_segment_value_1', 'median'),
             seven_segment_value_2=('seven_segment_value_2', 'median'),
             seven_segment_value_3=('seven_segment_value_3', 'median'),
+            front_in=('front_in', 'median'),
+            front_out=('front_out', 'median'),
+            rear_out=('rear_out', 'median'),
+            rear_in=('rear_in', 'median'),
             variance_force_x=('force_x_partial_variance', 'median'),
             variance_force_y=('force_y_partial_variance', 'median'),
             variance_force_z=('force_z_partial_variance', 'median'),
@@ -252,7 +324,11 @@ def main():
             variance_seven_segment_value_0=('seven_segment_value_0_partial_variance', 'median'),
             variance_seven_segment_value_1=('seven_segment_value_1_partial_variance', 'median'),
             variance_seven_segment_value_2=('seven_segment_value_2_partial_variance', 'median'),
-            variance_seven_segment_value_3=('seven_segment_value_3_partial_variance', 'median')
+            variance_seven_segment_value_3=('seven_segment_value_3_partial_variance', 'median'),
+            variance_front_in=('front_in_partial_variance', 'median'),
+            variance_front_out=('front_out_partial_variance', 'median'),
+            variance_rear_out=('rear_out_partial_variance', 'median'),
+            variance_rear_in=('rear_in_partial_variance', 'median')
         ).reset_index()
 
         # パラメータ情報を追加
@@ -273,6 +349,21 @@ def main():
         export_data_to_csv(combined_df, args.output)
     else:
         print("結合されたデータがありません。エクスポートをスキップします。")
+
+    # 最後に、失敗したファイルの一覧を表示（原因付き）
+    if failed_param_files:
+        print(f"\n[失敗] パラメータ抽出: {len(failed_param_files)} 件")
+        for f in failed_param_files:
+            print(f"  {f}  | 理由: ParameterRegexMismatch")
+    else:
+        print("\nパラメータ抽出に失敗したファイルはありませんでした。")
+
+    if failed_data_files:
+        print(f"\n[失敗] データ読み込み/抽出: {len(failed_data_files)} 件")
+        for f, reason in failed_data_files:
+            print(f"  {f}  | 理由: {reason}")
+    else:
+        print("\nデータ読み込み/抽出に失敗したファイルはありませんでした。")
 
 if __name__ == "__main__":
     main()
