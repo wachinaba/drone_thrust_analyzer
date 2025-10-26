@@ -406,7 +406,7 @@ def parse_ranges(ranges, feature_columns, df_clean):
                     pass
     return mins, maxs
 
-def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_size, fixes, ranges, output_prefix, include_std):
+def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_size, fixes, ranges, output_prefix, include_std, overlay_raw=False):
     fixed_values = parse_fixed_values(fixes, feature_columns, df_clean)
     mins, maxs = parse_ranges(ranges, feature_columns, df_clean)
 
@@ -444,6 +444,20 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
             plt.imshow(Zm, origin='lower', aspect='auto',
                        extent=[mins[fi], maxs[fi], mins[fj], maxs[fj]],
                        cmap='viridis')
+            if overlay_raw:
+                xi_raw = df_clean[fi].values
+                xj_raw = df_clean[fj].values
+                mask_raw = np.isfinite(xi_raw) & np.isfinite(xj_raw)
+                plt.scatter(
+                    xi_raw[mask_raw],
+                    xj_raw[mask_raw],
+                    marker='x',
+                    color='white',
+                    s=20,
+                    alpha=0.5,
+                    linewidths=0.7,
+                    zorder=3
+                )
             plt.colorbar(label='予測平均 (torque_x)')
             plt.xlabel(fi)
             plt.ylabel(fj)
@@ -462,6 +476,20 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
                 plt.imshow(Zs, origin='lower', aspect='auto',
                            extent=[mins[fi], maxs[fi], mins[fj], maxs[fj]],
                            cmap='magma')
+                if overlay_raw:
+                    xi_raw = df_clean[fi].values
+                    xj_raw = df_clean[fj].values
+                    mask_raw = np.isfinite(xi_raw) & np.isfinite(xj_raw)
+                    plt.scatter(
+                        xi_raw[mask_raw],
+                        xj_raw[mask_raw],
+                        marker='x',
+                        color='white',
+                        s=20,
+                        alpha=0.5,
+                        linewidths=0.7,
+                        zorder=3
+                    )
                 plt.colorbar(label='予測標準偏差')
                 plt.xlabel(fi)
                 plt.ylabel(fj)
@@ -473,6 +501,291 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
                     plt.close()
                 else:
                     plt.show()
+
+def plot_grouped_raw_and_fit_gpr(
+    df_clean,
+    feature_columns,
+    model,
+    scaler,
+    group_by,
+    curve_x=None,
+    curve_points=200,
+    ranges=None,
+    output_file=None,
+    show_uncertainty=True
+):
+    """
+    指定した group_by 特徴量でデータをグループ化し、各グループで
+    - 生の散布 (curve_x vs torque_x)
+    - GPR のフィット曲線 (curve_x を掃引、他特徴量はグループの中央値固定)
+    - show_uncertainty が True の場合は ±2σ の不確実性帯を表示
+    を同一サブプロット上に描画する。
+    """
+    if not group_by or len(group_by) == 0:
+        print("[plot_grouped_raw_and_fit_gpr] group_by が指定されていないためスキップします。")
+        return
+
+    for col in group_by:
+        if col not in df_clean.columns:
+            raise ValueError(f"group_by 列 '{col}' がデータに存在しません。")
+
+    # x 軸の候補決定
+    if curve_x is None:
+        candidates = [c for c in feature_columns if c not in group_by]
+        if not candidates:
+            raise ValueError("curve_x を自動決定できません。group_by 以外の特徴量がありません。--curve-x を指定してください。")
+        curve_x = candidates[0]
+    if curve_x not in feature_columns:
+        raise ValueError(f"curve_x '{curve_x}' は学習特徴量に含まれていません。feature_columns={feature_columns}")
+
+    # レンジ決定
+    if ranges is not None and isinstance(ranges, tuple) and len(ranges) == 2:
+        mins, maxs = ranges
+    else:
+        mins = {c: float(df_clean[c].min()) for c in feature_columns}
+        maxs = {c: float(df_clean[c].max()) for c in feature_columns}
+
+    # グループを作成
+    group_keys = df_clean[group_by].drop_duplicates()
+    n_groups = len(group_keys)
+    if n_groups == 0:
+        print("[plot_grouped_raw_and_fit_gpr] グループが見つかりません。")
+        return
+
+    n_cols = min(4, n_groups)
+    n_rows = int(np.ceil(n_groups / n_cols))
+    plt.rcParams.update({'font.size': 18})
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6.0 * n_cols, 5.0 * n_rows), squeeze=False)
+
+    for idx, (_, gvals) in enumerate(group_keys.iterrows()):
+        r = idx // n_cols
+        c = idx % n_cols
+        ax = axes[r, c]
+
+        # グループ条件で抽出
+        mask = np.ones(len(df_clean), dtype=bool)
+        title_parts = []
+        for col in group_by:
+            val = gvals[col]
+            mask &= (df_clean[col] == val)
+            if isinstance(val, float):
+                title_parts.append(f"{col}={val:g}")
+            else:
+                title_parts.append(f"{col}={val}")
+        df_group = df_clean[mask]
+
+        if df_group.empty:
+            ax.set_axis_off()
+            continue
+
+        # 生データの散布
+        if curve_x not in df_group.columns:
+            raise ValueError(f"x 軸列 '{curve_x}' がデータに存在しません。")
+        x_raw = df_group[curve_x].values
+        y_raw = df_group['torque_x'].values
+        ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
+
+        # 予測用グリッド（curve_x を掃引、他は中央値固定（group 内））
+        x_min = mins.get(curve_x, float(df_group[curve_x].min()))
+        x_max = maxs.get(curve_x, float(df_group[curve_x].max()))
+        if not np.isfinite(x_min) or not np.isfinite(x_max):
+            x_min = float(df_group[curve_x].min())
+            x_max = float(df_group[curve_x].max())
+        if x_min == x_max:
+            x_min -= 1e-6
+            x_max += 1e-6
+        x_grid = np.linspace(x_min, x_max, int(curve_points))
+
+        X_grid = np.zeros((len(x_grid), len(feature_columns)), dtype=float)
+        for j, fcol in enumerate(feature_columns):
+            if fcol == curve_x:
+                X_grid[:, j] = x_grid
+            elif fcol in group_by:
+                X_grid[:, j] = float(df_group[fcol].median())
+            else:
+                X_grid[:, j] = float(df_group[fcol].median())
+
+        if scaler is not None:
+            try:
+                X_infer = scaler.transform(X_grid)
+            except Exception:
+                X_infer = X_grid
+        else:
+            X_infer = X_grid
+
+        if show_uncertainty:
+            y_mean, y_std = model.predict(X_infer, return_std=True)
+            ax.plot(x_grid, y_mean, color='C1', lw=2.0, label='GPR fit')
+            ax.fill_between(x_grid, y_mean - 2.0*y_std, y_mean + 2.0*y_std, color='C1', alpha=0.2, label='±2σ')
+        else:
+            y_mean = model.predict(X_infer, return_std=False)
+            ax.plot(x_grid, y_mean, color='C1', lw=2.0, label='GPR fit')
+
+        ax.set_title(', '.join(title_parts))
+        ax.set_xlabel(curve_x)
+        ax.set_ylabel('torque_x')
+        ax.grid(True, alpha=0.3)
+        ax.legend(frameon=True, fontsize=10)
+
+    # 余白のサブプロットを非表示
+    for k in range(n_groups, n_rows * n_cols):
+        r = k // n_cols
+        c = k % n_cols
+        axes[r, c].set_axis_off()
+
+    plt.tight_layout()
+    if output_file:
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"グループ別 Raw vs GPR Fit を '{output_file}' に保存しました。")
+        plt.close(fig)
+    else:
+        plt.show()
+        plt.close(fig)
+
+def plot_facet_raw_and_fit_gpr(
+    df_clean,
+    feature_columns,
+    model,
+    scaler,
+    row_group_by,
+    col_group_by,
+    curve_x=None,
+    curve_points=200,
+    ranges=None,
+    output_file=None,
+    show_uncertainty=True
+):
+    """
+    行方向(row_group_byの組) × 列方向(col_group_byの組)のファセットで、
+    各セルに Raw 散布と GPR フィット（±2σ）の曲線を描画する。
+    指定順でソートして並べる。
+    """
+    if not row_group_by and not col_group_by:
+        print("[plot_facet_raw_and_fit_gpr] row/col が未指定のためスキップします。")
+        return
+
+    # x 軸の決定
+    if curve_x is None:
+        excluded = set((row_group_by or []) + (col_group_by or []))
+        candidates = [c for c in feature_columns if c not in excluded]
+        if not candidates:
+            raise ValueError("curve_x を自動決定できません。--curve-x を指定してください。")
+        curve_x = candidates[0]
+    if curve_x not in feature_columns:
+        raise ValueError(f"curve_x '{curve_x}' は学習特徴量に含まれていません。feature_columns={feature_columns}")
+
+    # レンジ
+    if ranges is not None and isinstance(ranges, tuple) and len(ranges) == 2:
+        mins, maxs = ranges
+    else:
+        mins = {c: float(df_clean[c].min()) for c in feature_columns}
+        maxs = {c: float(df_clean[c].max()) for c in feature_columns}
+
+    # キー生成のヘルパ
+    def make_keys(group_cols):
+        if not group_cols:
+            return [()]  # 単一グループ
+        # 指定順でユニークな組を作る
+        uniq = df_clean[group_cols].drop_duplicates()
+        # 指定順に基づき、安定ソート
+        # pandasのdrop_duplicatesは出現順を維持するため、さらに各列で安定ソート
+        # ただしユーザーが指定した順を最優先にするため、そのままvaluesを使う
+        keys = [tuple(row[c] for c in group_cols) for _, row in uniq.iterrows()]
+        return keys
+
+    row_keys = make_keys(row_group_by)
+    col_keys = make_keys(col_group_by)
+
+    n_rows = max(1, len(row_keys))
+    n_cols = max(1, len(col_keys))
+
+    plt.rcParams.update({'font.size': 18})
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6.0 * n_cols, 5.0 * n_rows), squeeze=False)
+
+    # 各ファセットを描画
+    for r_idx, rkey in enumerate(row_keys):
+        for c_idx, ckey in enumerate(col_keys):
+            ax = axes[r_idx, c_idx]
+
+            # マスク作成
+            mask = np.ones(len(df_clean), dtype=bool)
+            title_parts = []
+            if row_group_by:
+                for col, val in zip(row_group_by, rkey):
+                    mask &= (df_clean[col] == val)
+                    title_parts.append(f"{col}={val:g}" if isinstance(val, float) else f"{col}={val}")
+            if col_group_by:
+                for col, val in zip(col_group_by, ckey):
+                    mask &= (df_clean[col] == val)
+                    title_parts.append(f"{col}={val:g}" if isinstance(val, float) else f"{col}={val}")
+
+            df_cell = df_clean[mask]
+            if df_cell.empty:
+                ax.set_axis_off()
+                continue
+
+            # 生データ散布
+            if curve_x not in df_cell.columns:
+                raise ValueError(f"x 軸列 '{curve_x}' がデータに存在しません。")
+            x_raw = df_cell[curve_x].values
+            y_raw = df_cell['torque_x'].values
+            ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
+
+            # 予測用グリッド
+            x_min = mins.get(curve_x, float(df_cell[curve_x].min()))
+            x_max = maxs.get(curve_x, float(df_cell[curve_x].max()))
+            if not np.isfinite(x_min) or not np.isfinite(x_max):
+                x_min = float(df_cell[curve_x].min())
+                x_max = float(df_cell[curve_x].max())
+            if x_min == x_max:
+                x_min -= 1e-6
+                x_max += 1e-6
+            x_grid = np.linspace(x_min, x_max, int(curve_points))
+
+            X_grid = np.zeros((len(x_grid), len(feature_columns)), dtype=float)
+            for j, fcol in enumerate(feature_columns):
+                if fcol == curve_x:
+                    X_grid[:, j] = x_grid
+                elif (row_group_by and fcol in row_group_by):
+                    # rkeyの該当値
+                    val = rkey[row_group_by.index(fcol)] if fcol in row_group_by else float(df_cell[fcol].median())
+                    X_grid[:, j] = float(val)
+                elif (col_group_by and fcol in col_group_by):
+                    val = ckey[col_group_by.index(fcol)] if fcol in col_group_by else float(df_cell[fcol].median())
+                    X_grid[:, j] = float(val)
+                else:
+                    X_grid[:, j] = float(df_cell[fcol].median())
+
+            if scaler is not None:
+                try:
+                    X_infer = scaler.transform(X_grid)
+                except Exception:
+                    X_infer = X_grid
+            else:
+                X_infer = X_grid
+
+            if show_uncertainty:
+                y_mean, y_std = model.predict(X_infer, return_std=True)
+                ax.plot(x_grid, y_mean, color='C1', lw=2.0, label='GPR fit')
+                ax.fill_between(x_grid, y_mean - 2.0*y_std, y_mean + 2.0*y_std, color='C1', alpha=0.2, label='±2σ')
+            else:
+                y_mean = model.predict(X_infer, return_std=False)
+                ax.plot(x_grid, y_mean, color='C1', lw=2.0, label='GPR fit')
+
+            ax.set_title(', '.join(title_parts))
+            ax.set_xlabel(curve_x)
+            ax.set_ylabel('torque_x')
+            ax.grid(True, alpha=0.3)
+            ax.legend(frameon=True, fontsize=10)
+
+    plt.tight_layout()
+    if output_file:
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"ファセット Raw vs GPR Fit を '{output_file}' に保存しました。")
+        plt.close(fig)
+    else:
+        plt.show()
+        plt.close(fig)
 
 def main():
     # コマンドライン引数の解析
@@ -503,6 +816,15 @@ def main():
     parser.add_argument('--fix', action='append', default=None, help="非可視化軸の固定値 'col=value' を複数指定可")
     parser.add_argument('--range', dest='ranges', action='append', default=None, help="各軸の範囲 'col:min,max' を複数指定可")
     parser.add_argument('--std-heatmaps', action='store_true', help='標準偏差のヒートマップも保存')
+    parser.add_argument('--overlay-raw', action='store_true', help='ヒートマップ上に生データ点 (×) を重ねて表示')
+    # 生データとフィット曲線の比較
+    parser.add_argument('--plot-raw-fit', action='store_true', help='グループごとに生データ散布とGPRフィット曲線（±2σ帯）を比較表示')
+    parser.add_argument('--group-by', type=str, default=None, help='グループ化に用いる列をカンマ区切りで指定（例: distance,tilt_angle）')
+    parser.add_argument('--curve-x', type=str, default=None, help='フィット曲線の横軸にする特徴量（未指定なら group_by 以外の最初の特徴量）')
+    parser.add_argument('--curve-points', type=int, default=200, help='フィット曲線の分解能')
+    parser.add_argument('--groupfit-output', type=str, default=None, help='グループ別 Raw vs Fit 図の出力パス（未指定なら表示、--output 指定時は派生名を使用）')
+    parser.add_argument('--row-group-by', type=str, default=None, help='行方向のファセットに用いる列（カンマ区切りの複数可、指定順でソート）')
+    parser.add_argument('--col-group-by', type=str, default=None, help='列方向のファセットに用いる列（カンマ区切りの複数可、指定順でソート）')
     # KRR 初期化関連
     parser.add_argument('--init-from-krr', action='store_true', help='KRRのグリッドサーチで得たハイパーパラメータをGPRの初期値に利用')
     parser.add_argument('--krr-cv', type=int, default=5, help='KRR GridSearchCV の分割数（デフォルト: 5）')
@@ -841,8 +1163,57 @@ def main():
                 fixes=args.fix,
                 ranges=args.ranges,
                 output_prefix=output_prefix,
-                include_std=args.std_heatmaps
+                include_std=args.std_heatmaps,
+                overlay_raw=args.overlay_raw
             )
+        
+        # グループ別 生データ散布 + GPRフィット曲線（±2σ）
+        if args.plot_raw_fit:
+            print("\n=== グループ別 Raw vs GPR Fit の描画 ===")
+            row_group_by = [c.strip() for c in args.row_group_by.split(',')] if args.row_group_by else None
+            col_group_by = [c.strip() for c in args.col_group_by.split(',')] if args.col_group_by else None
+            group_by = [c.strip() for c in args.group_by.split(',')] if (args.group_by and not row_group_by and not col_group_by) else None
+
+            # 既存の --range 指定を流用
+            mins, maxs = parse_ranges(args.ranges, feature_columns, df_clean)
+
+            groupfit_output = args.groupfit_output
+            if not groupfit_output and args.output:
+                base_name = os.path.splitext(args.output)[0]
+                groupfit_output = f"{base_name}_groupfit.png"
+
+            try:
+                if row_group_by or col_group_by:
+                    plot_facet_raw_and_fit_gpr(
+                        df_clean=df_clean,
+                        feature_columns=feature_columns,
+                        model=gp_model,
+                        scaler=scaler,
+                        row_group_by=row_group_by,
+                        col_group_by=col_group_by,
+                        curve_x=args.curve_x,
+                        curve_points=args.curve_points,
+                        ranges=(mins, maxs),
+                        output_file=groupfit_output,
+                        show_uncertainty=(not args.no_uncertainty)
+                    )
+                elif group_by:
+                    plot_grouped_raw_and_fit_gpr(
+                        df_clean=df_clean,
+                        feature_columns=feature_columns,
+                        model=gp_model,
+                        scaler=scaler,
+                        group_by=group_by,
+                        curve_x=args.curve_x,
+                        curve_points=args.curve_points,
+                        ranges=(mins, maxs),
+                        output_file=groupfit_output,
+                        show_uncertainty=(not args.no_uncertainty)
+                    )
+                else:
+                    print("(注意) --plot-raw-fit は指定されましたが、--group-by も --row-group-by/--col-group-by も未指定です。スキップします。")
+            except Exception as e:
+                print(f"グループ別 Raw vs GPR Fit の描画でエラー: {e}")
         
         # 統計情報の表示
         print(f"\n=== 統計情報 ===")
