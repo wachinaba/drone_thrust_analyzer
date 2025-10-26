@@ -406,6 +406,32 @@ def parse_ranges(ranges, feature_columns, df_clean):
                     pass
     return mins, maxs
 
+def apply_facet_filters(df_clean, filters):
+    """
+    'col:min,max' の形式のフィルタ配列を df_clean に適用して返す。
+    無効な指定はスキップする。
+    """
+    if not filters:
+        return df_clean
+    df_out = df_clean.copy()
+    for item in filters:
+        try:
+            if ':' not in item:
+                continue
+            col, span = item.split(':', 1)
+            if ',' not in span:
+                continue
+            lo, hi = span.split(',', 1)
+            col = col.strip()
+            lo = float(lo)
+            hi = float(hi)
+            if col not in df_out.columns:
+                continue
+            df_out = df_out[(df_out[col] >= lo) & (df_out[col] <= hi)]
+        except Exception:
+            continue
+    return df_out
+
 def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_size, fixes, ranges, output_prefix, include_std, overlay_raw=False):
     fixed_values = parse_fixed_values(fixes, feature_columns, df_clean)
     mins, maxs = parse_ranges(ranges, feature_columns, df_clean)
@@ -732,7 +758,7 @@ def plot_facet_raw_and_fit_gpr(
                 ax.set_ylabel('torque_x')
 
             if (r_idx == 0) and col_group_by:
-                col_title = ', '.join(
+                col_title = '\n'.join(
                     [f"{col}={val:g}" if isinstance(val, float) else f"{col}={val}"
                      for col, val in zip(col_group_by, ckey)]
                 )
@@ -861,6 +887,7 @@ def main():
     parser.add_argument('--groupfit-output', type=str, default=None, help='グループ別 Raw vs Fit 図の出力パス（未指定なら表示、--output 指定時は派生名を使用）')
     parser.add_argument('--row-group-by', type=str, default=None, help='行方向のファセットに用いる列（カンマ区切りの複数可、指定順でソート）')
     parser.add_argument('--col-group-by', type=str, default=None, help='列方向のファセットに用いる列（カンマ区切りの複数可、指定順でソート）')
+    parser.add_argument('--facet-filter', action='append', default=None, help="ファセット用の事前フィルタ 'col:min,max' を複数指定可")
     # KRR 初期化関連
     parser.add_argument('--init-from-krr', action='store_true', help='KRRのグリッドサーチで得たハイパーパラメータをGPRの初期値に利用')
     parser.add_argument('--krr-cv', type=int, default=5, help='KRR GridSearchCV の分割数（デフォルト: 5）')
@@ -1220,8 +1247,10 @@ def main():
 
             try:
                 if row_group_by or col_group_by:
+                    # ファセット前フィルタ適用（任意）
+                    df_for_facet = apply_facet_filters(df_clean, args.facet_filter)
                     plot_facet_raw_and_fit_gpr(
-                        df_clean=df_clean,
+                        df_clean=df_for_facet,
                         feature_columns=feature_columns,
                         model=gp_model,
                         scaler=scaler,
