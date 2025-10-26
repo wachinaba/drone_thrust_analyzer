@@ -26,6 +26,8 @@ from sklearn.model_selection import train_test_split, cross_val_score, GridSearc
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.kernel_ridge import KernelRidge
 import warnings
+from joblib import dump, load
+import sklearn
 warnings.filterwarnings('ignore')
 
 def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torque_x=None):
@@ -260,7 +262,9 @@ def plot_results(y_test, y_pred, y_std, feature_columns, output_file=None):
         feature_columns: 特徴量の列名
         output_file: 出力ファイル名
     """
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    # フォントサイズの設定
+    plt.rcParams.update({'font.size': 20})
+    fig, axes = plt.subplots(2, 2, figsize=(30, 24))
     
     # 1. 予測値 vs 実際の値
     ax1 = axes[0, 0]
@@ -325,6 +329,8 @@ def plot_feature_importance(model, feature_columns, output_file=None):
         feature_columns: 特徴量の列名
         output_file: 出力ファイル名
     """
+    # フォントサイズの設定
+    plt.rcParams.update({'font.size': 20})
     # カーネルパラメータから特徴量の重要度を推定
     if hasattr(model.kernel_, 'k1') and hasattr(model.kernel_.k1, 'length_scale'):
         # RBFカーネルの場合
@@ -342,7 +348,7 @@ def plot_feature_importance(model, feature_columns, output_file=None):
     importance = importance / np.sum(importance)
     
     # プロット
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(20, 12))
     bars = plt.bar(feature_columns, importance)
     plt.xlabel('特徴量')
     plt.ylabel('相対重要度')
@@ -433,7 +439,8 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
             Zs = y_std.reshape(grid_size, grid_size)
 
             # 平均のヒートマップ
-            plt.figure(figsize=(6, 5))
+            plt.figure(figsize=(12, 10))
+            plt.rcParams.update({'font.size': 18})
             plt.imshow(Zm, origin='lower', aspect='auto',
                        extent=[mins[fi], maxs[fi], mins[fj], maxs[fj]],
                        cmap='viridis')
@@ -450,7 +457,8 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
                 plt.show()
 
             if include_std:
-                plt.figure(figsize=(6, 5))
+                plt.figure(figsize=(12, 10))
+                plt.rcParams.update({'font.size': 18})
                 plt.imshow(Zs, origin='lower', aspect='auto',
                            extent=[mins[fi], maxs[fi], mins[fj], maxs[fj]],
                            cmap='magma')
@@ -502,6 +510,9 @@ def main():
     parser.add_argument('--krr-alpha-grid', type=str, default='1e-3,1e-2,1e-1,1.0,10.0', help='KRRのalpha候補（カンマ区切り）')
     parser.add_argument('--krr-gamma-grid', type=str, default='1e-3,1e-2,1e-1,1.0,10.0', help='KRRのgamma候補（カンマ区切り）')
     parser.add_argument('--krr-bound-factor', type=float, default=10.0, help='KRR初期値の±倍率でGPRの探索範囲を制限（デフォルト: 10.0）')
+    # モデル保存/読み込み
+    parser.add_argument('--save-model', type=str, default=None, help='学習済みモデルの保存先パス（.joblib 推奨）')
+    parser.add_argument('--load-model', type=str, default=None, help='保存済みモデルの読み込みパス')
     
     args = parser.parse_args()
     
@@ -523,11 +534,36 @@ def main():
             except Exception:
                 pass
 
+        # 事前にモデルを読み込み（指定時）
+        loaded_model = None
+        loaded_scaler = None
+        loaded_feature_columns = None
+        if args.load_model:
+            print(f"=== 保存済みモデルの読み込み: {args.load_model} ===")
+            try:
+                bundle = load(args.load_model)
+                if isinstance(bundle, dict) and 'model' in bundle:
+                    loaded_model = bundle['model']
+                    loaded_scaler = bundle.get('scaler', None)
+                    loaded_feature_columns = bundle.get('feature_columns', None)
+                else:
+                    # モデル単体が保存されていた場合への後方互換
+                    loaded_model = bundle
+                if loaded_feature_columns is not None:
+                    print(f"保存モデルの特徴量: {loaded_feature_columns}")
+            except Exception as e:
+                raise RuntimeError(f"モデルの読み込みに失敗しました: {e}")
+
         # データの読み込みと前処理
         print("=== データの読み込みと前処理 ===")
         selected_features = None
         if args.features:
             selected_features = [c.strip() for c in args.features.split(',') if c.strip()]
+        # 読み込みモデルに特徴量が含まれている場合は最優先で使用
+        if args.load_model and loaded_feature_columns is not None:
+            if args.features:
+                print("注意: --load-model で保存時の特徴量を使用するため、--features を上書きします。")
+            selected_features = list(loaded_feature_columns)
         df_clean, feature_columns = load_and_preprocess_data(
             args.csv_file,
             selected_features,
@@ -541,16 +577,23 @@ def main():
         print(f"特徴量の形状: {X.shape}")
         print(f"目的変数の形状: {y.shape}")
         
-        # 特徴量の正規化（オプション）/ KRR初期化時は強制
+        # 特徴量の正規化
         scaler = None
-        force_normalize = args.normalize or args.init_from_krr
-        if force_normalize:
-            if args.init_from_krr and not args.normalize:
-                print("KRR初期化のため特徴量を標準化します（StandardScaler）。")
-            else:
-                print("特徴量の正規化を実行...")
-            scaler = StandardScaler()
-            X = scaler.fit_transform(X)
+        if args.load_model:
+            scaler = loaded_scaler
+            if scaler is not None:
+                print("保存済みスケーラを用いて特徴量を変換します。")
+                X = scaler.transform(X)
+        else:
+            # オプション/ KRR初期化時は強制
+            force_normalize = args.normalize or args.init_from_krr
+            if force_normalize:
+                if args.init_from_krr and not args.normalize:
+                    print("KRR初期化のため特徴量を標準化します（StandardScaler）。")
+                else:
+                    print("特徴量の正規化を実行...")
+                scaler = StandardScaler()
+                X = scaler.fit_transform(X)
         
         # 訓練データとテストデータの分割
         X_train, X_test, y_train, y_test = train_test_split(
@@ -568,179 +611,184 @@ def main():
             y_train = y_train[indices]
             print(f"学習データをサブサンプリング: {len(indices)} サンプルを使用")
         
-        # ガウス過程回帰モデルの作成と訓練
-        print(f"\n=== ガウス過程回帰モデルの訓練 ===")
-        print(f"カーネル: {args.kernel}")
-        print(f"アルファ: {args.alpha}")
-        print(f"最適化再起動回数: {args.n_restarts}")
-        
-        # length_scale boundsの解釈
-        ls_bounds = None
-        if args.length_scale_bounds:
-            try:
-                lo, hi = [float(x) for x in args.length_scale_bounds.split(',')]
-                ls_bounds = (lo, hi)
-            except Exception:
-                raise ValueError("--length-scale-bounds は '低,高' の形式で指定してください（例: 1e-2,1e3）")
-
-        if args.init_from_krr:
-            if args.do_grid_search:
-                print("--init-from-krr が指定されたため、既存のGPR用グリッドサーチはスキップします。")
-
-            # 文字列グリッドを数値リストに変換
-            def _parse_float_grid(s):
-                vals = []
-                for t in s.split(','):
-                    t = t.strip()
-                    if not t:
-                        continue
-                    try:
-                        vals.append(float(t))
-                    except Exception:
-                        pass
-                return vals
-
-            alpha_grid = _parse_float_grid(args.krr_alpha_grid)
-            gamma_grid = _parse_float_grid(args.krr_gamma_grid)
-            if not alpha_grid:
-                alpha_grid = [1e-3, 1e-2, 1e-1, 1.0, 10.0]
-            if not gamma_grid:
-                gamma_grid = [1e-3, 1e-2, 1e-1, 1.0, 10.0]
-
-            if args.kernel not in ['rbf', 'rbf_white', 'rbf_linear']:
-                print("警告: --kernel が RBFベース以外です。KRR初期化にはRBFを使用します。")
-
-            print("KRRのグリッドサーチを実行します...")
-            param_grid = {
-                'alpha': alpha_grid,
-                'gamma': gamma_grid
-            }
-            krr = KernelRidge(kernel='rbf')
-            gs = GridSearchCV(
-                krr,
-                param_grid=param_grid,
-                cv=max(2, args.krr_cv),
-                n_jobs=args.krr_jobs,
-                scoring='neg_mean_squared_error'
-            )
-            gs.fit(X_train, y_train.ravel())
-            best_alpha = float(gs.best_params_['alpha'])
-            best_gamma = float(gs.best_params_['gamma'])
-            print(f"KRR最良パラメータ: alpha={best_alpha}, gamma={best_gamma}")
-            try:
-                best_cv_rmse = float(np.sqrt(-gs.best_score_))
-                print(f"KRR CV 最良RMSE: {best_cv_rmse:.6f} (scoring=neg_mean_squared_error)")
-            except Exception:
-                pass
-
-            # KRR 最良モデルでテストデータに対する性能を表示
-            try:
-                krr_best = KernelRidge(kernel='rbf', alpha=best_alpha, gamma=best_gamma)
-                krr_best.fit(X_train, y_train.ravel())
-                y_pred_krr = krr_best.predict(X_test)
-                krr_mse = mean_squared_error(y_test, y_pred_krr)
-                krr_rmse = float(np.sqrt(krr_mse))
-                krr_mae = mean_absolute_error(y_test, y_pred_krr)
-                krr_r2 = r2_score(y_test, y_pred_krr)
-                print("KRR テスト評価:")
-                print(f"  RMSE: {krr_rmse:.6f}")
-                print(f"  MAE:  {krr_mae:.6f}")
-                print(f"  R²:   {krr_r2:.6f}")
-
-                # KRR結果のプロット（テストデータ）
-                if args.output:
-                    base_name = os.path.splitext(args.output)[0]
-                    krr_results_output = f"{base_name}_krr_results.png"
-                else:
-                    krr_results_output = None
-                print("KRRの予測結果をプロットします...")
-                plot_results(y_test, y_pred_krr, None, feature_columns, krr_results_output)
-            except Exception:
-                pass
-
-            # KRR → GPR 初期値変換
-            initial_constant = float(np.var(y_train))
-            if best_gamma <= 0:
-                initial_length_scale = 1.0
-            else:
-                initial_length_scale = float(np.sqrt(1.0 / (2.0 * best_gamma)))
-            initial_noise = max(best_alpha, 1e-12)
-
-            # bounds（KRR初期値を中心に制限）
-            if initial_constant <= 1e-12:
-                initial_constant = 1.0
-
-            # 既定の広いbounds
-            base_const_bounds = (1e-8, 1e5)
-            base_ls_bounds = ls_bounds if ls_bounds is not None else (1e-5, 1e5)
-            base_noise_bounds = (1e-12, 1e2)
-
-            f = max(1.0, float(args.krr_bound_factor) if args.krr_bound_factor is not None else 10.0)
-
-            def around(val, factor, base):
-                lo = max(val / factor, base[0])
-                hi = min(val * factor, base[1])
-                if lo >= hi:  # フォールバックで僅かに広げる
-                    mid = max(val, 1e-12)
-                    span = max(base[1] - base[0], 1e-6)
-                    lo = max(base[0], mid / (factor * 2.0))
-                    hi = min(base[1], mid * (factor * 2.0))
-                return (lo, hi)
-
-            const_bounds = around(initial_constant, f, base_const_bounds)
-            ls_bounds_final = around(initial_length_scale, f, base_ls_bounds)
-            noise_bounds = around(initial_noise, f, base_noise_bounds)
-
-            if args.anisotropic and X_train.shape[1] > 1:
-                ls0 = [initial_length_scale] * X_train.shape[1]
-                rbf = RBF(length_scale=ls0, length_scale_bounds=ls_bounds_final)
-            else:
-                rbf = RBF(length_scale=initial_length_scale, length_scale_bounds=ls_bounds_final)
-
-            kernel = ConstantKernel(constant_value=initial_constant, constant_value_bounds=const_bounds) * rbf \
-                     + WhiteKernel(noise_level=initial_noise, noise_level_bounds=noise_bounds)
-
-            print("KRR初期化から生成したGPR初期カーネル:")
-            print(kernel)
-            print("適用された探索範囲:")
-            print(f"  ConstantKernel bounds: {const_bounds}")
-            print(f"  RBF length_scale bounds: {ls_bounds_final}")
-            print(f"  WhiteKernel noise_level bounds: {noise_bounds}")
-
-            gp_model = GaussianProcessRegressor(
-                kernel=kernel,
-                alpha=0.0,
-                n_restarts_optimizer=args.n_restarts,
-                random_state=42,
-                copy_X_train=False,
-                normalize_y=True
-            )
-        elif args.do_grid_search:
-            print("グリッドサーチを実行します...")
-            gp_model = grid_search_gpr(
-                X_train,
-                y_train,
-                base_args=args,
-                n_features=X_train.shape[1],
-                ls_bounds_initial=ls_bounds
-            )
+        # ガウス過程回帰モデルの作成/読み込みと訓練
+        if args.load_model:
+            gp_model = loaded_model
+            if gp_model is None:
+                raise RuntimeError("--load-model が指定されましたが、モデルを取得できませんでした。")
+            print(f"保存済みモデルを読み込みました。最適化されたカーネル: {getattr(gp_model, 'kernel_', getattr(gp_model, 'kernel', None))}")
         else:
-            gp_model = create_gp_model(
-                kernel_type=args.kernel,
-                alpha=args.alpha,
-                n_restarts_optimizer=args.n_restarts,
-                n_features=X_train.shape[1],
-                anisotropic=args.anisotropic,
-                length_scale_bounds=ls_bounds,
-                matern_nu=args.matern_nu
-            )
-        
-        # モデルの訓練
-        print("モデルを訓練中...")
-        gp_model.fit(X_train, y_train)
-        
-        # 最適化されたカーネルパラメータの表示
-        print(f"最適化されたカーネル: {gp_model.kernel_}")
+            print(f"\n=== ガウス過程回帰モデルの訓練 ===")
+            print(f"カーネル: {args.kernel}")
+            print(f"アルファ: {args.alpha}")
+            print(f"最適化再起動回数: {args.n_restarts}")
+
+            # length_scale boundsの解釈
+            ls_bounds = None
+            if args.length_scale_bounds:
+                try:
+                    lo, hi = [float(x) for x in args.length_scale_bounds.split(',')]
+                    ls_bounds = (lo, hi)
+                except Exception:
+                    raise ValueError("--length-scale-bounds は '低,高' の形式で指定してください（例: 1e-2,1e3）")
+
+            if args.init_from_krr:
+                if args.do_grid_search:
+                    print("--init-from-krr が指定されたため、既存のGPR用グリッドサーチはスキップします。")
+
+                # 文字列グリッドを数値リストに変換
+                def _parse_float_grid(s):
+                    vals = []
+                    for t in s.split(','):
+                        t = t.strip()
+                        if not t:
+                            continue
+                        try:
+                            vals.append(float(t))
+                        except Exception:
+                            pass
+                    return vals
+
+                alpha_grid = _parse_float_grid(args.krr_alpha_grid)
+                gamma_grid = _parse_float_grid(args.krr_gamma_grid)
+                if not alpha_grid:
+                    alpha_grid = [1e-3, 1e-2, 1e-1, 1.0, 10.0]
+                if not gamma_grid:
+                    gamma_grid = [1e-3, 1e-2, 1e-1, 1.0, 10.0]
+
+                if args.kernel not in ['rbf', 'rbf_white', 'rbf_linear']:
+                    print("警告: --kernel が RBFベース以外です。KRR初期化にはRBFを使用します。")
+
+                print("KRRのグリッドサーチを実行します...")
+                param_grid = {
+                    'alpha': alpha_grid,
+                    'gamma': gamma_grid
+                }
+                krr = KernelRidge(kernel='rbf')
+                gs = GridSearchCV(
+                    krr,
+                    param_grid=param_grid,
+                    cv=max(2, args.krr_cv),
+                    n_jobs=args.krr_jobs,
+                    scoring='neg_mean_squared_error'
+                )
+                gs.fit(X_train, y_train.ravel())
+                best_alpha = float(gs.best_params_['alpha'])
+                best_gamma = float(gs.best_params_['gamma'])
+                print(f"KRR最良パラメータ: alpha={best_alpha}, gamma={best_gamma}")
+                try:
+                    best_cv_rmse = float(np.sqrt(-gs.best_score_))
+                    print(f"KRR CV 最良RMSE: {best_cv_rmse:.6f} (scoring=neg_mean_squared_error)")
+                except Exception:
+                    pass
+
+                # KRR 最良モデルでテストデータに対する性能を表示
+                try:
+                    krr_best = KernelRidge(kernel='rbf', alpha=best_alpha, gamma=best_gamma)
+                    krr_best.fit(X_train, y_train.ravel())
+                    y_pred_krr = krr_best.predict(X_test)
+                    krr_mse = mean_squared_error(y_test, y_pred_krr)
+                    krr_rmse = float(np.sqrt(krr_mse))
+                    krr_mae = mean_absolute_error(y_test, y_pred_krr)
+                    krr_r2 = r2_score(y_test, y_pred_krr)
+                    print("KRR テスト評価:")
+                    print(f"  RMSE: {krr_rmse:.6f}")
+                    print(f"  MAE:  {krr_mae:.6f}")
+                    print(f"  R²:   {krr_r2:.6f}")
+
+                    # KRR結果のプロット（テストデータ）
+                    if args.output:
+                        base_name = os.path.splitext(args.output)[0]
+                        krr_results_output = f"{base_name}_krr_results.png"
+                    else:
+                        krr_results_output = None
+                    print("KRRの予測結果をプロットします...")
+                    plot_results(y_test, y_pred_krr, None, feature_columns, krr_results_output)
+                except Exception:
+                    pass
+
+                # KRR → GPR 初期値変換
+                initial_constant = float(np.var(y_train))
+                if best_gamma <= 0:
+                    initial_length_scale = 1.0
+                else:
+                    initial_length_scale = float(np.sqrt(1.0 / (2.0 * best_gamma)))
+                initial_noise = max(best_alpha, 1e-12)
+
+                # bounds（KRR初期値を中心に制限）
+                if initial_constant <= 1e-12:
+                    initial_constant = 1.0
+
+                # 既定の広いbounds
+                base_const_bounds = (1e-8, 1e5)
+                base_ls_bounds = ls_bounds if ls_bounds is not None else (1e-5, 1e5)
+                base_noise_bounds = (1e-12, 1e2)
+
+                f = max(1.0, float(args.krr_bound_factor) if args.krr_bound_factor is not None else 10.0)
+
+                def around(val, factor, base):
+                    lo = max(val / factor, base[0])
+                    hi = min(val * factor, base[1])
+                    if lo >= hi:  # フォールバックで僅かに広げる
+                        mid = max(val, 1e-12)
+                        span = max(base[1] - base[0], 1e-6)
+                        lo = max(base[0], mid / (factor * 2.0))
+                        hi = min(base[1], mid * (factor * 2.0))
+                    return (lo, hi)
+
+                const_bounds = around(initial_constant, f, base_const_bounds)
+                ls_bounds_final = around(initial_length_scale, f, base_ls_bounds)
+                noise_bounds = around(initial_noise, f, base_noise_bounds)
+
+                if args.anisotropic and X_train.shape[1] > 1:
+                    ls0 = [initial_length_scale] * X_train.shape[1]
+                    rbf = RBF(length_scale=ls0, length_scale_bounds=ls_bounds_final)
+                else:
+                    rbf = RBF(length_scale=initial_length_scale, length_scale_bounds=ls_bounds_final)
+
+                kernel = ConstantKernel(constant_value=initial_constant, constant_value_bounds=const_bounds) * rbf \
+                         + WhiteKernel(noise_level=initial_noise, noise_level_bounds=noise_bounds)
+
+                print("KRR初期化から生成したGPR初期カーネル:")
+                print(kernel)
+                print("適用された探索範囲:")
+                print(f"  ConstantKernel bounds: {const_bounds}")
+                print(f"  RBF length_scale bounds: {ls_bounds_final}")
+                print(f"  WhiteKernel noise_level bounds: {noise_bounds}")
+
+                gp_model = GaussianProcessRegressor(
+                    kernel=kernel,
+                    alpha=0.0,
+                    n_restarts_optimizer=args.n_restarts,
+                    random_state=42,
+                    copy_X_train=False,
+                    normalize_y=True
+                )
+            elif args.do_grid_search:
+                print("グリッドサーチを実行します...")
+                gp_model = grid_search_gpr(
+                    X_train,
+                    y_train,
+                    base_args=args,
+                    n_features=X_train.shape[1],
+                    ls_bounds_initial=ls_bounds
+                )
+            else:
+                gp_model = create_gp_model(
+                    kernel_type=args.kernel,
+                    alpha=args.alpha,
+                    n_restarts_optimizer=args.n_restarts,
+                    n_features=X_train.shape[1],
+                    anisotropic=args.anisotropic,
+                    length_scale_bounds=ls_bounds,
+                    matern_nu=args.matern_nu
+                )
+
+            # モデルの訓練
+            print("モデルを訓練中...")
+            gp_model.fit(X_train, y_train)
+            # 最適化されたカーネルパラメータの表示
+            print(f"最適化されたカーネル: {gp_model.kernel_}")
         
         # モデルの評価
         print(f"\n=== モデルの評価 ===")
@@ -810,6 +858,26 @@ def main():
             print(f"  平均標準偏差: {metrics['y_std'].mean():.6f}")
             print(f"  最大標準偏差: {metrics['y_std'].max():.6f}")
             print(f"  最小標準偏差: {metrics['y_std'].min():.6f}")
+        
+        # モデルの保存
+        if args.save_model:
+            try:
+                meta = {
+                    'script': 'gaussian_process_regression.py',
+                    'kernel_repr': str(getattr(gp_model, 'kernel_', getattr(gp_model, 'kernel', None))),
+                    'normalize': scaler is not None,
+                    'sklearn_version': getattr(sklearn, '__version__', 'unknown')
+                }
+                bundle_to_save = {
+                    'model': gp_model,
+                    'scaler': scaler,
+                    'feature_columns': feature_columns,
+                    'meta': meta
+                }
+                dump(bundle_to_save, args.save_model)
+                print(f"モデルを保存しました: {args.save_model}")
+            except Exception as e:
+                print(f"モデルの保存に失敗しました: {e}")
         
         return 0
         
