@@ -830,11 +830,11 @@ def plot_facet_raw_and_fit_gpr(
 
             if show_uncertainty:
                 y_mean, y_std = model.predict(X_infer, return_std=True)
-                ax.plot(x_grid, y_mean, color='C1', lw=2.0, label='GPR fit')
-                ax.fill_between(x_grid, y_mean - 2.0*y_std, y_mean + 2.0*y_std, color='C1', alpha=0.2, label='±2σ')
+                ax.plot(x_grid, y_mean, color='red', lw=3.0, label='GPR fit')
+                ax.fill_between(x_grid, y_mean - 2.0*y_std, y_mean + 2.0*y_std, color='red', alpha=0.2, label='±2σ')
             else:
                 y_mean = model.predict(X_infer, return_std=False)
-                ax.plot(x_grid, y_mean, color='C1', lw=2.0, label='GPR fit')
+                ax.plot(x_grid, y_mean, color='red', lw=3.0, label='GPR fit')
 
             ax.set_xlabel(curve_x)
             ax.grid(True, alpha=0.3)
