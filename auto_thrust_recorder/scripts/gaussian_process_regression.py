@@ -556,6 +556,8 @@ def plot_grouped_raw_and_fit_gpr(
     n_rows = int(np.ceil(n_groups / n_cols))
     plt.rcParams.update({'font.size': 18})
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(6.0 * n_cols, 5.0 * n_rows), squeeze=False)
+    # ヘッダのクリッピングを避けるため余白を確保（行ヘッダをさらに左へ配置）
+    fig.subplots_adjust(left=0.46, top=0.90, wspace=0.30, hspace=0.40)
 
     for idx, (_, gvals) in enumerate(group_keys.iterrows()):
         r = idx // n_cols
@@ -707,6 +709,37 @@ def plot_facet_raw_and_fit_gpr(
         for c_idx, ckey in enumerate(col_keys):
             ax = axes[r_idx, c_idx]
 
+            # 先にヘッダ（行/列）を設定しておく：データが空でも表示されるようにする
+            if (c_idx == 0) and row_group_by:
+                # 行ヘッダは横表示＋改行でコンパクト化
+                row_title = '\n'.join(
+                    [f"{col}={val:g}" if isinstance(val, float) else f"{col}={val}"
+                     for col, val in zip(row_group_by, rkey)]
+                )
+                ax.set_ylabel('torque_x')
+                ax.annotate(
+                    row_title,
+                    xy=(-0.40, 0.5),
+                    xycoords='axes fraction',
+                    rotation=0,
+                    ha='right',
+                    va='center',
+                    fontsize=18,
+                    linespacing=1.0,
+                    annotation_clip=False
+                )
+            else:
+                ax.set_ylabel('torque_x')
+
+            if (r_idx == 0) and col_group_by:
+                col_title = ', '.join(
+                    [f"{col}={val:g}" if isinstance(val, float) else f"{col}={val}"
+                     for col, val in zip(col_group_by, ckey)]
+                )
+                ax.set_title(col_title, fontsize=20)
+            else:
+                ax.set_title('')
+
             # マスク作成
             mask = np.ones(len(df_clean), dtype=bool)
             title_parts = []
@@ -721,7 +754,12 @@ def plot_facet_raw_and_fit_gpr(
 
             df_cell = df_clean[mask]
             if df_cell.empty:
-                ax.set_axis_off()
+                # 空セルでもヘッダを見せるため軸は消さず、グリッド/目盛りのみ最小化
+                ax.grid(False)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_xlabel(curve_x)
+                # 以降のプロット処理はスキップ
                 continue
 
             # 生データ散布
@@ -772,9 +810,7 @@ def plot_facet_raw_and_fit_gpr(
                 y_mean = model.predict(X_infer, return_std=False)
                 ax.plot(x_grid, y_mean, color='C1', lw=2.0, label='GPR fit')
 
-            ax.set_title(', '.join(title_parts))
             ax.set_xlabel(curve_x)
-            ax.set_ylabel('torque_x')
             ax.grid(True, alpha=0.3)
             ax.legend(frameon=True, fontsize=10)
 
