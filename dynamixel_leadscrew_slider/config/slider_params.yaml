@@ -10,10 +10,10 @@
       soft_max_mm: .nan
     homing:
       origin_reference: "min"  # min|max|center
-      origin_offset_mm: -33.0
+      origin_offset_mm: -24.0
       return_to_position_mm: 40.0  # 原点(オフセット適用後)からの復帰位置 [mm]
-      seek_current_ma: 300   # 原点探索で印加する目標電流（符号で方向）
-      seek_current_ma_max: 300
+      seek_current_ma: 500   # 原点探索で印加する目標電流（符号で方向）
+      seek_current_ma_max: 500
       seek_current_ma_step: 50
       seek_ramp_stage_ms: 500.0
       move_min_mm: 0.2
