@@ -3,6 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64
+from std_srvs.srv import Trigger
 from dynamixel_handler_msgs.msg import DxlStates
 import math
 import time
@@ -85,6 +86,13 @@ class ExtendedPositionEstimatorNode(Node):
             10
         )
         
+        # サービスの設定
+        self.reset_origin_service = self.create_service(
+            Trigger,
+            'reset_origin',
+            self.reset_origin_callback
+        )
+        
         # タイマーの設定
         self.timer = self.create_timer(
             1.0 / self.control_frequency,
@@ -98,6 +106,7 @@ class ExtendedPositionEstimatorNode(Node):
         self.get_logger().info(f'Velocity zero threshold: {self.velocity_zero_threshold} deg/s')
         self.get_logger().info(f'AR marker average duration: {self.ar_marker_average_duration} s')
         self.get_logger().info(f'AR marker std threshold: {self.ar_marker_std_threshold} m')
+        self.get_logger().info('Manual origin reset service available at: /reset_origin')
     
     def dynamixel_states_callback(self, msg):
         """DynamixelHandlerの状態を受信"""
@@ -184,8 +193,12 @@ class ExtendedPositionEstimatorNode(Node):
         
         return True
     
-    def perform_origin_reset(self):
+    def perform_origin_reset(self, force_reset=False):
         """原点リセットを実行"""
+        # 強制リセットでない場合は条件をチェック
+        if not force_reset and not self.check_origin_reset_conditions():
+            return False
+            
         mean_position, _ = self.calculate_ar_marker_average()
         
         # 現在の位置（度）をメートルに変換
@@ -206,6 +219,7 @@ class ExtendedPositionEstimatorNode(Node):
             f'current position={current_position_m:.4f} m, '
             f'origin offset={self.origin_offset_deg:.2f} deg'
         )
+        return True
     
     def calculate_estimated_position(self):
         """推定位置を計算"""
@@ -226,7 +240,7 @@ class ExtendedPositionEstimatorNode(Node):
         """推定タイマーコールバック"""
         # 原点リセットの条件をチェック
         if self.check_origin_reset_conditions() and not self.is_origin_set:
-            self.perform_origin_reset()
+            self.perform_origin_reset(force_reset=False)
         
         # 推定位置を計算
         estimated_position = self.calculate_estimated_position()
@@ -248,6 +262,27 @@ class ExtendedPositionEstimatorNode(Node):
                 self.get_logger().warn('Waiting for origin reset...')
             else:
                 self.get_logger().warn('Dynamixel states not valid')
+    
+    def reset_origin_callback(self, request, response):
+        """手動原点リセットサービスのコールバック"""
+        self.get_logger().info('Manual origin reset requested')
+        
+        # 現在の原点設定状態をリセット
+        self.is_origin_set = False
+        
+        # 強制リセットを実行
+        success = self.perform_origin_reset(force_reset=True)
+        
+        if success:
+            response.success = True
+            response.message = 'Origin reset completed successfully'
+            self.get_logger().info('Manual origin reset completed')
+        else:
+            response.success = False
+            response.message = 'Origin reset failed: insufficient AR marker data or invalid conditions'
+            self.get_logger().warn('Manual origin reset failed')
+        
+        return response
 
 
 def main(args=None):
