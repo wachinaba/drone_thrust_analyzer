@@ -2,7 +2,7 @@
 
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction, ExecuteProcess
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -190,12 +190,8 @@ def generate_launch_description():
         emulate_tty=True,
         parameters=[
             LaunchConfiguration('slider_params_file'),
-            {'motor.id': 2,
-            'homing.seek_current_ma': 800,
-            'homing.seek_current_ma_max': 800,
-            'homing.backoff_current_ma': 800,
-            'homing.timeout_s': 300.0,
-            'homing.max_seek_time_s': 300.0,
+            {
+                'motor.id': 2,
             },
         ],
         remappings=[
@@ -214,18 +210,31 @@ def generate_launch_description():
             LaunchConfiguration('slider_params_file'),
             {
                 'motor.id': 3,
-                'homing.seek_current_ma': 1500,
-                'homing.seek_current_ma_max': 1500,
-                'homing.backoff_current_ma': 1500,
-                'homing.timeout_s': 300.0,
-                'homing.max_seek_time_s': 300.0,
-                'profile.max_vel_mm_s': 300.0,
-                'profile.max_acc_mm_s2': 1200.0,
             },
         ],
         remappings=[
             ('/move_mm', '/slider_top/move_mm'),
             ('/current_position', '/slider_top/current_position'),
+        ]
+    )
+
+    # ホーミング実行（起動後に順次呼び出し）
+    home_bottom_after_delay = TimerAction(
+        period=5.0,
+        actions=[
+            ExecuteProcess(
+                cmd=['ros2', 'service', 'call', '/slider_bottom/home', 'std_srvs/srv/Trigger', '{}'],
+                output='screen'
+            )
+        ]
+    )
+    home_top_after_delay = TimerAction(
+        period=6.0,
+        actions=[
+            ExecuteProcess(
+                cmd=['ros2', 'service', 'call', '/slider_top/home', 'std_srvs/srv/Trigger', '{}'],
+                output='screen'
+            )
         ]
     )
     
@@ -240,5 +249,7 @@ def generate_launch_description():
         dynamixel_handler_position_controller_node,
         leadscrew_slider_controller_bottom_node,
         leadscrew_slider_controller_top_node,
+        home_bottom_after_delay,
+        home_top_after_delay,
         force_sensor_node,
     ]) 
