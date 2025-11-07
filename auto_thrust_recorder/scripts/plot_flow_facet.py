@@ -19,6 +19,17 @@ def parse_args():
     parser.add_argument(
         "--palette", type=str, default="Set2", help="色パレット (in/out 用)"
     )
+    parser.add_argument(
+        "--show-diff",
+        action="store_true",
+        help="out - in の差分ファセットも描画/保存します",
+    )
+    parser.add_argument(
+        "--output-diff",
+        type=str,
+        default=None,
+        help="差分図の保存先（未指定かつ --output 指定時は _diff を付けて保存）",
+    )
     return parser.parse_args()
 
 
@@ -102,6 +113,33 @@ def reshape_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+def compute_diff(agg: pd.DataFrame) -> pd.DataFrame:
+    """同一 (distance, tilt_angle, wall_spacing, x) の点で out - in を計算する。
+
+    in/out の片方が無い点は除外する。
+    """
+    if agg.empty:
+        return agg.iloc[0:0].copy()
+
+    index_cols = ["distance", "tilt_angle", "wall_spacing", "x", "col_key"]
+    piv = (
+        agg.pivot_table(index=index_cols, columns="io", values="wind_speed", aggfunc="mean")
+        .reset_index()
+    )
+
+    # in/out の両方がある点のみ
+    if "in" not in piv.columns or "out" not in piv.columns:
+        return piv.iloc[0:0].assign(diff=pd.Series(dtype=float))
+
+    piv["diff"] = piv["out"] - piv["in"]
+    diff_df = piv.dropna(subset=["diff"]).copy()
+
+    # 出力に不要な中間列は残さない
+    keep_cols = ["distance", "tilt_angle", "wall_spacing", "x", "col_key", "diff"]
+    diff_df = diff_df[keep_cols].sort_values(["distance", "tilt_angle", "wall_spacing", "x"]).reset_index(drop=True)
+    return diff_df
+
+
 def plot_facet(agg: pd.DataFrame, palette: str = "Set2") -> sns.axisgrid.FacetGrid:
     sns.set_style("whitegrid")
     # 行=distance (昇順), 列=tilt_angle (昇順)
@@ -145,6 +183,50 @@ def plot_facet(agg: pd.DataFrame, palette: str = "Set2") -> sns.axisgrid.FacetGr
     return g
 
 
+def plot_diff_facet(diff_df: pd.DataFrame) -> sns.axisgrid.FacetGrid:
+    sns.set_style("whitegrid")
+    # 行=distance (昇順)
+    row_order = sorted(diff_df["distance"].dropna().unique().tolist())
+    # 列順は (wall_spacing, tilt_angle)
+    col_pairs = (
+        diff_df.drop_duplicates(subset=["wall_spacing", "tilt_angle"])[["wall_spacing", "tilt_angle", "col_key"]]
+        .sort_values(["wall_spacing", "tilt_angle"])
+    )
+    col_order = col_pairs["col_key"].tolist()
+
+    g = sns.FacetGrid(
+        diff_df,
+        row="distance",
+        col="col_key",
+        row_order=row_order,
+        col_order=col_order,
+        sharex=True,
+        sharey=True,
+        margin_titles=True,
+        despine=False,
+        height=3.0,
+        aspect=1.4,
+    )
+
+    # 単色ライン（凡例なし）
+    g.map_dataframe(sns.lineplot, x="x", y="diff", marker="o", color="C1")
+    g.set_axis_labels("flow_distance (rear は負)", "out - in [m/s]")
+
+    # y=0 の基準線
+    for ax in g.axes.flat:
+        ax.axhline(0, color="gray", linestyle="--", linewidth=1)
+
+    # x 範囲を原点対称に
+    xmin = np.nanmin(diff_df["x"].values) if len(diff_df) else None
+    xmax = np.nanmax(diff_df["x"].values) if len(diff_df) else None
+    if xmin is not None and xmax is not None:
+        lim = max(abs(xmin), abs(xmax))
+        for ax in g.axes.flat:
+            ax.set_xlim(-lim, lim)
+
+    return g
+
+
 def main():
     args = parse_args()
     sns.set(context="talk", style=args.style)
@@ -173,6 +255,32 @@ def main():
         print(f"保存しました: {out_path}")
     else:
         plt.show()
+
+    # 差分（out - in）
+    if args.show_diff or args.output_diff or (args.output and args.show_diff is False and args.output_diff is None and False):
+        # 上の複雑な条件は保守性のために残すが、実質 show_diff または output_diff 指定時に動作
+        diff_df = compute_diff(agg)
+        if diff_df.empty:
+            print("差分データが空です（in/out の両方が揃っていない可能性）。", file=sys.stderr)
+        else:
+            gdiff = plot_diff_facet(diff_df)
+
+            # 保存先の決定
+            out_diff = args.output_diff
+            if out_diff is None and args.output is not None:
+                base = Path(args.output)
+                if base.suffix:
+                    out_diff = str(base.with_name(f"{base.stem}_diff{base.suffix}"))
+                else:
+                    out_diff = str(base.with_name(f"{base.name}_diff.png"))
+
+            if out_diff:
+                out_diff_path = Path(out_diff)
+                out_diff_path.parent.mkdir(parents=True, exist_ok=True)
+                gdiff.savefig(str(out_diff_path), dpi=args.dpi, bbox_inches="tight")
+                print(f"保存しました: {out_diff_path}")
+            else:
+                plt.show()
 
 
 if __name__ == "__main__":

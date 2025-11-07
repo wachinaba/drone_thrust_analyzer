@@ -34,7 +34,7 @@ def find_csv_files(keywords, directory='.', and_keywords=False):
 def extract_parameters(filename):
     """ファイル名から距離、角度、キーワードを抽出する関数。
     キーワードは正規表現で使用されます。"""
-    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z_]+)_height=(\d+\.?\d*)\[mm\]_wallspacing=(\d+\.?\d*)\[m\]_flowdistance=(\d+\.?\d*)\[m\]_.*\.csv"
+    matcher = r"distance=(-?\d+\.?\d*)\[R\]_tilt=(-?\d+)\[deg\]_fold=(-?\d+)\[deg\]_wheelbase=(-?\d+\.?\d*)\[R\]_direction=([a-z_]+)_height=(-?\d+\.?\d*)\[mm\]_wallspacing=(-?\d+\.?\d*)\[m\]_flowdistance=(-?\d+\.?\d*)\[m\]_.*\.csv"
     print(matcher)
     match = re.match(matcher, filename, re.IGNORECASE)
     if match:
@@ -121,6 +121,8 @@ def parse_arguments():
     parser.add_argument('-d', '--directory', nargs='+', type=str, default=['.'], help="CSVファイルを検索するディレクトリ（複数指定可、デフォルト: 現在ディレクトリ）")
     parser.add_argument('-a', '--and_keywords', action='store_true', help="AND条件でファイルを検索する")
     parser.add_argument('--output', type=str, required=True, help="すべてのプレフィックスの処理結果を1つのCSVファイルにまとめてエクスポートするファイル名")
+    parser.add_argument('-s', '--skip-seconds', type=float, default=0.0, help="各CSVの先頭から指定秒数をスキップして集計（time列を基準）")
+    parser.add_argument('--step-warmup', type=float, default=0.5, help="各ステップ立ち上がり時の除外秒数（0で無効）")
     return parser.parse_args()
 
 def export_data_to_csv(combined_df, output_file):
@@ -248,7 +250,12 @@ def main():
                 for new_name, src_col in name_map.items():
                     df_processed[new_name] = df_processed[src_col]
 
-                df_processed = df_processed[df_processed['step_elapsed_time'] > 0.5]
+                # 先頭スキップ（time列から計算した time_elapsed を使用）
+                if hasattr(args, 'skip_seconds') and args.skip_seconds > 0:
+                    df_processed = df_processed[df_processed['time_elapsed'] >= args.skip_seconds]
+
+                if hasattr(args, 'step_warmup') and args.step_warmup > 0:
+                    df_processed = df_processed[df_processed['step_elapsed_time'] > args.step_warmup]
                 
                 # プレフィックスを追加
                 key = (tilt_angle, fold_angle, prop_spacing)
