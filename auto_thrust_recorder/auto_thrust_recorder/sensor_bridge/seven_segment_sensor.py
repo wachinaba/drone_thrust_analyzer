@@ -106,3 +106,41 @@ class FlowSensor(Node):
             result[f'seven_segment_value_{i}'] = float('nan')
         
         return result
+
+    def get_named_wind_speed_data(self, sensor_reversed: bool = False):
+        """名前付き（front/rear + in/out）でフローセンサー値を返す
+        
+        非反転時の対応: index順に [front_in, front_out, rear_out, rear_in]
+        反転時の対応:   index順に [rear_in, rear_out, front_out, front_in]
+        """
+        named_keys_normal = ['front_in', 'front_out', 'rear_out', 'rear_in']
+        named_keys_reversed = ['rear_in', 'rear_out', 'front_out', 'front_in']
+        
+        if not self.enable_seven_segment or not self.is_data_fresh():
+            return {
+                'seven_segment_count': 0,
+                'seven_segment_timestamp': float('nan'),
+                'front_in': float('nan'),
+                'front_out': float('nan'),
+                'rear_out': float('nan'),
+                'rear_in': float('nan'),
+            }
+        
+        keys_order = named_keys_reversed if sensor_reversed else named_keys_normal
+        result = {
+            'seven_segment_count': self.valid_count,
+            'seven_segment_timestamp': self.timestamp,
+        }
+        
+        # indexに応じて名前付きキーへ割り当て（不足分はNaN）
+        values = self.latest_data if self.latest_data is not None else []
+        for i in range(4):
+            value = values[i] if i < len(values) else float('nan')
+            result[keys_order[i]] = value
+        
+        # 念のためすべてのキーを含める
+        for k in ['front_in', 'front_out', 'rear_out', 'rear_in']:
+            if k not in result:
+                result[k] = float('nan')
+        
+        return result

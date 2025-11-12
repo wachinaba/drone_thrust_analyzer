@@ -439,13 +439,14 @@ class AutoThrustRecorder(Node):
         
         # フローセンサーのデータを追加
         if self.flow_sensor:
-            wind_speed_data = self.flow_sensor.get_wind_speed_data()
+            wind_speed_data = self.flow_sensor.get_named_wind_speed_data(self.sensor_reversed)
             row.update(wind_speed_data)
         else:
             # フローセンサーが無効またはデータがない場合はNaNで埋める
-            max_elements = self.declare_parameter("max_elements", 4).get_parameter_value().integer_value
-            for i in range(max_elements):
-                row[f"seven_segment_value_{i}"] = float('nan')
+            row["front_in"] = float('nan')
+            row["front_out"] = float('nan')
+            row["rear_out"] = float('nan')
+            row["rear_in"] = float('nan')
             row["seven_segment_count"] = 0
             row["seven_segment_timestamp"] = float('nan')
         if self.sensor_reversed:
