@@ -386,30 +386,10 @@ def main():
                 df_processed = df.copy()
                 file_params = file_params_map.get(file, {})
 
-                # 任意列が存在しない場合は欠損列を作成して後段集計を安定化
-                optional_cols = ['seven_segment_value_0', 'seven_segment_value_1', 'seven_segment_value_2', 'seven_segment_value_3']
-                for col in optional_cols:
+                # 風速の新形式のみを扱う（旧列からの自動変換は行わない）
+                for col in ['front_in', 'front_out', 'rear_out', 'rear_in']:
                     if col not in df_processed.columns:
                         df_processed[col] = np.nan
-
-                # seven_segment に名前を付与（"back" を含む場合は front/rear を入れ替え）
-                keyword_value = str(file_params.get('keyword', group_params.get('keyword', ''))).lower()
-                if 'back' in keyword_value:
-                    name_map = {
-                        'front_in': 'seven_segment_value_3',
-                        'front_out': 'seven_segment_value_2',
-                        'rear_out': 'seven_segment_value_1',
-                        'rear_in': 'seven_segment_value_0',
-                    }
-                else:
-                    name_map = {
-                        'front_in': 'seven_segment_value_0',
-                        'front_out': 'seven_segment_value_1',
-                        'rear_out': 'seven_segment_value_2',
-                        'rear_in': 'seven_segment_value_3',
-                    }
-                for new_name, src_col in name_map.items():
-                    df_processed[new_name] = df_processed[src_col]
 
                 # 先頭スキップ（time列から計算した time_elapsed を使用）
                 if hasattr(args, 'skip_seconds') and args.skip_seconds > 0:
@@ -449,7 +429,7 @@ def main():
                 if 'file_timestamp' not in df_processed.columns:
                     df_processed['file_timestamp'] = np.nan
 
-                for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z', 'seven_segment_value_0', 'seven_segment_value_1', 'seven_segment_value_2', 'seven_segment_value_3', 'front_in', 'front_out', 'rear_out', 'rear_in']:
+                for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z', 'front_in', 'front_out', 'rear_out', 'rear_in']:
                     df_processed[f"{col}_partial_variance"] = df_processed.groupby('target_thrust')[col].transform("var")
 
                 combined_data_group.append(df_processed)
@@ -486,10 +466,6 @@ def main():
             torque_x=('torque_x', agg_func),
             torque_y=('torque_y', agg_func),
             torque_z=('torque_z', agg_func),
-            seven_segment_value_0=('seven_segment_value_0', agg_func),
-            seven_segment_value_1=('seven_segment_value_1', agg_func),
-            seven_segment_value_2=('seven_segment_value_2', agg_func),
-            seven_segment_value_3=('seven_segment_value_3', agg_func),
             front_in=('front_in', agg_func),
             front_out=('front_out', agg_func),
             rear_out=('rear_out', agg_func),
@@ -501,10 +477,6 @@ def main():
             variance_torque_x=('torque_x_partial_variance', agg_func),
             variance_torque_y=('torque_y_partial_variance', agg_func),
             variance_torque_z=('torque_z_partial_variance', agg_func),
-            variance_seven_segment_value_0=('seven_segment_value_0_partial_variance', agg_func),
-            variance_seven_segment_value_1=('seven_segment_value_1_partial_variance', agg_func),
-            variance_seven_segment_value_2=('seven_segment_value_2_partial_variance', agg_func),
-            variance_seven_segment_value_3=('seven_segment_value_3_partial_variance', agg_func),
             variance_front_in=('front_in_partial_variance', agg_func),
             variance_front_out=('front_out_partial_variance', agg_func),
             variance_rear_out=('rear_out_partial_variance', agg_func),
