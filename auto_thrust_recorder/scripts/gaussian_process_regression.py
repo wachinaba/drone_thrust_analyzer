@@ -432,7 +432,7 @@ def apply_facet_filters(df_clean, filters):
             continue
     return df_out
 
-def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_size, fixes, ranges, output_prefix, include_std, overlay_raw=False):
+def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_size, fixes, ranges, output_prefix, include_std, overlay_raw=False, contour_lines=False, contour_levels=10, contour_color='k', contour_linewidth=0.8, contour_alpha=0.8):
     fixed_values = parse_fixed_values(fixes, feature_columns, df_clean)
     mins, maxs = parse_ranges(ranges, feature_columns, df_clean)
 
@@ -464,12 +464,64 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
             Zm = y_mean.reshape(grid_size, grid_size)
             Zs = y_std.reshape(grid_size, grid_size)
 
-            # 平均のヒートマップ
+            # 平均のヒートマップ（このペアの予測レンジに合わせてスケール）
             plt.figure(figsize=(12, 10))
             plt.rcParams.update({'font.size': 18})
-            plt.imshow(Zm, origin='lower', aspect='auto',
-                       extent=[mins[fi], maxs[fi], mins[fj], maxs[fj]],
-                       cmap='viridis')
+            zmin = float(np.nanmin(Zm))
+            zmax = float(np.nanmax(Zm))
+            if not np.isfinite(zmin) or not np.isfinite(zmax):
+                zmin, zmax = 0.0, 1.0
+            if zmin == zmax:
+                eps = 1e-6
+                zmin -= eps
+                zmax += eps
+            im_mean = plt.imshow(
+                Zm,
+                origin='lower',
+                aspect='auto',
+                extent=[mins[fi], maxs[fi], mins[fj], maxs[fj]],
+                cmap='viridis',
+                vmin=zmin,
+                vmax=zmax
+            )
+            # 等高線（予測平均のみに重畳）
+            if contour_lines:
+                try:
+                    cs = plt.contour(
+                        XI,
+                        XJ,
+                        Zm,
+                        levels=int(contour_levels) if isinstance(contour_levels, (int, np.integer)) else contour_levels,
+                        colors=contour_color,
+                        linewidths=contour_linewidth,
+                        alpha=contour_alpha,
+                        zorder=2
+                    )
+                    try:
+                        plt.clabel(cs, inline=True, fmt='%.2g', fontsize=12, colors=contour_color)
+                    except Exception:
+                        pass
+                    # 0レベルの等高線を赤で強調
+                    if zmin <= 0.0 <= zmax:
+                        try:
+                            cs0 = plt.contour(
+                                XI,
+                                XJ,
+                                Zm,
+                                levels=[0.0],
+                                colors='r',
+                                linewidths=max(contour_linewidth * 1.5, 1.5),
+                                alpha=1.0,
+                                zorder=4
+                            )
+                            try:
+                                plt.clabel(cs0, inline=True, fmt='0', fontsize=12, colors='r')
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             if overlay_raw:
                 xi_raw = df_clean[fi].values
                 xj_raw = df_clean[fj].values
@@ -484,7 +536,7 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
                     linewidths=0.7,
                     zorder=3
                 )
-            plt.colorbar(label='予測平均 (torque_x)')
+            plt.colorbar(im_mean, label='予測平均 (torque_x)')
             plt.xlabel(fi)
             plt.ylabel(fj)
             plt.title(f'予測ヒートマップ: {fi} vs {fj}')
@@ -499,7 +551,7 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
             if include_std:
                 plt.figure(figsize=(12, 10))
                 plt.rcParams.update({'font.size': 18})
-                plt.imshow(Zs, origin='lower', aspect='auto',
+                im_std = plt.imshow(Zs, origin='lower', aspect='auto',
                            extent=[mins[fi], maxs[fi], mins[fj], maxs[fj]],
                            cmap='magma')
                 if overlay_raw:
@@ -516,7 +568,7 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
                         linewidths=0.7,
                         zorder=3
                     )
-                plt.colorbar(label='予測標準偏差')
+                plt.colorbar(im_std, label='予測標準偏差')
                 plt.xlabel(fi)
                 plt.ylabel(fj)
                 plt.title(f'標準偏差ヒートマップ: {fi} vs {fj}')
@@ -879,6 +931,11 @@ def main():
     parser.add_argument('--range', dest='ranges', action='append', default=None, help="各軸の範囲 'col:min,max' を複数指定可")
     parser.add_argument('--std-heatmaps', action='store_true', help='標準偏差のヒートマップも保存')
     parser.add_argument('--overlay-raw', action='store_true', help='ヒートマップ上に生データ点 (×) を重ねて表示')
+    parser.add_argument('--contour-lines', action='store_true', help='予測平均ヒートマップに等高線を重ねて描画')
+    parser.add_argument('--contour-levels', type=int, default=10, help='等高線レベル数（デフォルト: 10）')
+    parser.add_argument('--contour-color', type=str, default='k', help='等高線の色（例: k, w, #RRGGBB）')
+    parser.add_argument('--contour-linewidth', type=float, default=0.8, help='等高線の線幅（デフォルト: 0.8）')
+    parser.add_argument('--contour-alpha', type=float, default=0.8, help='等高線の透明度（デフォルト: 0.8）')
     # 生データとフィット曲線の比較
     parser.add_argument('--plot-raw-fit', action='store_true', help='グループごとに生データ散布とGPRフィット曲線（±2σ帯）を比較表示')
     parser.add_argument('--group-by', type=str, default=None, help='グループ化に用いる列をカンマ区切りで指定（例: distance,tilt_angle）')
@@ -1227,7 +1284,12 @@ def main():
                 ranges=args.ranges,
                 output_prefix=output_prefix,
                 include_std=args.std_heatmaps,
-                overlay_raw=args.overlay_raw
+                overlay_raw=args.overlay_raw,
+                contour_lines=args.contour_lines,
+                contour_levels=args.contour_levels,
+                contour_color=args.contour_color,
+                contour_linewidth=args.contour_linewidth,
+                contour_alpha=args.contour_alpha
             )
         
         # グループ別 生データ散布 + GPRフィット曲線（±2σ）
