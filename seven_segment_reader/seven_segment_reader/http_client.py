@@ -53,6 +53,11 @@ class SevenSegmentReaderServerNode(Node):
         # ログ設定
         self.setup_logging()
         
+        # 表示ウィンドウ設定（初回の受信画像サイズに固定）
+        self.window_name = '7-Segment Detection Results'
+        self.window_initialized = False
+        self.window_size = None  # (width, height)
+
         self.get_logger().info("7セグメントディスプレイ読み取りノード（HTTP取得版）が開始されました")
         self.get_logger().info(f"DOIサーバーURL: {self.doi_server_url}")
         self.get_logger().info(f"処理間隔: {self.processing_interval}秒")
@@ -323,10 +328,36 @@ class SevenSegmentReaderServerNode(Node):
             if 'image' in data:
                 img = self.decode_image_from_base64(data['image'])
             
+            # 初回の実画像取得時にウィンドウサイズを固定
+            if not self.window_initialized and img is not None:
+                try:
+                    h, w = img.shape[:2]
+                    self.window_size = (w, h)
+                    # AUTOSIZEで作成し、以後は表示する画像をこのサイズに合わせる
+                    cv2.namedWindow(self.window_name, cv2.WINDOW_AUTOSIZE)
+                    self.window_initialized = True
+                    self.get_logger().info(f"ウィンドウサイズを初回受信画像に固定: {w}x{h}")
+                except Exception:
+                    pass
+
+            # ウィンドウが初期化済みなら、表示画像を固定サイズにリサイズ
+            if self.window_initialized and self.window_size is not None:
+                target_w, target_h = self.window_size
+                if img is None:
+                    # 画像が無い場合は固定サイズの黒キャンバス
+                    img = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+                else:
+                    h, w = img.shape[:2]
+                    if (w, h) != (target_w, target_h):
+                        try:
+                            img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                        except Exception:
+                            pass
+
             # DOI数と画像サイズからDOIサイズを推定
             doi_count = len(numeric_values) if numeric_values else int(data.get('doi_count', 0) or 0)
-            img_width = img.shape[1] if img is not None else 480
-            img_height = img.shape[0] if img is not None else 200
+            img_width = img.shape[1] if img is not None else (self.window_size[0] if self.window_size else 480)
+            img_height = img.shape[0] if img is not None else (self.window_size[1] if self.window_size else 200)
             
             # DOIサイズ推定（横並びと仮定）
             doi_width = img_width // max(1, doi_count) if doi_count > 0 else img_width
@@ -350,10 +381,13 @@ class SevenSegmentReaderServerNode(Node):
                 for i in range(doi_count):
                     display_texts.append([f"DOI {i+1}:", "n/a", ""])
 
-            # 画像が無ければ黒背景のキャンバスを生成
+            # 画像が無ければ黒背景のキャンバスを生成（固定サイズがあればそれを使用）
             if img is None:
-                height = 20 + 3 * 20 + 10  # 3行分の高さ
-                width = max(480, doi_count * doi_width)  # DOI数×推定DOI幅
+                if self.window_size is not None:
+                    width, height = self.window_size
+                else:
+                    height = 20 + 3 * 20 + 10  # 3行分の高さ
+                    width = max(480, doi_count * doi_width)  # DOI数×推定DOI幅
                 img = np.zeros((height, width, 3), dtype=np.uint8)
             
             # オーバーレイ描画（DOIサイズに基づく配置）
@@ -384,7 +418,7 @@ class SevenSegmentReaderServerNode(Node):
             except Exception:
                 pass
 
-            cv2.imshow('7-Segment Detection Results', img)
+            cv2.imshow(self.window_name, img)
             cv2.waitKey(1)
         
         # ROSメッセージのパブリッシュ

@@ -29,6 +29,11 @@ class AutoThrustRecorder(Node):
 
         # tilt0deg_fold0deg: y = 116.47x2 + 20.482x + 0.6069
 
+        # tilt15deg_fold0deg: y = 109.76x2 + 20.829x + 0.5509
+
+        # tilt30deg_fold0deg: y = 97.337x2 + 19.195x + 0.6036
+
+
         thrust_coefs = {
             "0deg_long": [117.9, 21.811, 0.5403],
             "15deg_long": [113.8, 22.766, 0.6355],
@@ -38,6 +43,8 @@ class AutoThrustRecorder(Node):
             "0deg_short": [126.67, 14.089, 0.6691],
             "linear": [0.0, 1.0, 0.0],
             "tilt0deg_fold0deg": [116.47, 20.482, 0.6069],
+            "tilt15deg_fold0deg": [109.76, 20.829, 0.5509],
+            "tilt30deg_fold0deg": [97.337, 19.195, 0.6036],
             "tilt-15deg_fold15deg": [110.97, 18.971, 0.5445],
             "tilt-30deg_fold15deg": [96.732, 16.219, 0.7684],
             "tilt0deg_fold15deg": [124.45, 17.182, 0.6627],
