@@ -59,8 +59,11 @@ def extract_parameters(filename):
     else:
         return None
 
-def read_and_extract_data(file_path):
+def read_and_extract_data(file_path, dropna_mode='any', dropna_subset=None):
     """CSVファイルを読み込み、必要なカラムを抽出する関数。
+
+    dropna_mode: 'any'（デフォルト）, 'all', 'none'
+    dropna_subset: dropna 対象列名のリスト（None の場合は全列）
 
     戻り値: (DataFrame | None, エラー理由文字列 | None)
     """
@@ -75,7 +78,15 @@ def read_and_extract_data(file_path):
         return None, f"ReadError: {e}"
 
     try:
-        extracted_df = df.dropna()
+        if dropna_mode == 'none':
+            extracted_df = df.copy()
+        else:
+            dropna_kwargs = {'how': dropna_mode}
+            if dropna_subset:
+                if isinstance(dropna_subset, str):
+                    dropna_subset = [dropna_subset]
+                dropna_kwargs['subset'] = dropna_subset
+            extracted_df = df.dropna(**dropna_kwargs)
         if extracted_df.empty:
             return None, "EmptyDataAfterDropNA"
 
@@ -123,7 +134,66 @@ def parse_arguments():
     parser.add_argument('--output', type=str, required=True, help="すべてのプレフィックスの処理結果を1つのCSVファイルにまとめてエクスポートするファイル名")
     parser.add_argument('-s', '--skip-seconds', type=float, default=0.0, help="各CSVの先頭から指定秒数をスキップして集計（time列を基準）")
     parser.add_argument('--step-warmup', type=float, default=0.5, help="各ステップ立ち上がり時の除外秒数（0で無効）")
+    parser.add_argument('--agg', type=str, choices=['median', 'mean'], default='median', help="集計関数を選択（median/mean、デフォルト: median）")
+    parser.add_argument('--iqr-filter', action='store_true', help="IQRによる外れ値除去を有効化（グループ単位）")
+    parser.add_argument('--iqr-multiplier', type=float, default=1.5, help="IQRウィスカー係数（デフォルト: 1.5）")
+    parser.add_argument('--iqr-columns', nargs='+', type=str, default=['force_x','force_y','force_z','torque_x','torque_y','torque_z'], help="IQR外れ値判定の対象カラム群")
+    parser.add_argument('--iqr-mode', type=str, choices=['any', 'all'], default='any', help="外れ値結合規則（any=いずれか外れ値で除去 / all=全て外れ値で除去）")
+    parser.add_argument('--dropna-mode', type=str, choices=['any', 'all', 'none'], default='any', help="dropnaのモード（any/all/none、デフォルト: any）")
+    parser.add_argument('--dropna-subset', nargs='+', type=str, default=None, help="dropnaを適用する列名のリスト（指定しない場合は全列）")
     return parser.parse_args()
+
+def apply_iqr_filter(df, columns, multiplier=1.5, mode='any'):
+    """target_thrust ごとに IQR で外れ値を除去した DataFrame を返す。
+
+    columns: 判定対象カラム名のリスト
+    multiplier: ウィスカー係数（通常1.5）
+    mode: 'any' はいずれか列が外れ値なら除去、'all' は全列が外れ値のときのみ除去
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    # 存在する列かつ数値列に限定
+    valid_columns = [c for c in columns if c in df.columns]
+    if not valid_columns:
+        return df
+
+    def filter_group(g):
+        if g.empty:
+            return g
+        masks = []
+        for c in valid_columns:
+            s = g[c]
+            try:
+                q1 = s.quantile(0.25)
+                q3 = s.quantile(0.75)
+            except Exception:
+                masks.append(pd.Series([True] * len(g), index=g.index))
+                continue
+            iqr = q3 - q1
+            if pd.isna(q1) or pd.isna(q3) or iqr == 0:
+                masks.append(pd.Series([True] * len(g), index=g.index))
+                continue
+            lower = q1 - multiplier * iqr
+            upper = q3 + multiplier * iqr
+            masks.append((s >= lower) & (s <= upper))
+
+        if not masks:
+            return g
+
+        inlier_mask = masks[0]
+        if mode == 'any':
+            # いずれか列が外れ値 -> 除去 => 全列が範囲内のみ残す（AND）
+            for m in masks[1:]:
+                inlier_mask = inlier_mask & m
+        else:
+            # 全列が外れ値 -> 除去 => いずれか列が範囲内なら残す（OR）
+            for m in masks[1:]:
+                inlier_mask = inlier_mask | m
+
+        return g.loc[inlier_mask]
+
+    return df.groupby('target_thrust', group_keys=False).apply(filter_group)
 
 def export_data_to_csv(combined_df, output_file):
     """結合されたデータをCSVファイルにエクスポートする関数。"""
@@ -217,7 +287,11 @@ def main():
         combined_data_group = []
         for file in files:
             print(f"  処理中のファイル: {file}")
-            df, err_reason = read_and_extract_data(file)
+            df, err_reason = read_and_extract_data(
+                file,
+                dropna_mode=getattr(args, 'dropna_mode', 'any'),
+                dropna_subset=getattr(args, 'dropna_subset', None)
+            )
             if df is None or (hasattr(df, 'empty') and df.empty):
                 print(f"  ファイル {file} の読み込みまたは抽出に失敗しました。スキップします。")
                 failed_data_files.append((file, err_reason or "EmptyDataFrame"))
@@ -304,38 +378,48 @@ def main():
         # すべてのファイルからのデータを結合
         concatenated_group = pd.concat(combined_data_group, ignore_index=True)
 
-        # target_thrustでグループ化して統計量を計算
+        # IQRフィルタ（有効な場合）: groupby前に target_thrust ごとで実施
+        if hasattr(args, 'iqr_filter') and args.iqr_filter:
+            concatenated_group = apply_iqr_filter(
+                concatenated_group,
+                columns=getattr(args, 'iqr_columns', ['force_x','force_y','force_z','torque_x','torque_y','torque_z']),
+                multiplier=getattr(args, 'iqr_multiplier', 1.5),
+                mode=getattr(args, 'iqr_mode', 'any')
+            )
+
+        # target_thrustでグループ化して統計量を計算（agg切替）
+        agg_func = getattr(args, 'agg', 'median')
         grouped_stats = concatenated_group.groupby('target_thrust').agg(
             sample_count=('target_thrust', 'count'),
-            control=('control', 'median'),
-            force_x=('force_x', 'median'),
-            force_y=('force_y', 'median'),
-            force_z=('force_z', 'median'),
-            torque_x=('torque_x', 'median'),
-            torque_y=('torque_y', 'median'),
-            torque_z=('torque_z', 'median'),
-            seven_segment_value_0=('seven_segment_value_0', 'median'),
-            seven_segment_value_1=('seven_segment_value_1', 'median'),
-            seven_segment_value_2=('seven_segment_value_2', 'median'),
-            seven_segment_value_3=('seven_segment_value_3', 'median'),
-            front_in=('front_in', 'median'),
-            front_out=('front_out', 'median'),
-            rear_out=('rear_out', 'median'),
-            rear_in=('rear_in', 'median'),
-            variance_force_x=('force_x_partial_variance', 'median'),
-            variance_force_y=('force_y_partial_variance', 'median'),
-            variance_force_z=('force_z_partial_variance', 'median'),
-            variance_torque_x=('torque_x_partial_variance', 'median'),
-            variance_torque_y=('torque_y_partial_variance', 'median'),
-            variance_torque_z=('torque_z_partial_variance', 'median'),
-            variance_seven_segment_value_0=('seven_segment_value_0_partial_variance', 'median'),
-            variance_seven_segment_value_1=('seven_segment_value_1_partial_variance', 'median'),
-            variance_seven_segment_value_2=('seven_segment_value_2_partial_variance', 'median'),
-            variance_seven_segment_value_3=('seven_segment_value_3_partial_variance', 'median'),
-            variance_front_in=('front_in_partial_variance', 'median'),
-            variance_front_out=('front_out_partial_variance', 'median'),
-            variance_rear_out=('rear_out_partial_variance', 'median'),
-            variance_rear_in=('rear_in_partial_variance', 'median')
+            control=('control', agg_func),
+            force_x=('force_x', agg_func),
+            force_y=('force_y', agg_func),
+            force_z=('force_z', agg_func),
+            torque_x=('torque_x', agg_func),
+            torque_y=('torque_y', agg_func),
+            torque_z=('torque_z', agg_func),
+            seven_segment_value_0=('seven_segment_value_0', agg_func),
+            seven_segment_value_1=('seven_segment_value_1', agg_func),
+            seven_segment_value_2=('seven_segment_value_2', agg_func),
+            seven_segment_value_3=('seven_segment_value_3', agg_func),
+            front_in=('front_in', agg_func),
+            front_out=('front_out', agg_func),
+            rear_out=('rear_out', agg_func),
+            rear_in=('rear_in', agg_func),
+            variance_force_x=('force_x_partial_variance', agg_func),
+            variance_force_y=('force_y_partial_variance', agg_func),
+            variance_force_z=('force_z_partial_variance', agg_func),
+            variance_torque_x=('torque_x_partial_variance', agg_func),
+            variance_torque_y=('torque_y_partial_variance', agg_func),
+            variance_torque_z=('torque_z_partial_variance', agg_func),
+            variance_seven_segment_value_0=('seven_segment_value_0_partial_variance', agg_func),
+            variance_seven_segment_value_1=('seven_segment_value_1_partial_variance', agg_func),
+            variance_seven_segment_value_2=('seven_segment_value_2_partial_variance', agg_func),
+            variance_seven_segment_value_3=('seven_segment_value_3_partial_variance', agg_func),
+            variance_front_in=('front_in_partial_variance', agg_func),
+            variance_front_out=('front_out_partial_variance', agg_func),
+            variance_rear_out=('rear_out_partial_variance', agg_func),
+            variance_rear_in=('rear_in_partial_variance', agg_func)
         ).reset_index()
 
         # パラメータ情報を追加
