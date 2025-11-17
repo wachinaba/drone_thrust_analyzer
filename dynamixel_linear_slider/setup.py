@@ -31,7 +31,7 @@ setup(
     description='Dynamixel linear slider velocity control package',
     license='TODO: License declaration',
     tests_require=['pytest'],
-            entry_points={
+        entry_points={
             'console_scripts': [
                 'velocity_publisher = dynamixel_linear_slider.velocity_publisher:main',
                 'velocity_sine_publisher = dynamixel_linear_slider.velocity_sine_publisher:main',
@@ -50,6 +50,8 @@ setup(
                 'position_test_publisher_node = dynamixel_linear_slider.position_test_publisher_node:main',
                 'position_command_and_wait_node = dynamixel_linear_slider.position_command_and_wait_node:main',
                 'extended_position_estimator_node = dynamixel_linear_slider.extended_position_estimator_node:main',
+                'calibrated_slider_controller_node = dynamixel_linear_slider.calibrated_slider_controller_node:main',
+                'ar_marker_web_client_node = dynamixel_linear_slider.ar_marker_web_client_node:main',
             ],
         },
 )

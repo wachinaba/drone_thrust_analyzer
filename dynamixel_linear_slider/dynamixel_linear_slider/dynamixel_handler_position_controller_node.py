@@ -15,30 +15,14 @@ class DynamixelHandlerPositionControllerNode(Node):
         self.declare_parameter('control_frequency', 100.0)
         self.declare_parameter('rack_pitch', 0.106214)
         self.declare_parameter('gear_ratio', 1.0)
-        
-        # 収束判定パラメータ
-        self.declare_parameter('convergence_threshold', 0.002)  # 位置偏差の閾値 (m)
-        self.declare_parameter('convergence_duration', 1.0)    # 収束判定に必要な持続時間 (秒)
-        self.declare_parameter('velocity_zero_threshold', 0.01) # velocityコマンドのゼロ判定閾値 (m/s)
-        self.declare_parameter('enable_convergence_brake', True) # 収束ブレーキの有効/無効
-        
-        # 移動状態判定パラメータ
-        self.declare_parameter('movement_velocity_threshold', 0.005) # 移動判定の速度閾値 (m/s)
-        self.declare_parameter('movement_position_threshold', 0.001) # 移動判定の位置偏差閾値 (m)
+        self.declare_parameter('profile_velocity_deg_s', 1000.0)  # プロファイル速度（度/秒）: 高め
+        self.declare_parameter('profile_accel_deg_ss', 200.0)     # プロファイル加速度（度/秒^2）: ゆっくり
         
         self.control_frequency = self.get_parameter('control_frequency').value
         self.rack_pitch = self.get_parameter('rack_pitch').value
         self.gear_ratio = self.get_parameter('gear_ratio').value
-        
-        # 収束判定パラメータ
-        self.convergence_threshold = self.get_parameter('convergence_threshold').value
-        self.convergence_duration = self.get_parameter('convergence_duration').value
-        self.velocity_zero_threshold = self.get_parameter('velocity_zero_threshold').value
-        self.enable_convergence_brake = self.get_parameter('enable_convergence_brake').value
-        
-        # 移動状態判定パラメータ
-        self.movement_velocity_threshold = self.get_parameter('movement_velocity_threshold').value
-        self.movement_position_threshold = self.get_parameter('movement_position_threshold').value
+        self.profile_velocity_deg_s = self.get_parameter('profile_velocity_deg_s').value
+        self.profile_accel_deg_ss = self.get_parameter('profile_accel_deg_ss').value
         
         # サブスクライバーの設定
         self.estimated_position_subscription = self.create_subscription(
@@ -54,13 +38,6 @@ class DynamixelHandlerPositionControllerNode(Node):
             self.target_position_callback,
             10
         )
-        
-        self.feedforward_velocity_subscription = self.create_subscription(
-            Float64,
-            'feedforward_velocity',
-            self.feedforward_velocity_callback,
-            10
-        )
 
         self.dynamixel_present_state_subscription = self.create_subscription(
             DxlStates,
@@ -68,12 +45,10 @@ class DynamixelHandlerPositionControllerNode(Node):
             self.dynamixel_present_state_callback,
             10
         )
-        
-        # velocityコマンドの監視用サブスクライバー
-        self.velocity_command_subscription = self.create_subscription(
+        self.origin_offset_subscription = self.create_subscription(
             Float64,
-            'velocity_command',
-            self.velocity_command_callback,
+            'origin_offset_deg',
+            self.origin_offset_callback,
             10
         )
         
@@ -94,40 +69,35 @@ class DynamixelHandlerPositionControllerNode(Node):
         # 制御用の変数
         self.estimated_position = 0.0
         self.target_position = 0.0
-        self.feedforward_velocity = 0.0
-        self.velocity_command = 0.0  # velocityコマンドの監視用
-
         self.current_dynamixel_position_deg = 0.0
+        self.origin_offset_deg = 0.0
+        self.origin_offset_valid = False
 
         self.m_to_deg_factor = 360.0 / self.rack_pitch * self.gear_ratio
 
         # データの有効性フラグ
-        self.estimated_position_valid = False
+        self.estimated_position_valid = False  # 原点復帰の確認用
         self.target_position_valid = False
-        self.feedforward_velocity_valid = False
         self.dynamixel_present_state_valid = False
-        self.velocity_command_valid = False
         
-        # 収束判定用の変数
-        self.convergence_start_time = None
-        self.is_converged = False
-        self.brake_applied = False
-        
-        # 移動状態管理
+        # 移動状態管理（簡易版：目標位置と推定位置の差で判定）
         self.is_moving = False
+        
+        # 警告フラグ（初回のみ警告を表示）
+        self.origin_warning_issued = False
         
         # タイマーの設定
         self.timer = self.create_timer(
             1.0 / self.control_frequency,
             self.control_timer_callback)
         
-        self.get_logger().info('DynamixelHandlerPositionControllerNode initialized')
-        self.get_logger().info(f'Convergence threshold: {self.convergence_threshold} m')
-        self.get_logger().info(f'Convergence duration: {self.convergence_duration} s')
-        self.get_logger().info(f'Velocity zero threshold: {self.velocity_zero_threshold} m/s')
-        self.get_logger().info(f'Enable convergence brake: {self.enable_convergence_brake}')
-        self.get_logger().info(f'Movement velocity threshold: {self.movement_velocity_threshold} m/s')
-        self.get_logger().info(f'Movement position threshold: {self.movement_position_threshold} m')
+        self.get_logger().info('DynamixelHandlerPositionControllerNode initialized (simplified mode)')
+        self.get_logger().info(f'Control frequency: {self.control_frequency} Hz')
+        self.get_logger().info(f'Rack pitch: {self.rack_pitch} m/rev')
+        self.get_logger().info(f'Gear ratio: {self.gear_ratio}')
+        self.get_logger().info(f'Profile velocity: {self.profile_velocity_deg_s} deg/s')
+        self.get_logger().info(f'Profile acceleration: {self.profile_accel_deg_ss} deg/s^2')
+        self.get_logger().info('Control mode: Simple position command (control handled by Dynamixel)')
         
         
     def estimated_position_callback(self, msg):
@@ -138,126 +108,81 @@ class DynamixelHandlerPositionControllerNode(Node):
         self.target_position = msg.data
         self.target_position_valid = True
     
-    def feedforward_velocity_callback(self, msg):
-        self.feedforward_velocity = msg.data
-        self.feedforward_velocity_valid = True
-    
-    def velocity_command_callback(self, msg):
-        """velocityコマンドのコールバック"""
-        self.velocity_command = msg.data
-        self.velocity_command_valid = True
-    
     def dynamixel_present_state_callback(self, msg):
         present_state = msg.present
         if len(present_state.id_list) > 0:
             self.current_dynamixel_position_deg = present_state.position_deg[0]
             self.dynamixel_present_state_valid = True
+    
+    def origin_offset_callback(self, msg):
+        self.origin_offset_deg = msg.data
+        self.origin_offset_valid = True
 
     def calculate_position_error(self):
-        if not self.estimated_position_valid or not self.target_position_valid or not self.dynamixel_present_state_valid:
+        """位置偏差を計算（移動状態判定用）"""
+        if not self.estimated_position_valid or not self.target_position_valid:
             return 0.0
         
         error = self.target_position - self.estimated_position
         return error
     
-    def publish_movement_status(self):
-        """移動状態をパブリッシュ"""
+    def update_movement_status(self):
+        """移動状態を更新"""
+        if not self.estimated_position_valid or not self.target_position_valid:
+            self.is_moving = False
+            return
+        
+        position_error = abs(self.calculate_position_error())
+        # 位置偏差が0.001m以上の場合、移動中と判定
+        self.is_moving = position_error > 0.001
+        
         status_msg = Bool()
         status_msg.data = self.is_moving
-        
         self.movement_status_publisher.publish(status_msg)
-        
-        """
-        # デバッグ用ログ（状態変化時のみ出力）
-        if self.is_moving:
-            self.get_logger().info("Movement status: MOVING")
-        else:
-            self.get_logger().info("Movement status: STOPPED")
-        """
-    
-    def check_convergence(self):
-        """収束判定"""
-        if not self.enable_convergence_brake:
-            return False
-        
-        # 位置偏差の計算
-        position_error = abs(self.calculate_position_error())
-        
-        # velocityコマンドのゼロ判定
-        velocity_is_zero = abs(self.velocity_command) <= self.velocity_zero_threshold
-        
-        # 収束条件の確認
-        if position_error <= self.convergence_threshold and velocity_is_zero:
-            # 初回収束検出時
-            if self.convergence_start_time is None:
-                self.convergence_start_time = time.time()
-                self.get_logger().info(f'Convergence detected: position_error={position_error:.6f}m, velocity={self.velocity_command:.6f}m/s')
-            
-            # 収束持続時間の確認
-            elif time.time() - self.convergence_start_time >= self.convergence_duration:
-                if not self.is_converged:
-                    self.is_converged = True
-                    self.get_logger().info(f'Position converged for {self.convergence_duration}s: position_error={position_error:.6f}m, velocity={self.velocity_command:.6f}m/s')
-                return True
-        else:
-            # 収束条件を満たさない場合、リセット
-            if self.convergence_start_time is not None:
-                self.convergence_start_time = None
-                self.is_converged = False
-                self.get_logger().debug(f'Convergence reset: position_error={position_error:.6f}m, velocity={self.velocity_command:.6f}m/s')
-        
-        return False
     
     def control_timer_callback(self):
-        if not self.estimated_position_valid or not self.target_position_valid or not self.feedforward_velocity_valid or not self.dynamixel_present_state_valid:
+        """
+        制御タイマーコールバック
+        常に目標位置をDynamixelに送信する（制御はDynamixel側で行う）
+        """
+        # 目標位置が有効でない場合は送信しない
+        if not self.target_position_valid:
             return
         
-        # 収束判定
-        self.is_moving = not self.check_convergence()
-        self.publish_movement_status()
-
-        if not self.is_moving:
-            self.apply_brake()
-            return
+        # 原点復帰が完了していない場合の警告（初回のみ）
+        if not self.estimated_position_valid and not self.origin_warning_issued:
+            self.get_logger().warn('Warning: Origin not reset yet. Position control may be inaccurate.')
+            self.origin_warning_issued = True
         
-        # 通常の制御処理
-        position_error = self.calculate_position_error()
-        degree_error = position_error * self.m_to_deg_factor
-
-        feedforward_velocity_deg_s = self.feedforward_velocity * self.m_to_deg_factor
-
-        self.publish_position_command(degree_error, feedforward_velocity_deg_s)
+        # 移動状態を更新
+        self.update_movement_status()
         
-    def publish_position_command(self, position_error, feedforward_velocity_deg_s):
+        # 目標位置をそのまま送信（制御はDynamixel側で行う）
+        self.publish_position_command()
+        
+    def publish_position_command(self):
+        """
+        位置制御コマンドを送信
+        
+        単純に目標位置を度に変換してDynamixelに送信するだけ。
+        制御はDynamixel側で行う。
+        """
         dxl_msg = DxlCommandsX()
         dxl_msg.extended_position_control.id_list = [1]
-        dxl_msg.extended_position_control.position_deg = [position_error + self.current_dynamixel_position_deg]
-
-        velocity_control = math.fabs(feedforward_velocity_deg_s)
-
-        # 少し余裕を持たせる
-        velocity_control_compensated = velocity_control * 1.3
-
-        if (velocity_control_compensated < 20.0):
-            velocity_control_compensated = 20.0
         
-        dxl_msg.extended_position_control.profile_vel_deg_s = [velocity_control_compensated]
+        # 目標位置を度に変換して送信
+        target_position_deg = self.target_position * self.m_to_deg_factor
+        # ARマーカー原点オフセットを加味（原点未設定時は0）
+        if self.origin_offset_valid:
+            target_position_deg += self.origin_offset_deg
+        dxl_msg.extended_position_control.position_deg = [target_position_deg]
+        
+        # プロファイル速度を設定
+        dxl_msg.extended_position_control.profile_vel_deg_s = [self.profile_velocity_deg_s]
+        # プロファイル加速度も設定
+        dxl_msg.extended_position_control.profile_acc_deg_ss = [self.profile_accel_deg_ss]
 
         self.dynamixel_command_publisher.publish(dxl_msg)
-        
-    def apply_brake(self):
-        """ブレーキ処理の実行"""
-        self.publish_brake_command()
-        #self.get_logger().info('Brake applied due to position convergence')
-        
-    def publish_brake_command(self):
-        """ブレーキコマンドの送信"""
-        dxl_msg = DxlCommandsX()
-        dxl_msg.velocity_control.id_list = [1]
-        dxl_msg.velocity_control.velocity_deg_s = [0.0]
-        dxl_msg.velocity_control.profile_acc_deg_ss = []
-        self.dynamixel_command_publisher.publish(dxl_msg)
-        #self.get_logger().info('Brake command sent: velocity=0.0 deg/s')
 
         
 def main(args=None):
