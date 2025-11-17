@@ -9,6 +9,102 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+def _parse_param_renames(rename_args):
+    """--param-rename で与えられた 'old:new' の配列を辞書に変換"""
+    rename_map = {}
+    if not rename_args:
+        return rename_map
+    for item in rename_args:
+        if not isinstance(item, str) or ':' not in item:
+            continue
+        old, new = item.split(':', 1)
+        old = old.strip()
+        new = new.strip()
+        if old and new:
+            rename_map[old.lower()] = new
+    return rename_map
+
+def _coerce_value(val_str):
+    """単位表記などを取り除き、数値に変換できれば int/float 化する。"""
+    if val_str is None:
+        return None
+    s = str(val_str)
+    s = re.sub(r'\[[^\]]+\]', '', s)  # 単位表記 [deg], [mm], [R] などを除去
+    s = s.strip()
+    # 数値判定（整数/浮動小数）
+    if re.fullmatch(r'-?\d+', s):
+        try:
+            return int(s)
+        except Exception:
+            pass
+    if re.fullmatch(r'-?\d+(?:\.\d+)?', s):
+        try:
+            return float(s)
+        except Exception:
+            pass
+    return s.lower()
+
+def _strip_trailing_keyword_timestamp(base_filename, tail_keywords):
+    """末尾の '_<kw>_<timestamp>.csv' を取り除き、timestamp を返す。
+    例: '..._raw_20251112-153045.csv' -> ('... .csv', '20251112-153045')
+    """
+    if not tail_keywords:
+        return base_filename, None
+    for kw in tail_keywords:
+        if not kw:
+            continue
+        kw_esc = re.escape(str(kw))
+        # タイムスタンプ: YYYYMMDD, または YYYYMMDD[ -_ ]HHMMSS
+        pattern = rf'^(?P<prefix>.*)_{kw_esc}_(?P<ts>\d{{8}}(?:[-_]?\d{{6}})?)\.csv$'
+        m = re.match(pattern, base_filename, re.IGNORECASE)
+        if m:
+            prefix = m.group('prefix')
+            ts = m.group('ts')
+            return f"{prefix}.csv", ts
+    return base_filename, None
+
+def extract_parameters_generic(filename, param_rename_user=None, tail_keywords=None):
+    """ファイル名から 'key=value' を汎用に抽出する。
+    値中の '_' を許容し、次の '_key=' または拡張子/終端までを値として取得。
+    抽出後、デフォルト＋ユーザー指定のリネームを適用し、値は可能なら数値化。
+    """
+    # ベース名のみ対象
+    base = os.path.basename(filename)
+    # 末尾の '_<kw>_<timestamp>.csv' を除去してから解析
+    base, tail_ts = _strip_trailing_keyword_timestamp(base, tail_keywords)
+    # 'key=value' を非貪欲に抽出（値中の '_' を許容）
+    pattern = r'(?P<key>[A-Za-z][A-Za-z0-9]*)=(?P<value>.*?)(?=_(?:[A-Za-z][A-Za-z0-9]*)=|\.csv$|$)'
+    matches = re.finditer(pattern, base)
+
+    # 既定の自動リネーム
+    default_rename = {
+        'tilt': 'tilt_angle',
+        'fold': 'fold_angle',
+        'wheelbase': 'prop_spacing',
+        'direction': 'keyword',
+        'wallspacing': 'wall_spacing',
+        'flowdistance': 'flow_distance',
+    }
+    # ユーザー指定があれば上書き
+    user_map = _parse_param_renames(param_rename_user)
+    rename_map = {**default_rename, **user_map}
+
+    params = {}
+    for m in matches:
+        key = m.group('key')
+        value = m.group('value')
+        if not key:
+            continue
+        key_norm = key.lower()
+        key_final = rename_map.get(key_norm, key_norm)
+        params[key_final] = _coerce_value(value)
+
+    # 抽出対象からは外すが CSV には残すため timestamp を別キーで保持
+    if tail_ts is not None:
+        params['file_timestamp'] = tail_ts
+
+    return params if params else None
+
 def find_csv_files(keywords, directory='.', and_keywords=False):
     """CSVファイルをキーワードに基づいて再帰的に検索する関数 (Pathlibを使用)。
 
@@ -32,32 +128,8 @@ def find_csv_files(keywords, directory='.', and_keywords=False):
     return files
 
 def extract_parameters(filename):
-    """ファイル名から距離、角度、キーワードを抽出する関数。
-    キーワードは正規表現で使用されます。"""
-    matcher = r"distance=(-?\d+\.?\d*)\[R\]_tilt=(-?\d+)\[deg\]_fold=(-?\d+)\[deg\]_wheelbase=(-?\d+\.?\d*)\[R\]_direction=([a-z_]+)_height=(-?\d+\.?\d*)\[mm\]_wallspacing=(-?\d+\.?\d*)\[m\]_flowdistance=(-?\d+\.?\d*)\[m\]_.*\.csv"
-    print(matcher)
-    match = re.match(matcher, filename, re.IGNORECASE)
-    if match:
-        distance = float(match.group(1))
-        tilt_angle = int(match.group(2))
-        fold_angle = int(match.group(3))
-        prop_spacing = float(match.group(4))
-        keyword = match.group(5)
-        height = float(match.group(6))
-        wall_spacing = float(match.group(7))
-        flow_distance = float(match.group(8))
-        return {
-            'distance': distance,
-            'tilt_angle': tilt_angle,
-            'fold_angle': fold_angle,
-            'prop_spacing': prop_spacing,
-            'keyword': keyword,
-            'height': height,
-            'wall_spacing': wall_spacing,
-            'flow_distance': flow_distance
-        }
-    else:
-        return None
+    """後方互換ラッパ（新しい汎用抽出器を使用）"""
+    return extract_parameters_generic(filename)
 
 def read_and_extract_data(file_path, dropna_mode='any', dropna_subset=None):
     """CSVファイルを読み込み、必要なカラムを抽出する関数。
@@ -141,6 +213,8 @@ def parse_arguments():
     parser.add_argument('--iqr-mode', type=str, choices=['any', 'all'], default='any', help="外れ値結合規則（any=いずれか外れ値で除去 / all=全て外れ値で除去）")
     parser.add_argument('--dropna-mode', type=str, choices=['any', 'all', 'none'], default='any', help="dropnaのモード（any/all/none、デフォルト: any）")
     parser.add_argument('--dropna-subset', nargs='+', type=str, default=None, help="dropnaを適用する列名のリスト（指定しない場合は全列）")
+    parser.add_argument('--param-rename', action='append', default=[], help="パラメータ名のリネーム規則 'old:new' を複数指定可")
+    parser.add_argument('--group-keys', nargs='+', type=str, default=['distance', 'tilt_angle', 'fold_angle', 'prop_spacing', 'keyword', 'height', 'wall_spacing', 'flow_distance'], help="グループ化に使用するパラメータ名の並び")
     return parser.parse_args()
 
 def apply_iqr_filter(df, columns, multiplier=1.5, mode='any'):
@@ -223,15 +297,25 @@ def main():
     grouped_files = defaultdict(list)
     failed_param_files = []  # パラメータ抽出（ファイル名正規表現）に失敗
     failed_data_files = []   # データ読み込み/抽出に失敗（理由付き）
+    file_params_map = {}
+    group_keys = [k.lower() for k in getattr(args, 'group_keys', [])]
     for file in csv_files:
         filename = os.path.basename(file)
-        params = extract_parameters(filename)
+        params = extract_parameters_generic(
+            filename,
+            getattr(args, 'param_rename', []),
+            getattr(args, 'keywords', [])
+        )
         if params:
-            distance, tilt_angle, fold_angle, prop_spacing, height = params['distance'], params['tilt_angle'], params['fold_angle'], params['prop_spacing'], params['height']
-            keyword = params['keyword']
-            wall_spacing = params['wall_spacing']
-            flow_distance = params['flow_distance']
-            grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height, wall_spacing, flow_distance)].append(file)
+            # グループ化キーの存在チェック
+            missing_keys = [k for k in group_keys if k not in params]
+            if missing_keys:
+                print(f"ファイル '{filename}' のパラメータに必要キーが不足しています。スキップします。不足: {missing_keys}")
+                failed_param_files.append(file)
+                continue
+            group_key_tuple = tuple(params[k] for k in group_keys)
+            grouped_files[group_key_tuple].append(file)
+            file_params_map[file] = params
         else:
             print(f"ファイル '{filename}' からパラメータを抽出できませんでした。スキップします。")
             failed_param_files.append(file)
@@ -253,8 +337,8 @@ def main():
     print(f"分類されたパラメータの数: {len(grouped_files)}")
 
     # パラメータでソート
-    sorted_parameters = sorted(grouped_files.keys(), key=lambda x: (x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]))
-    print(f"ソートされたパラメータ順: {sorted_parameters}")
+    sorted_parameters = sorted(grouped_files.keys())
+    print(f"ソートされたパラメータ順（group-keys順）: {sorted_parameters}")
 
     """
     "tilt0deg_fold15deg": [124.45, 17.182, 0.6627],
@@ -280,9 +364,10 @@ def main():
     combined_data = []
 
     # 各グループの処理
-    for (distance, tilt_angle, fold_angle, prop_spacing, keyword, height, wall_spacing, flow_distance) in sorted_parameters:
-        print(f"\nパラメータ: 距離={distance}, チルト角={tilt_angle}, 折りたたみ角={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}, 高さ={height}, 壁間隔={wall_spacing}, 流体距離={flow_distance}")
-        files = grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height, wall_spacing, flow_distance)]
+    for param_tuple in sorted_parameters:
+        group_params = dict(zip(group_keys, param_tuple))
+        print(f"\nパラメータグループ: {group_params}")
+        files = grouped_files[param_tuple]
 
         combined_data_group = []
         for file in files:
@@ -299,30 +384,12 @@ def main():
 
             try:
                 df_processed = df.copy()
+                file_params = file_params_map.get(file, {})
 
-                # 任意列が存在しない場合は欠損列を作成して後段集計を安定化
-                optional_cols = ['seven_segment_value_0', 'seven_segment_value_1', 'seven_segment_value_2', 'seven_segment_value_3']
-                for col in optional_cols:
+                # 風速の新形式のみを扱う（旧列からの自動変換は行わない）
+                for col in ['front_in', 'front_out', 'rear_out', 'rear_in']:
                     if col not in df_processed.columns:
                         df_processed[col] = np.nan
-
-                # seven_segment に名前を付与（"back" を含む場合は front/rear を入れ替え）
-                if 'back' in str(keyword).lower():
-                    name_map = {
-                        'front_in': 'seven_segment_value_3',
-                        'front_out': 'seven_segment_value_2',
-                        'rear_out': 'seven_segment_value_1',
-                        'rear_in': 'seven_segment_value_0',
-                    }
-                else:
-                    name_map = {
-                        'front_in': 'seven_segment_value_0',
-                        'front_out': 'seven_segment_value_1',
-                        'rear_out': 'seven_segment_value_2',
-                        'rear_in': 'seven_segment_value_3',
-                    }
-                for new_name, src_col in name_map.items():
-                    df_processed[new_name] = df_processed[src_col]
 
                 # 先頭スキップ（time列から計算した time_elapsed を使用）
                 if hasattr(args, 'skip_seconds') and args.skip_seconds > 0:
@@ -332,7 +399,10 @@ def main():
                     df_processed = df_processed[df_processed['step_elapsed_time'] > args.step_warmup]
                 
                 # プレフィックスを追加
-                key = (tilt_angle, fold_angle, prop_spacing)
+                tilt_val = file_params.get('tilt_angle', group_params.get('tilt_angle'))
+                fold_val = file_params.get('fold_angle', group_params.get('fold_angle'))
+                prop_val = file_params.get('prop_spacing', group_params.get('prop_spacing'))
+                key = (tilt_val, fold_val, prop_val)
                 if not key in thrust_coefs:
                     print(f"  thrust_coefsにキー {key} が存在しません。近いキーを探します。")
                     key_dist = float('inf')
@@ -352,16 +422,14 @@ def main():
                     coefs[2]
                 )
                 
-                # 必要な列とパラメータを追加
-                df_processed.loc[:, 'distance'] = distance
-                df_processed.loc[:, 'tilt_angle'] = tilt_angle
-                df_processed.loc[:, 'fold_angle'] = fold_angle
-                df_processed.loc[:, 'prop_spacing'] = prop_spacing
-                df_processed.loc[:, 'keyword'] = keyword
-                df_processed.loc[:, 'height'] = height
-                df_processed.loc[:, 'wall_spacing'] = wall_spacing
-                df_processed.loc[:, 'flow_distance'] = flow_distance
-                for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z', 'seven_segment_value_0', 'seven_segment_value_1', 'seven_segment_value_2', 'seven_segment_value_3', 'front_in', 'front_out', 'rear_out', 'rear_in']:
+                # 抽出したパラメータ列を付与（ファイルごと）
+                for p_key, p_val in file_params.items():
+                    df_processed.loc[:, p_key] = p_val
+                # file_timestamp 列が無い場合も列を確保
+                if 'file_timestamp' not in df_processed.columns:
+                    df_processed['file_timestamp'] = np.nan
+
+                for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z', 'front_in', 'front_out', 'rear_out', 'rear_in']:
                     df_processed[f"{col}_partial_variance"] = df_processed.groupby('target_thrust')[col].transform("var")
 
                 combined_data_group.append(df_processed)
@@ -370,7 +438,7 @@ def main():
                 failed_data_files.append((file, f"ProcessError: {e}"))
 
         if not combined_data_group:
-            print(f"  パラメータグループ (距離={distance}, 角度={tilt_angle}, 折曲={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}, 壁間隔={wall_spacing}, 流体距離={flow_distance}) に有効なデータがありません。")
+            print(f"  パラメータグループ {group_params} に有効なデータがありません。")
             continue
 
         print(combined_data_group[0].head())
@@ -398,24 +466,17 @@ def main():
             torque_x=('torque_x', agg_func),
             torque_y=('torque_y', agg_func),
             torque_z=('torque_z', agg_func),
-            seven_segment_value_0=('seven_segment_value_0', agg_func),
-            seven_segment_value_1=('seven_segment_value_1', agg_func),
-            seven_segment_value_2=('seven_segment_value_2', agg_func),
-            seven_segment_value_3=('seven_segment_value_3', agg_func),
             front_in=('front_in', agg_func),
             front_out=('front_out', agg_func),
             rear_out=('rear_out', agg_func),
             rear_in=('rear_in', agg_func),
+            file_timestamp=('file_timestamp', 'min'),
             variance_force_x=('force_x_partial_variance', agg_func),
             variance_force_y=('force_y_partial_variance', agg_func),
             variance_force_z=('force_z_partial_variance', agg_func),
             variance_torque_x=('torque_x_partial_variance', agg_func),
             variance_torque_y=('torque_y_partial_variance', agg_func),
             variance_torque_z=('torque_z_partial_variance', agg_func),
-            variance_seven_segment_value_0=('seven_segment_value_0_partial_variance', agg_func),
-            variance_seven_segment_value_1=('seven_segment_value_1_partial_variance', agg_func),
-            variance_seven_segment_value_2=('seven_segment_value_2_partial_variance', agg_func),
-            variance_seven_segment_value_3=('seven_segment_value_3_partial_variance', agg_func),
             variance_front_in=('front_in_partial_variance', agg_func),
             variance_front_out=('front_out_partial_variance', agg_func),
             variance_rear_out=('rear_out_partial_variance', agg_func),
@@ -423,20 +484,15 @@ def main():
         ).reset_index()
 
         # パラメータ情報を追加
-        grouped_stats['distance'] = distance
-        grouped_stats['tilt_angle'] = tilt_angle
-        grouped_stats['fold_angle'] = fold_angle
-        grouped_stats['prop_spacing'] = prop_spacing
-        grouped_stats['keyword'] = keyword
-        grouped_stats['height'] = height
-        grouped_stats['wall_spacing'] = wall_spacing
-        grouped_stats['flow_distance'] = flow_distance
+        for k, v in group_params.items():
+            grouped_stats[k] = v
         combined_data.append(grouped_stats)
 
     # すべてのパラメータのデータを1つのCSVにエクスポート
     if args.output and combined_data:
         combined_df = pd.concat(combined_data, ignore_index=True)
-        combined_df = combined_df.sort_values(by=['distance', 'tilt_angle', 'fold_angle', 'prop_spacing', 'keyword', 'height', 'wall_spacing', 'flow_distance', 'target_thrust']).reset_index(drop=True)
+        sort_columns = group_keys + ['target_thrust']
+        combined_df = combined_df.sort_values(by=sort_columns).reset_index(drop=True)
         export_data_to_csv(combined_df, args.output)
     else:
         print("結合されたデータがありません。エクスポートをスキップします。")

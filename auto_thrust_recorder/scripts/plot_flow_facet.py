@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 
 def parse_args():
@@ -45,6 +46,43 @@ REQUIRED_COLUMNS = [
 ]
 
 
+def make_col_key(w, t):
+    try:
+        w_str = f"{float(w):g}"
+    except Exception:
+        w_str = str(w)
+    try:
+        t_str = f"{int(round(float(t)))}"
+    except Exception:
+        t_str = str(t)
+    return f"w={w_str}, tilt={t_str}"
+
+
+def reshape_to_long(df: pd.DataFrame) -> pd.DataFrame:
+    """ワイド形式の生データをロング化し、io/side/x/col_key を付与して返す。"""
+    long_df = df.melt(
+        id_vars=["distance", "tilt_angle", "wall_spacing", "flow_distance"],
+        value_vars=["front_in", "front_out", "rear_in", "rear_out"],
+        var_name="probe",
+        value_name="wind_speed",
+    )
+
+    # 数値化と欠損除去
+    long_df["wind_speed"] = pd.to_numeric(long_df["wind_speed"], errors="coerce")
+    long_df = long_df.dropna(subset=["wind_speed"]).copy()
+
+    # in/out, front/rear を抽出
+    long_df["io"] = np.where(long_df["probe"].str.endswith("in"), "in", "out")
+    long_df["side"] = np.where(long_df["probe"].str.startswith("front"), "front", "rear")
+
+    # x 軸（rear は反転）
+    long_df["x"] = np.where(long_df["side"] == "rear", -long_df["flow_distance"], long_df["flow_distance"])
+
+    # ファセット列キー
+    long_df["col_key"] = [make_col_key(w, t) for w, t in zip(long_df["wall_spacing"], long_df["tilt_angle"])]
+    return long_df
+
+
 def validate_columns(df: pd.DataFrame):
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
@@ -69,24 +107,8 @@ def load_csv(path: str) -> pd.DataFrame:
 
 
 def reshape_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
-    # ワイド -> ロング
-    long_df = df.melt(
-        id_vars=["distance", "tilt_angle", "wall_spacing", "flow_distance"],
-        value_vars=["front_in", "front_out", "rear_in", "rear_out"],
-        var_name="probe",
-        value_name="wind_speed",
-    )
-
-    # 風速を数値化し欠損除去
-    long_df["wind_speed"] = pd.to_numeric(long_df["wind_speed"], errors="coerce")
-    long_df = long_df.dropna(subset=["wind_speed"]).copy()
-
-    # in/out, front/rear を抽出
-    long_df["io"] = np.where(long_df["probe"].str.endswith("in"), "in", "out")
-    long_df["side"] = np.where(long_df["probe"].str.startswith("front"), "front", "rear")
-
-    # x 軸（rear は反転）
-    long_df["x"] = np.where(long_df["side"] == "rear", -long_df["flow_distance"], long_df["flow_distance"])
+    # 生データをロング化
+    long_df = reshape_to_long(df)
 
     # 指定: tilt_angle と distance でグルーピングし平均
     # ただし in/out は別線、x も点の同一性に必要なのでキーに含める
@@ -98,17 +120,6 @@ def reshape_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
     agg = agg.sort_values(["distance", "tilt_angle", "wall_spacing", "io", "x"]).reset_index(drop=True)
 
     # ファセット列キー: (w=wall_spacing, tilt=tilt_angle)
-    def make_col_key(w, t):
-        try:
-            w_str = f"{float(w):g}"
-        except Exception:
-            w_str = str(w)
-        try:
-            t_str = f"{int(round(float(t)))}"
-        except Exception:
-            t_str = str(t)
-        return f"w={w_str}, tilt={t_str}"
-
     agg["col_key"] = [make_col_key(w, t) for w, t in zip(agg["wall_spacing"], agg["tilt_angle"])]
     return agg
 
@@ -140,7 +151,7 @@ def compute_diff(agg: pd.DataFrame) -> pd.DataFrame:
     return diff_df
 
 
-def plot_facet(agg: pd.DataFrame, palette: str = "Set2") -> sns.axisgrid.FacetGrid:
+def plot_facet(agg: pd.DataFrame, raw_long: pd.DataFrame, palette: str = "Set2") -> sns.axisgrid.FacetGrid:
     sns.set_style("whitegrid")
     # 行=distance (昇順), 列=tilt_angle (昇順)
     row_order = sorted(agg["distance"].dropna().unique().tolist())
@@ -151,11 +162,21 @@ def plot_facet(agg: pd.DataFrame, palette: str = "Set2") -> sns.axisgrid.FacetGr
     )
     col_order = col_pairs["col_key"].tolist()
 
+    # Facet の行・列のインデックス辞書
+    row_index = {val: i for i, val in enumerate(row_order)}
+    col_index = {val: j for j, val in enumerate(col_order)}
+
+    # io ごとの色（パレットに一致）
+    io_order = ["in", "out"]
+    pal = sns.color_palette(palette, n_colors=len(io_order))
+    io_color = {io_order[i]: pal[i] for i in range(len(io_order))}
+
     g = sns.FacetGrid(
         agg,
         row="distance",
         col="col_key",
         hue="io",
+        hue_order=io_order,
         row_order=row_order,
         col_order=col_order,
         sharex=True,
@@ -167,7 +188,30 @@ def plot_facet(agg: pd.DataFrame, palette: str = "Set2") -> sns.axisgrid.FacetGr
         palette=palette,
     )
 
-    g.map_dataframe(sns.lineplot, x="x", y="wind_speed", marker="o")
+    g.map_dataframe(sns.lineplot, x="x", y="wind_speed", zorder=3)
+
+    # 生データ点を各 Facet にオーバーレイ
+    if raw_long is not None and not raw_long.empty:
+        for (d, ckey), sub in raw_long.groupby(["distance", "col_key"]):
+            if d not in row_index or ckey not in col_index:
+                continue
+            ax = g.axes[row_index[d], col_index[ckey]]
+            # in/out 毎に色を固定して散布
+            for io_val, sub_io in sub.groupby("io"):
+                if sub_io.empty:
+                    continue
+                sns.scatterplot(
+                    data=sub_io,
+                    x="x",
+                    y="wind_speed",
+                    s=16,
+                    alpha=1.0,
+                    color=io_color.get(io_val, "gray"),
+                    edgecolor="none",
+                    ax=ax,
+                    legend=False,
+                    zorder=2,
+                )
     g.add_legend(title="io")
     g.set_axis_labels("flow_distance (rear は負)", "wind speed [m/s]")
 
@@ -179,6 +223,13 @@ def plot_facet(agg: pd.DataFrame, palette: str = "Set2") -> sns.axisgrid.FacetGr
         lim = max(abs(xmin), abs(xmax))
         for ax in g.axes.flat:
             ax.set_xlim(-lim, lim)
+
+    # 台形近似平均の長方形をオーバーレイ（front/rear × in/out）
+    try:
+        overlay_inout_mean_rectangles(g, agg, palette=palette, alpha=0.20)
+    except Exception as e:
+        # オーバーレイは可視化の付加要素なので失敗しても致命にしない
+        print(f"平均長方形の描画に失敗: {e}", file=sys.stderr)
 
     return g
 
@@ -224,7 +275,174 @@ def plot_diff_facet(diff_df: pd.DataFrame) -> sns.axisgrid.FacetGrid:
         for ax in g.axes.flat:
             ax.set_xlim(-lim, lim)
 
+    # 台形近似平均の長方形をオーバーレイ（front/rear）
+    try:
+        overlay_diff_mean_rectangles(g, diff_df, color="C1", alpha=0.20)
+    except Exception as e:
+        print(f"差分平均長方形の描画に失敗: {e}", file=sys.stderr)
+
     return g
+
+
+def _compute_side_column_from_x(df: pd.DataFrame, x_col: str = "x") -> pd.Series:
+    # x<0 を rear、x>=0 を front とみなす
+    return np.where(df[x_col] < 0, "rear", "front")
+
+
+def compute_sidewise_trapz_mean_inout(agg: pd.DataFrame) -> pd.DataFrame:
+    """各 (distance, col_key, io, side) 内で台形近似平均を計算。
+
+    出力列: distance, col_key, io, side, x_min, x_max, mean
+    """
+    if agg.empty:
+        return agg.iloc[0:0].copy()
+
+    df = agg.copy()
+    df["side"] = _compute_side_column_from_x(df, "x")
+
+    results = []
+    group_keys = ["distance", "col_key", "io", "side"]
+    for keys, sub in df.groupby(group_keys):
+        # x でソートし、NaN を除去
+        sub = sub.dropna(subset=["x", "wind_speed"]).sort_values("x")
+        if len(sub) < 2:
+            continue
+        x_min = float(sub["x"].min())
+        x_max = float(sub["x"].max())
+        width = x_max - x_min
+        if not np.isfinite(width) or width == 0:
+            continue
+        mean_val = float(np.trapz(sub["wind_speed"].values, sub["x"].values) / width)
+        results.append({
+            "distance": keys[0],
+            "col_key": keys[1],
+            "io": keys[2],
+            "side": keys[3],
+            "x_min": x_min,
+            "x_max": x_max,
+            "mean": mean_val,
+        })
+
+    if not results:
+        return agg.iloc[0:0].copy()
+    return pd.DataFrame(results)
+
+
+def overlay_inout_mean_rectangles(g: sns.axisgrid.FacetGrid, agg: pd.DataFrame, palette: str = "Set2", alpha: float = 0.20):
+    avg_df = compute_sidewise_trapz_mean_inout(agg)
+    if avg_df.empty:
+        return
+
+    # Facet の行列位置を特定
+    row_order = sorted(agg["distance"].dropna().unique().tolist())
+    col_pairs = (
+        agg.drop_duplicates(subset=["wall_spacing", "tilt_angle"])[["wall_spacing", "tilt_angle", "col_key"]]
+        .sort_values(["wall_spacing", "tilt_angle"])
+    )
+    col_order = col_pairs["col_key"].tolist()
+
+    row_index = {val: i for i, val in enumerate(row_order)}
+    col_index = {val: j for j, val in enumerate(col_order)}
+
+    # io ごとの色（パレットと一致させる）
+    io_order = ["in", "out"]
+    pal = sns.color_palette(palette, n_colors=len(io_order))
+    io_color = {io_order[i]: pal[i] for i in range(len(io_order))}
+
+    for _, r in avg_df.iterrows():
+        d = r["distance"]
+        ckey = r["col_key"]
+        io = r["io"]
+        x0 = float(r["x_min"]) if np.isfinite(r["x_min"]) else None
+        x1 = float(r["x_max"]) if np.isfinite(r["x_max"]) else None
+        mean_val = float(r["mean"]) if np.isfinite(r["mean"]) else None
+        if d not in row_index or ckey not in col_index:
+            continue
+        if x0 is None or x1 is None or mean_val is None:
+            continue
+        i = row_index[d]
+        j = col_index[ckey]
+        ax = g.axes[i, j]
+
+        # y の矩形範囲
+        y = min(0.0, mean_val)
+        height = abs(mean_val)
+        width = x1 - x0
+        rect = Rectangle((x0, y), width, height, facecolor=io_color.get(io, "gray"), edgecolor=None, alpha=alpha)
+        ax.add_patch(rect)
+
+
+def compute_sidewise_trapz_mean_diff(diff_df: pd.DataFrame) -> pd.DataFrame:
+    """差分データに対して各 (distance, col_key, side) の台形近似平均を計算。
+
+    出力列: distance, col_key, side, x_min, x_max, mean
+    """
+    if diff_df.empty:
+        return diff_df.iloc[0:0].copy()
+
+    df = diff_df.copy()
+    df["side"] = _compute_side_column_from_x(df, "x")
+
+    results = []
+    group_keys = ["distance", "col_key", "side"]
+    for keys, sub in df.groupby(group_keys):
+        sub = sub.dropna(subset=["x", "diff"]).sort_values("x")
+        if len(sub) < 2:
+            continue
+        x_min = float(sub["x"].min())
+        x_max = float(sub["x"].max())
+        width = x_max - x_min
+        if not np.isfinite(width) or width == 0:
+            continue
+        mean_val = float(np.trapz(sub["diff"].values, sub["x"].values) / width)
+        results.append({
+            "distance": keys[0],
+            "col_key": keys[1],
+            "side": keys[2],
+            "x_min": x_min,
+            "x_max": x_max,
+            "mean": mean_val,
+        })
+
+    if not results:
+        return diff_df.iloc[0:0].copy()
+    return pd.DataFrame(results)
+
+
+def overlay_diff_mean_rectangles(g: sns.axisgrid.FacetGrid, diff_df: pd.DataFrame, color: str = "C1", alpha: float = 0.20):
+    avg_df = compute_sidewise_trapz_mean_diff(diff_df)
+    if avg_df.empty:
+        return
+
+    row_order = sorted(diff_df["distance"].dropna().unique().tolist())
+    col_pairs = (
+        diff_df.drop_duplicates(subset=["wall_spacing", "tilt_angle"])[["wall_spacing", "tilt_angle", "col_key"]]
+        .sort_values(["wall_spacing", "tilt_angle"])
+    )
+    col_order = col_pairs["col_key"].tolist()
+
+    row_index = {val: i for i, val in enumerate(row_order)}
+    col_index = {val: j for j, val in enumerate(col_order)}
+
+    for _, r in avg_df.iterrows():
+        d = r["distance"]
+        ckey = r["col_key"]
+        x0 = float(r["x_min"]) if np.isfinite(r["x_min"]) else None
+        x1 = float(r["x_max"]) if np.isfinite(r["x_max"]) else None
+        mean_val = float(r["mean"]) if np.isfinite(r["mean"]) else None
+        if d not in row_index or ckey not in col_index:
+            continue
+        if x0 is None or x1 is None or mean_val is None:
+            continue
+        i = row_index[d]
+        j = col_index[ckey]
+        ax = g.axes[i, j]
+
+        y = min(0.0, mean_val)
+        height = abs(mean_val)
+        width = x1 - x0
+        rect = Rectangle((x0, y), width, height, facecolor=color, edgecolor=None, alpha=alpha)
+        ax.add_patch(rect)
 
 
 def main():
@@ -242,11 +460,13 @@ def main():
         sys.exit(1)
 
     agg = reshape_and_aggregate(df)
+    # 生データ（ロング形式）も作成
+    raw_long = reshape_to_long(df)
     if agg.empty:
         print("集約後のデータが空です。", file=sys.stderr)
         sys.exit(1)
 
-    g = plot_facet(agg, palette=args.palette)
+    g = plot_facet(agg, raw_long, palette=args.palette)
 
     if args.output:
         out_path = Path(args.output)
