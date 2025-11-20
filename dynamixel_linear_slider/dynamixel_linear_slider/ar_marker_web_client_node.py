@@ -40,7 +40,7 @@ class ArMarkerWebClientNode(Node):
 
         # --- パラメータ ---
         self.declare_parameter("server_url", "http://localhost:8000/detect")
-        self.declare_parameter("poll_frequency", 6.0)  # Hz（カメラ側と合わせやすい値）
+        self.declare_parameter("poll_frequency", 20.0)  # Hz（カメラ側と合わせやすい値）
 
         # ArUco / ボード / カメラ設定
         self.declare_parameter("base_board_config", "")

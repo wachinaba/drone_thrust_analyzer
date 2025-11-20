@@ -168,7 +168,7 @@ def generate_launch_description():
                 "gear_ratio": 1.0,
                 "control_frequency": 100.0,
                 "profile_velocity_deg_s": 1000.0,
-                "profile_accel_deg_ss": 200.0,
+                "profile_accel_deg_ss": 80.0,
                 "calibration_file": PathJoinSubstitution(
                     [
                         FindPackageShare("dynamixel_linear_slider"),

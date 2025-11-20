@@ -38,8 +38,10 @@ class CalibratedSliderControllerNode(Node):
         self.declare_parameter("rack_pitch", 0.106214)  # m/rev（初期線形モデル用）
         self.declare_parameter("gear_ratio", 1.0)
         self.declare_parameter("control_frequency", 100.0)
-        self.declare_parameter("profile_velocity_deg_s", 1000.0)
-        self.declare_parameter("profile_accel_deg_ss", 200.0)
+        self.declare_parameter("profile_velocity_deg_s", 100.0)
+        self.declare_parameter("profile_accel_deg_ss", 20.0)
+        # AR マーカー値の平均化に使うサンプル数
+        self.declare_parameter("ar_average_window_size", 10)
         self.declare_parameter(
             "calibration_file",
             os.path.join(

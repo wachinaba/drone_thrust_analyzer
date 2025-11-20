@@ -26,13 +26,13 @@ class PositionCommandAndWaitNode(Node):
         # パラメータの取得
         self.declare_parameter('target_position', 0.05)  # 目標位置 (m)
         self.declare_parameter('wait_timeout', 30.0)     # 待機タイムアウト (秒)
-        self.declare_parameter('tolerance_mm', 2.0)      # 到達判定の許容誤差 (mm)
-        self.declare_parameter('stable_delta_mm', 0.2)   # 推定位置の差分安定判定閾値 (mm)
+        self.declare_parameter('tolerance_mm', 2.0)          # 到達判定の許容誤差 (mm)
+        self.declare_parameter('stable_velocity_mm_s', 1.0)  # 到達判定用の速度閾値 (mm/s)
         
         self.target_position = self.get_parameter('target_position').value
         self.wait_timeout = self.get_parameter('wait_timeout').value
         self.tolerance_mm = self.get_parameter('tolerance_mm').value
-        self.stable_delta_mm = self.get_parameter('stable_delta_mm').value
+        self.stable_velocity_mm_s = self.get_parameter('stable_velocity_mm_s').value
         
         # パブリッシャーの設定
         self.target_position_publisher = self.create_publisher(
@@ -63,9 +63,11 @@ class PositionCommandAndWaitNode(Node):
         self.node_start_time = time.time()
         self.done_future: Future = Future()
         self.exit_reason = None
-        # 差分安定判定用
+        # 差分・速度安定判定用
         self.last_estimated_position = None
         self.last_delta_abs_m = None
+        self.last_estimated_time = None
+        self.estimated_velocity_m_s = None
         
         # 到達の安定判定（連続サンプルで堅牢化）
         self.stable_hit_count = 0
@@ -101,14 +103,23 @@ class PositionCommandAndWaitNode(Node):
     
     def estimated_position_callback(self, msg):
         """推定位置のコールバック"""
+        current_time = time.time()
         self.estimated_position = msg.data
-        # 直近との差分（絶対値, m）を記録
-        if self.last_estimated_position is not None:
+
+        # 直近との差分（絶対値, m）および速度[m/s]を記録
+        if self.last_estimated_position is not None and self.last_estimated_time is not None:
             try:
-                self.last_delta_abs_m = abs(self.estimated_position - self.last_estimated_position)
+                delta_pos = self.estimated_position - self.last_estimated_position
+                delta_t = current_time - self.last_estimated_time
+                if delta_t > 0.0:
+                    self.last_delta_abs_m = abs(delta_pos)
+                    self.estimated_velocity_m_s = delta_pos / delta_t
             except Exception:
                 self.last_delta_abs_m = None
+                self.estimated_velocity_m_s = None
+
         self.last_estimated_position = self.estimated_position
+        self.last_estimated_time = current_time
         self.estimated_position_valid = True
     
     def send_position_command(self):
@@ -124,14 +135,22 @@ class PositionCommandAndWaitNode(Node):
             self.get_logger().debug(f'Position command sent: {self.target_position} m')
     
     def check_arrival(self):
-        """到達の判定（推定位置ベース、安定判定あり）"""
-        if not self.estimated_position_valid or not self.target_position_valid:
+        """到達の判定（推定位置と推定速度ベース、安定判定あり）"""
+        # 新アーキテクチャでは target_position トピックが存在しない場合があるため、
+        # target_position_valid は到達判定の必須条件から外し、推定位置と推定速度のみで判定する。
+        if not self.estimated_position_valid:
             return False
+
         error = abs(self.target_position - self.estimated_position)
-        # 差分安定（停止傾向）の判定
-        delta_ok = (self.last_delta_abs_m is not None) and (self.last_delta_abs_m <= self.stable_delta_mm / 1000.0)
-        # 誤差閾値と差分安定の両方を満たした場合のみヒットカウント
-        if error <= self.tolerance_mm / 1000.0 and delta_ok:
+        # 推定速度[m/s]が得られていない場合はまだ判定しない
+        if self.estimated_velocity_m_s is None:
+            return False
+
+        vel_abs = abs(self.estimated_velocity_m_s)
+        vel_threshold_m_s = self.stable_velocity_mm_s / 1000.0
+
+        # 誤差が小さく、かつ速度も十分に小さい場合のみヒットカウント
+        if (error <= self.tolerance_mm / 1000.0) and (vel_abs <= vel_threshold_m_s):
             self.stable_hit_count += 1
         else:
             self.stable_hit_count = 0
@@ -204,12 +223,13 @@ class PositionCommandAndWaitNode(Node):
             
             if self.estimated_position_valid:
                 position_error = abs(self.target_position - self.estimated_position)
+                vel_log = (self.estimated_velocity_m_s if self.estimated_velocity_m_s is not None else float("nan"))
                 self.get_logger().info(
                     f'Time: {elapsed_time:.1f}s, '
                     f'Target: {self.target_position:.4f}m, '
                     f'Estimated: {self.estimated_position:.4f}m, '
                     f'Error: {position_error:.6f}m, '
-                    f'Delta: {(self.last_delta_abs_m if self.last_delta_abs_m is not None else float("nan")):.6f}m, '
+                    f'Vel: {vel_log:.6f}m/s, '
                     f'StableCount: {self.stable_hit_count}/{self.stable_required}'
                 )
 
