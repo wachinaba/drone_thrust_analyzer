@@ -30,7 +30,7 @@ from joblib import dump, load
 import sklearn
 warnings.filterwarnings('ignore')
 
-def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torque_x=None):
+def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torque_x=None, target_column='torque_x'):
     """
     CSVファイルを読み込み、データの前処理を行う
     
@@ -38,6 +38,7 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
         csv_file: CSVファイルのパス
         selected_features: 使用する特徴量のリスト（Noneの場合はtorque_x以外の全列）
         max_variance_torque_x: 'variance_torque_x' による上限フィルタ（Noneで無効）
+        target_column: 目的変数の列名
     
     Returns:
         df_clean: 前処理済みのデータフレーム
@@ -57,23 +58,23 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
         raise Exception(f"CSVファイルの読み込み中にエラーが発生しました: {e}")
     
     # 必要な列の存在確認
-    if 'torque_x' not in df.columns:
-        raise ValueError("必要な列が見つかりません: ['torque_x']")
+    if target_column not in df.columns:
+        raise ValueError(f"必要な列が見つかりません: ['{target_column}']")
 
     # 特徴量列の決定
     if selected_features is not None and len(selected_features) > 0:
-        if 'torque_x' in selected_features:
-            raise ValueError("'torque_x' は目的変数のため特徴量に含められません。")
+        if target_column in selected_features:
+            raise ValueError(f"'{target_column}' は目的変数のため特徴量に含められません。")
         missing = [c for c in selected_features if c not in df.columns]
         if missing:
             raise ValueError(f"指定された特徴量が見つかりません: {missing}")
         feature_columns = list(selected_features)
     else:
         # 既定はtorque_x以外の全列
-        feature_columns = [c for c in df.columns if c != 'torque_x']
+        feature_columns = [c for c in df.columns if c != target_column]
     
     # 目的変数と特徴量の列を数値型に変換
-    numeric_columns = ['torque_x'] + feature_columns
+    numeric_columns = [target_column] + feature_columns
     for col in numeric_columns:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -86,7 +87,7 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
         print(f"variance_torque_x フィルタ: {before-after} 行を除外（閾値 {max_variance_torque_x}）")
     
     # NaNを含む行を削除
-    df_clean = df.dropna(subset=['torque_x'] + feature_columns)
+    df_clean = df.dropna(subset=[target_column] + feature_columns)
     
     if df_clean.empty:
         raise ValueError("有効なデータがありません。")
@@ -262,6 +263,8 @@ def plot_results(y_test, y_pred, y_std, feature_columns, output_file=None):
         feature_columns: 特徴量の列名
         output_file: 出力ファイル名
     """
+    # 目的変数名は呼び出し元から渡される想定（後方互換のため取得できない場合は既定名）
+    target_column = getattr(plot_results, "_target_column", "torque_x")
     # フォントサイズの設定
     plt.rcParams.update({'font.size': 20})
     fig, axes = plt.subplots(2, 2, figsize=(30, 24))
@@ -270,8 +273,8 @@ def plot_results(y_test, y_pred, y_std, feature_columns, output_file=None):
     ax1 = axes[0, 0]
     ax1.scatter(y_test, y_pred, alpha=0.6, s=50)
     ax1.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
-    ax1.set_xlabel('実際の値 (torque_x)')
-    ax1.set_ylabel('予測値 (torque_x)')
+    ax1.set_xlabel(f'実際の値 ({target_column})')
+    ax1.set_ylabel(f'予測値 ({target_column})')
     ax1.set_title('予測値 vs 実際の値')
     ax1.grid(True, alpha=0.3)
     
@@ -280,7 +283,7 @@ def plot_results(y_test, y_pred, y_std, feature_columns, output_file=None):
     residuals = y_test - y_pred
     ax2.scatter(y_pred, residuals, alpha=0.6, s=50)
     ax2.axhline(y=0, color='r', linestyle='--')
-    ax2.set_xlabel('予測値 (torque_x)')
+    ax2.set_xlabel(f'予測値 ({target_column})')
     ax2.set_ylabel('残差')
     ax2.set_title('残差プロット')
     ax2.grid(True, alpha=0.3)
@@ -289,7 +292,7 @@ def plot_results(y_test, y_pred, y_std, feature_columns, output_file=None):
     ax3 = axes[1, 0]
     if y_std is not None:
         ax3.scatter(y_pred, y_std, alpha=0.6, s=50)
-        ax3.set_xlabel('予測値 (torque_x)')
+        ax3.set_xlabel(f'予測値 ({target_column})')
         ax3.set_ylabel('予測の標準偏差')
         ax3.set_title('予測の不確実性')
         ax3.grid(True, alpha=0.3)
@@ -305,7 +308,7 @@ def plot_results(y_test, y_pred, y_std, feature_columns, output_file=None):
     if y_std is not None:
         ax4.fill_between(indices, y_pred - 2*y_std, y_pred + 2*y_std, alpha=0.3, label='95%信頼区間')
     ax4.set_xlabel('データポイント')
-    ax4.set_ylabel('torque_x')
+    ax4.set_ylabel(target_column)
     ax4.set_title('時系列での比較')
     ax4.legend()
     ax4.grid(True, alpha=0.3)
@@ -433,6 +436,8 @@ def apply_facet_filters(df_clean, filters):
     return df_out
 
 def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_size, fixes, ranges, output_prefix, include_std, overlay_raw=False, contour_lines=False, contour_levels=10, contour_color='k', contour_linewidth=0.8, contour_alpha=0.8):
+    # 目的変数名は呼び出し元から渡される想定（関数属性に設定される）
+    target_column = getattr(generate_pairwise_heatmaps, "_target_column", "torque_x")
     fixed_values = parse_fixed_values(fixes, feature_columns, df_clean)
     mins, maxs = parse_ranges(ranges, feature_columns, df_clean)
 
@@ -536,7 +541,7 @@ def generate_pairwise_heatmaps(model, feature_columns, df_clean, scaler, grid_si
                     linewidths=0.7,
                     zorder=3
                 )
-            plt.colorbar(im_mean, label='予測平均 (torque_x)')
+            plt.colorbar(im_mean, label=f'予測平均 ({target_column})')
             plt.xlabel(fi)
             plt.ylabel(fj)
             plt.title(f'予測ヒートマップ: {fi} vs {fj}')
@@ -607,6 +612,8 @@ def plot_grouped_raw_and_fit_gpr(
         if col not in df_clean.columns:
             raise ValueError(f"group_by 列 '{col}' がデータに存在しません。")
 
+    # 目的変数名は呼び出し元から渡される想定（関数属性に設定される）
+    target_column = getattr(plot_grouped_raw_and_fit_gpr, "_target_column", "torque_x")
     # x 軸の候補決定
     if curve_x is None:
         candidates = [c for c in feature_columns if c not in group_by]
@@ -662,7 +669,7 @@ def plot_grouped_raw_and_fit_gpr(
         if curve_x not in df_group.columns:
             raise ValueError(f"x 軸列 '{curve_x}' がデータに存在しません。")
         x_raw = df_group[curve_x].values
-        y_raw = df_group['torque_x'].values
+        y_raw = df_group[target_column].values
         ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
 
         # 予測用グリッド（curve_x を掃引、他は中央値固定（group 内））
@@ -703,7 +710,7 @@ def plot_grouped_raw_and_fit_gpr(
 
         ax.set_title(', '.join(title_parts))
         ax.set_xlabel(curve_x)
-        ax.set_ylabel('torque_x')
+        ax.set_ylabel(target_column)
         ax.grid(True, alpha=0.3)
         ax.legend(frameon=True, fontsize=10)
 
@@ -744,6 +751,8 @@ def plot_facet_raw_and_fit_gpr(
         print("[plot_facet_raw_and_fit_gpr] row/col が未指定のためスキップします。")
         return
 
+    # 目的変数名は呼び出し元から渡される想定（関数属性に設定される）
+    target_column = getattr(plot_facet_raw_and_fit_gpr, "_target_column", "torque_x")
     # x 軸の決定
     if curve_x is None:
         excluded = set((row_group_by or []) + (col_group_by or []))
@@ -844,7 +853,7 @@ def plot_facet_raw_and_fit_gpr(
             if curve_x not in df_cell.columns:
                 raise ValueError(f"x 軸列 '{curve_x}' がデータに存在しません。")
             x_raw = df_cell[curve_x].values
-            y_raw = df_cell['torque_x'].values
+            y_raw = df_cell[target_column].values
             ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
 
             # 予測用グリッド
@@ -917,6 +926,7 @@ def main():
     parser.add_argument('--no-uncertainty', action='store_true', help='予測の不確実性（標準偏差）を計算しない')
     parser.add_argument('--features', type=str, default=None, help='使用する特徴量をカンマ区切りで指定（未指定ならtorque_x以外の全列）')
     parser.add_argument('--list-features', action='store_true', help='利用可能な特徴量候補を一覧表示して終了')
+    parser.add_argument('--target', type=str, default='torque_x', help='目的変数の列名（デフォルト: torque_x）')
     parser.add_argument('--anisotropic', action='store_true', help='各次元で別のlength_scaleを学習する（RBF/Matern）')
     parser.add_argument('--length-scale-bounds', type=str, default=None, help='length_scaleの下限,上限（例: 1e-2,1e3）')
     parser.add_argument('--matern-nu', type=float, default=1.5, help='Maternカーネルのnu（0.5,1.5,2.5など）')
@@ -965,8 +975,9 @@ def main():
             if not os.path.exists(args.csv_file):
                 raise FileNotFoundError(f"ファイル '{args.csv_file}' が見つかりません。")
             df_head = pd.read_csv(args.csv_file, nrows=5)
-            candidates = [c for c in df_head.columns if c != 'torque_x']
+            candidates = [c for c in df_head.columns if c != args.target]
             print(f"利用可能な特徴量候補: {candidates}")
+            print(f"選択中の目的変数: {args.target}")
             return 0
 
         # 描画バックエンドの自動切替（ヘッドレスや--output指定時）
@@ -1009,12 +1020,13 @@ def main():
         df_clean, feature_columns = load_and_preprocess_data(
             args.csv_file,
             selected_features,
-            max_variance_torque_x=args.max_variance_torque_x
+            max_variance_torque_x=args.max_variance_torque_x,
+            target_column=args.target
         )
         
         # 特徴量と目的変数の準備
         X = df_clean[feature_columns].values
-        y = df_clean['torque_x'].values
+        y = df_clean[args.target].values
         
         print(f"特徴量の形状: {X.shape}")
         print(f"目的変数の形状: {y.shape}")
@@ -1264,6 +1276,8 @@ def main():
             results_output = None
             importance_output = None
         
+        # 動的に目的変数名を渡す（関数属性を利用）
+        plot_results._target_column = args.target
         plot_results(y_test, metrics['y_pred'], metrics.get('y_std', None), 
                     feature_columns, results_output)
         plot_feature_importance(gp_model, feature_columns, importance_output)
@@ -1274,6 +1288,7 @@ def main():
             output_prefix = None
             if args.output:
                 output_prefix = os.path.splitext(args.output)[0]
+            generate_pairwise_heatmaps._target_column = args.target
             generate_pairwise_heatmaps(
                 gp_model,
                 feature_columns,
@@ -1311,6 +1326,7 @@ def main():
                 if row_group_by or col_group_by:
                     # ファセット前フィルタ適用（任意）
                     df_for_facet = apply_facet_filters(df_clean, args.facet_filter)
+                    plot_facet_raw_and_fit_gpr._target_column = args.target
                     plot_facet_raw_and_fit_gpr(
                         df_clean=df_for_facet,
                         feature_columns=feature_columns,
@@ -1325,6 +1341,7 @@ def main():
                         show_uncertainty=(not args.no_uncertainty)
                     )
                 elif group_by:
+                    plot_grouped_raw_and_fit_gpr._target_column = args.target
                     plot_grouped_raw_and_fit_gpr(
                         df_clean=df_clean,
                         feature_columns=feature_columns,
@@ -1346,9 +1363,9 @@ def main():
         print(f"\n=== 統計情報 ===")
         print(f"使用した特徴量: {feature_columns}")
         print(f"データポイント数: {len(df_clean)}")
-        print(f"torque_xの範囲: {y.min():.6f} - {y.max():.6f}")
-        print(f"torque_xの平均: {y.mean():.6f}")
-        print(f"torque_xの標準偏差: {y.std():.6f}")
+        print(f"{args.target}の範囲: {y.min():.6f} - {y.max():.6f}")
+        print(f"{args.target}の平均: {y.mean():.6f}")
+        print(f"{args.target}の標準偏差: {y.std():.6f}")
         
         # 予測の不確実性の統計
         if metrics.get('y_std', None) is not None:
@@ -1370,7 +1387,8 @@ def main():
                     'model': gp_model,
                     'scaler': scaler,
                     'feature_columns': feature_columns,
-                    'meta': meta
+                    'meta': meta,
+                    'target_column': args.target
                 }
                 dump(bundle_to_save, args.save_model)
                 print(f"モデルを保存しました: {args.save_model}")
