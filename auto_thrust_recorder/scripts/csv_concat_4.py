@@ -45,8 +45,10 @@ def _coerce_value(val_str):
     return s.lower()
 
 def _strip_trailing_keyword_timestamp(base_filename, tail_keywords):
-    """末尾の '_<kw>_<timestamp>.csv' を取り除き、timestamp を返す。
-    例: '..._raw_20251112-153045.csv' -> ('... .csv', '20251112-153045')
+    """末尾の '_<kw>_...' セグメントを取り除き、末尾に存在するタイムスタンプを返す。
+    ・キーワード例: 'biascorr' → '_biascorr_20251113-211756_20251114-105148.csv' を全て除去
+    ・タイムスタンプ形式: YYYYMMDD または YYYYMMDD[ -_ ]HHMMSS（末尾に複数あれば最後を採用）
+    例: '..._biascorr_20251113-211756_20251114-105148.csv' -> ('....csv', '20251114-105148')
     """
     if not tail_keywords:
         return base_filename, None
@@ -54,12 +56,14 @@ def _strip_trailing_keyword_timestamp(base_filename, tail_keywords):
         if not kw:
             continue
         kw_esc = re.escape(str(kw))
-        # タイムスタンプ: YYYYMMDD, または YYYYMMDD[ -_ ]HHMMSS
-        pattern = rf'^(?P<prefix>.*)_{kw_esc}_(?P<ts>\d{{8}}(?:[-_]?\d{{6}})?)\.csv$'
-        m = re.match(pattern, base_filename, re.IGNORECASE)
+        # 末尾が '_<kw>' で始まる任意のセグメント + '.csv' にマッチ
+        m = re.search(rf'_(?:{kw_esc})(?:_[^.]+)?\.csv$', base_filename, re.IGNORECASE)
         if m:
-            prefix = m.group('prefix')
-            ts = m.group('ts')
+            prefix = base_filename[:m.start()]
+            # '.csv' を除いた末尾部からタイムスタンプ候補を全抽出し、最後を採用
+            suffix_no_ext = base_filename[m.start():-4]
+            ts_candidates = re.findall(r'(\d{{8}}(?:[-_]\d{{6}})?)', suffix_no_ext)
+            ts = ts_candidates[-1] if ts_candidates else None
             return f"{prefix}.csv", ts
     return base_filename, None
 
@@ -131,15 +135,45 @@ def extract_parameters(filename):
     """後方互換ラッパ（新しい汎用抽出器を使用）"""
     return extract_parameters_generic(filename)
 
-def read_and_extract_data(file_path, dropna_mode='any', dropna_subset=None):
+def _detect_numeric_measurement_columns(df, exclude_columns=None):
+    """プレフィックスに依存せず、数値として扱える測定列を自動検出する。
+    除外対象（meta/補助列/パラメータ列など）は exclude_columns で指定。
+    """
+    if df is None or len(df) == 0:
+        return []
+    exclude = set(exclude_columns or [])
+    # 常に除外する基本メタ列
+    exclude.update({'time', 'time_elapsed', 'target_thrust', 'control', 'file_timestamp'})
+    numeric_cols = []
+    for col in df.columns:
+        if col in exclude:
+            continue
+        name = str(col)
+        # 補助列や派生列は除外
+        if (
+            name.endswith('_partial_variance') or
+            name.endswith('_prev') or
+            name.endswith('_step') or
+            name.endswith('_start_time') or
+            name.endswith('_elapsed_time') or
+            'increase' in name
+        ):
+            continue
+        coerced = pd.to_numeric(df[col], errors='coerce')
+        if coerced.notna().sum() > 0:
+            numeric_cols.append(col)
+    return numeric_cols
+
+def read_and_extract_data(file_path, dropna_mode='any', dropna_subset=None, sensor_bias=True):
     """CSVファイルを読み込み、必要なカラムを抽出する関数。
 
     dropna_mode: 'any'（デフォルト）, 'all', 'none'
     dropna_subset: dropna 対象列名のリスト（None の場合は全列）
+    sensor_bias: True の場合、低制御時の先頭行を基準にセンサバイアス補正を試みる
 
     戻り値: (DataFrame | None, エラー理由文字列 | None)
     """
-    REQUIRED_COLUMNS = ['time', 'control', 'force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z']
+    REQUIRED_COLUMNS = ['time', 'control', 'force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z', 'target_thrust']
     try:
         df = pd.read_csv(file_path)
     except UnicodeDecodeError as e:
@@ -158,7 +192,7 @@ def read_and_extract_data(file_path, dropna_mode='any', dropna_subset=None):
                 if isinstance(dropna_subset, str):
                     dropna_subset = [dropna_subset]
                 dropna_kwargs['subset'] = dropna_subset
-            extracted_df = df.dropna(**dropna_kwargs)
+            extracted_df = df.dropna(**dropna_kwargs).copy()
         if extracted_df.empty:
             return None, "EmptyDataAfterDropNA"
 
@@ -166,19 +200,21 @@ def read_and_extract_data(file_path, dropna_mode='any', dropna_subset=None):
         if missing:
             return None, f"MissingColumns: {','.join(missing)}"
 
-        # センサバイアス除去のための安全な先頭行参照
-        if extracted_df.iloc[0]['control'] < 0.1:
-            first_row = extracted_df.iloc[0].copy()
-            force_norm = np.linalg.norm(first_row[['force_x', 'force_y', 'force_z']])
-            torque_norm = np.linalg.norm(first_row[['torque_x', 'torque_y', 'torque_z']])
-            if force_norm > 1.0 or torque_norm > 1.0:
-                print(f"Sensor bias is too high: {force_norm}, {torque_norm}")
-                extracted_df['force_x'] = extracted_df['force_x'] - first_row['force_x']
-                extracted_df['force_y'] = extracted_df['force_y'] - first_row['force_y']
-                extracted_df['force_z'] = extracted_df['force_z'] - first_row['force_z']
-                extracted_df['torque_x'] = extracted_df['torque_x'] - first_row['torque_x']
-                extracted_df['torque_y'] = extracted_df['torque_y'] - first_row['torque_y']
-                extracted_df['torque_z'] = extracted_df['torque_z'] - first_row['torque_z']
+        # センサバイアス補正（オプション）
+        if sensor_bias:
+            # センサバイアス除去のための安全な先頭行参照
+            if extracted_df.iloc[0]['control'] < 0.1:
+                first_row = extracted_df.iloc[0].copy()
+                force_norm = np.linalg.norm(first_row[['force_x', 'force_y', 'force_z']])
+                torque_norm = np.linalg.norm(first_row[['torque_x', 'torque_y', 'torque_z']])
+                if force_norm > 1.0 or torque_norm > 1.0:
+                    print(f"Sensor bias is too high: {force_norm}, {torque_norm}")
+                    extracted_df.loc[:, 'force_x'] = extracted_df['force_x'] - first_row['force_x']
+                    extracted_df.loc[:, 'force_y'] = extracted_df['force_y'] - first_row['force_y']
+                    extracted_df.loc[:, 'force_z'] = extracted_df['force_z'] - first_row['force_z']
+                    extracted_df.loc[:, 'torque_x'] = extracted_df['torque_x'] - first_row['torque_x']
+                    extracted_df.loc[:, 'torque_y'] = extracted_df['torque_y'] - first_row['torque_y']
+                    extracted_df.loc[:, 'torque_z'] = extracted_df['torque_z'] - first_row['torque_z']
 
         # sort by time
         extracted_df = extracted_df.sort_values('time').reset_index(drop=True)
@@ -211,10 +247,12 @@ def parse_arguments():
     parser.add_argument('--iqr-multiplier', type=float, default=1.5, help="IQRウィスカー係数（デフォルト: 1.5）")
     parser.add_argument('--iqr-columns', nargs='+', type=str, default=['force_x','force_y','force_z','torque_x','torque_y','torque_z'], help="IQR外れ値判定の対象カラム群")
     parser.add_argument('--iqr-mode', type=str, choices=['any', 'all'], default='any', help="外れ値結合規則（any=いずれか外れ値で除去 / all=全て外れ値で除去）")
+    parser.add_argument('--drop-zero-columns', nargs='+', type=str, default=None, help="指定した列で値が0のセルをNaNとして扱い、IQR判定および集計で無視する")
     parser.add_argument('--dropna-mode', type=str, choices=['any', 'all', 'none'], default='any', help="dropnaのモード（any/all/none、デフォルト: any）")
     parser.add_argument('--dropna-subset', nargs='+', type=str, default=None, help="dropnaを適用する列名のリスト（指定しない場合は全列）")
     parser.add_argument('--param-rename', action='append', default=[], help="パラメータ名のリネーム規則 'old:new' を複数指定可")
-    parser.add_argument('--group-keys', nargs='+', type=str, default=['distance', 'tilt_angle', 'fold_angle', 'prop_spacing', 'keyword', 'height', 'wall_spacing', 'flow_distance'], help="グループ化に使用するパラメータ名の並び")
+    parser.add_argument('--group-keys', nargs='+', type=str, default=['auto'], help="グループ化に使用するパラメータ名の並び（デフォルト: auto）")
+    parser.add_argument('--sensor-bias', type=str, choices=['on', 'off'], default='on', help="センサバイアス補正を有効/無効化（デフォルト: on）")
     return parser.parse_args()
 
 def apply_iqr_filter(df, columns, multiplier=1.5, mode='any'):
@@ -299,26 +337,42 @@ def main():
     failed_data_files = []   # データ読み込み/抽出に失敗（理由付き）
     file_params_map = {}
     group_keys = [k.lower() for k in getattr(args, 'group_keys', [])]
+    is_auto_group_keys = (len(group_keys) == 1 and group_keys[0] == 'auto')
+    param_keys_union = set()
+    # 第1段階: 全ファイルからパラメータだけ収集（auto の場合はここで union を作る）
     for file in csv_files:
         filename = os.path.basename(file)
         params = extract_parameters_generic(
             filename,
             getattr(args, 'param_rename', []),
             getattr(args, 'keywords', [])
-        )
-        if params:
-            # グループ化キーの存在チェック
+        ) or {}
+        file_params_map[file] = params
+        if is_auto_group_keys:
+            param_keys_union.update(params.keys())
+    # auto の場合は union をグルーピングキーに採用（file_timestamp は除外）
+    if is_auto_group_keys:
+        if 'file_timestamp' in param_keys_union:
+            param_keys_union.remove('file_timestamp')
+        group_keys = sorted(param_keys_union)
+    # 第2段階: グルーピングキーに基づいて分類（auto 以外は従来通り不足キーでスキップ）
+    for file, params in file_params_map.items():
+        filename = os.path.basename(file)
+        if not is_auto_group_keys:
+            if not params:
+                print(f"ファイル '{filename}' からパラメータを抽出できませんでした。スキップします。")
+                failed_param_files.append(file)
+                continue
             missing_keys = [k for k in group_keys if k not in params]
             if missing_keys:
                 print(f"ファイル '{filename}' のパラメータに必要キーが不足しています。スキップします。不足: {missing_keys}")
                 failed_param_files.append(file)
                 continue
             group_key_tuple = tuple(params[k] for k in group_keys)
-            grouped_files[group_key_tuple].append(file)
-            file_params_map[file] = params
         else:
-            print(f"ファイル '{filename}' からパラメータを抽出できませんでした。スキップします。")
-            failed_param_files.append(file)
+            # auto: 欠損は NaN で埋めてグループキー生成
+            group_key_tuple = tuple(params.get(k, np.nan) for k in group_keys)
+        grouped_files[group_key_tuple].append(file)
 
     if not grouped_files:
         print("有効なパラメータで分類されたファイルがありません。終了します。")
@@ -346,19 +400,7 @@ def main():
     "tilt15deg_fold15deg": [107.09, 18.039, 0.5855], #107.09x2 + 18.039x + 0.5855
     "tilt30deg_fold15deg": [92.596, 17.961, 0.5213], #92.596x2 + 17.961x + 0.5213
     """
-
-    thrust_coefs = {
-        (0, 0, 3.7): [117.9, 21.811, 0.5403],
-        (15, 0, 3.7): [113.8, 22.766, 0.6355],
-        (30, 0, 3.7): [97.806, 21.468, 0.5682],
-        (0, 0, 2.7): [119.92, 18.022, 0.5599],
-        (15, 0, 2.7): [117.5, 18.492, 0.5346],
-        (30, 0, 2.7): [91.475, 21.633, 0.4504],
-        (0, 15, 2.7): [124.45, 17.182, 0.6627],
-        (8, 15, 2.7): [127.1, 15.612, 0.6906],
-        (15, 15, 2.7): [107.09, 18.039, 0.5855],
-        (30, 15, 2.7): [92.596, 17.961, 0.5213],
-    }
+    
 
     # 結合用データを格納するリスト
     combined_data = []
@@ -375,7 +417,8 @@ def main():
             df, err_reason = read_and_extract_data(
                 file,
                 dropna_mode=getattr(args, 'dropna_mode', 'any'),
-                dropna_subset=getattr(args, 'dropna_subset', None)
+                dropna_subset=getattr(args, 'dropna_subset', None),
+                sensor_bias=(getattr(args, 'sensor_bias', 'on') == 'on')
             )
             if df is None or (hasattr(df, 'empty') and df.empty):
                 print(f"  ファイル {file} の読み込みまたは抽出に失敗しました。スキップします。")
@@ -395,32 +438,37 @@ def main():
                 if hasattr(args, 'skip_seconds') and args.skip_seconds > 0:
                     df_processed = df_processed[df_processed['time_elapsed'] >= args.skip_seconds]
 
-                if hasattr(args, 'step_warmup') and args.step_warmup > 0:
-                    df_processed = df_processed[df_processed['step_elapsed_time'] > args.step_warmup]
+                # ウォームアップ除去は target_thrust 切替ベースで後段で実施
                 
-                # プレフィックスを追加
-                tilt_val = file_params.get('tilt_angle', group_params.get('tilt_angle'))
-                fold_val = file_params.get('fold_angle', group_params.get('fold_angle'))
-                prop_val = file_params.get('prop_spacing', group_params.get('prop_spacing'))
-                key = (tilt_val, fold_val, prop_val)
-                if not key in thrust_coefs:
-                    print(f"  thrust_coefsにキー {key} が存在しません。近いキーを探します。")
-                    key_dist = float('inf')
-                    for k in thrust_coefs.keys():
-                        dist = np.linalg.norm(np.array(k) - np.array(key))
-                        if dist < key_dist:
-                            key_dist = dist
-                            key = k
-                    print(f"  近いキー: {key}")
-                else:
-                    print(f"  キー {key} が見つかりました。")
-
-                coefs = thrust_coefs[key]
-                df_processed.loc[:, 'target_thrust'] = (
-                    df_processed['control'] ** 2 * coefs[0] +
-                    df_processed['control'] * coefs[1] +
-                    coefs[2]
-                )
+                # CSV の target_thrust 列を使用（数値化し、NaN は除外）
+                if 'target_thrust' not in df_processed.columns:
+                    raise ValueError("target_thrust column not found in CSV")
+                df_processed['target_thrust'] = pd.to_numeric(df_processed['target_thrust'], errors='coerce')
+                df_processed = df_processed.dropna(subset=['target_thrust'])
+                
+                # target_thrust の切り替わりをステップと見做してウォームアップ除去
+                if hasattr(args, 'step_warmup') and args.step_warmup > 0:
+                    df_processed['target_thrust_prev'] = df_processed['target_thrust'].shift(1)
+                    df_processed['thrust_change'] = df_processed['target_thrust'] != df_processed['target_thrust_prev']
+                    df_processed['thrust_step'] = df_processed['thrust_change'].cumsum()
+                    df_processed['thrust_step_start_time'] = df_processed.groupby('thrust_step')['time_elapsed'].transform('first')
+                    df_processed['thrust_step_elapsed_time'] = df_processed['time_elapsed'] - df_processed['thrust_step_start_time']
+                    df_processed = df_processed[df_processed['thrust_step_elapsed_time'] > args.step_warmup]
+                    # 後続で使わない補助列は除去
+                    df_processed = df_processed.drop(columns=['target_thrust_prev', 'thrust_change', 'thrust_step', 'thrust_step_start_time', 'thrust_step_elapsed_time'], errors='ignore')
+                
+                # ウォームアップ/target_thrust フィルタ後に空ならスキップ
+                if df_processed.empty:
+                    print(f"  ファイル {file} は target_thrust/ウォームアップ後にデータが空です。スキップします。")
+                    failed_data_files.append((file, "EmptyAfterTargetThrustOrWarmup"))
+                    continue
+                
+                # 測定列（存在列のみ）を自動検出し、数値化してから部分分散を計算
+                exclude_for_detect = set(file_params.keys()) | {'file_timestamp'}
+                numeric_meas_cols = _detect_numeric_measurement_columns(df_processed, exclude_for_detect)
+                # 数値化（変換可能な列のみ上書き）
+                for c in numeric_meas_cols:
+                    df_processed[c] = pd.to_numeric(df_processed[c], errors='coerce')
                 
                 # 抽出したパラメータ列を付与（ファイルごと）
                 for p_key, p_val in file_params.items():
@@ -428,8 +476,9 @@ def main():
                 # file_timestamp 列が無い場合も列を確保
                 if 'file_timestamp' not in df_processed.columns:
                     df_processed['file_timestamp'] = np.nan
-
-                for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z', 'front_in', 'front_out', 'rear_out', 'rear_in']:
+                
+                # 動的に推定した数値列のみ、部分分散を計算
+                for col in numeric_meas_cols:
                     df_processed[f"{col}_partial_variance"] = df_processed.groupby('target_thrust')[col].transform("var")
 
                 combined_data_group.append(df_processed)
@@ -446,42 +495,76 @@ def main():
         # すべてのファイルからのデータを結合
         concatenated_group = pd.concat(combined_data_group, ignore_index=True)
 
-        # IQRフィルタ（有効な場合）: groupby前に target_thrust ごとで実施
+        # 行ごとのゼロ判定: 指定列で値が0のセルを NaN に変換（パラメータグループ単位）
+        drop_zero_columns = getattr(args, 'drop_zero_columns', None)
+        if drop_zero_columns:
+            for col in drop_zero_columns:
+                if col in concatenated_group.columns:
+                    # 数値化して 0 判定し、該当セルのみ NaN 扱いにする
+                    col_numeric = pd.to_numeric(concatenated_group[col], errors='coerce')
+                    zero_mask = col_numeric == 0
+                    if zero_mask.any():
+                        concatenated_group.loc[zero_mask, col] = np.nan
+                        # 対応する部分分散列があれば、同じ行を NaN にしておく
+                        var_col = f"{col}_partial_variance"
+                        if var_col in concatenated_group.columns:
+                            concatenated_group.loc[zero_mask, var_col] = np.nan
+
+        # IQRフィルタ（有効な場合）: CSVから存在する数値列のみ対象にして実施
         if hasattr(args, 'iqr_filter') and args.iqr_filter:
+            # 当該グループのパラメータ列（除外対象）を union で収集
+            iqr_param_keys_union = set()
+            for f in files:
+                iqr_param_keys_union.update(file_params_map.get(f, {}).keys())
+            iqr_exclude = set(group_keys) | {'target_thrust', 'control', 'file_timestamp'} | iqr_param_keys_union
+            numeric_meas_cols = _detect_numeric_measurement_columns(concatenated_group, iqr_exclude)
+            # 数値化（変換可能な列のみ上書き）
+            for c in numeric_meas_cols:
+                concatenated_group[c] = pd.to_numeric(concatenated_group[c], errors='coerce')
+            # デフォルトか明示指定かで iqr 対象列を決定
+            default_iqr_cols = ['force_x','force_y','force_z','torque_x','torque_y','torque_z']
+            user_iqr_cols = getattr(args, 'iqr_columns', default_iqr_cols)
+            if user_iqr_cols == default_iqr_cols:
+                iqr_cols = list(numeric_meas_cols)
+            else:
+                iqr_cols = [c for c in user_iqr_cols if c in numeric_meas_cols]
             concatenated_group = apply_iqr_filter(
                 concatenated_group,
-                columns=getattr(args, 'iqr_columns', ['force_x','force_y','force_z','torque_x','torque_y','torque_z']),
+                columns=iqr_cols,
                 multiplier=getattr(args, 'iqr_multiplier', 1.5),
                 mode=getattr(args, 'iqr_mode', 'any')
             )
 
         # target_thrustでグループ化して統計量を計算（agg切替）
         agg_func = getattr(args, 'agg', 'median')
-        grouped_stats = concatenated_group.groupby('target_thrust').agg(
-            sample_count=('target_thrust', 'count'),
-            control=('control', agg_func),
-            force_x=('force_x', agg_func),
-            force_y=('force_y', agg_func),
-            force_z=('force_z', agg_func),
-            torque_x=('torque_x', agg_func),
-            torque_y=('torque_y', agg_func),
-            torque_z=('torque_z', agg_func),
-            front_in=('front_in', agg_func),
-            front_out=('front_out', agg_func),
-            rear_out=('rear_out', agg_func),
-            rear_in=('rear_in', agg_func),
-            file_timestamp=('file_timestamp', 'min'),
-            variance_force_x=('force_x_partial_variance', agg_func),
-            variance_force_y=('force_y_partial_variance', agg_func),
-            variance_force_z=('force_z_partial_variance', agg_func),
-            variance_torque_x=('torque_x_partial_variance', agg_func),
-            variance_torque_y=('torque_y_partial_variance', agg_func),
-            variance_torque_z=('torque_z_partial_variance', agg_func),
-            variance_front_in=('front_in_partial_variance', agg_func),
-            variance_front_out=('front_out_partial_variance', agg_func),
-            variance_rear_out=('rear_out_partial_variance', agg_func),
-            variance_rear_in=('rear_in_partial_variance', agg_func)
-        ).reset_index()
+        # 集計対象列も CSVの存在・数値判定により動的に構成（自動検出）
+        # このグループで検出された全パラメータ列（ファイル名からの抽出列）を union で集約
+        param_keys_union = set()
+        for f in files:
+            param_keys_union.update(file_params_map.get(f, {}).keys())
+        agg_exclude = set(group_keys) | {'target_thrust', 'control', 'file_timestamp'} | param_keys_union
+        numeric_meas_cols = _detect_numeric_measurement_columns(concatenated_group, agg_exclude)
+        # 数値化（変換可能な列のみ上書き）
+        for c in numeric_meas_cols:
+            concatenated_group[c] = pd.to_numeric(concatenated_group[c], errors='coerce')
+        # 出力に含めるパラメータ列（group_keys や集計済の特別列は除外）
+        exclude_param_cols = set(group_keys) | {'target_thrust', 'control'}
+        param_cols_for_output = [p for p in sorted(param_keys_union) if p not in exclude_param_cols and p in concatenated_group.columns]
+        agg_dict = {
+            'sample_count': ('target_thrust', 'count'),
+            'control': ('control', agg_func),
+            'file_timestamp': ('file_timestamp', 'min')
+        }
+        for c in numeric_meas_cols:
+            agg_dict[c] = (c, agg_func)
+            var_col = f"{c}_partial_variance"
+            if var_col in concatenated_group.columns:
+                agg_dict[f"variance_{c}"] = (var_col, agg_func)
+        # すべてのパラメータ列を 'first' で出力（グループ内で一定と仮定）
+        for pcol in param_cols_for_output:
+            if pcol not in agg_dict:
+                agg_dict[pcol] = (pcol, 'first')
+        grouped_stats = concatenated_group.groupby('target_thrust').agg(**agg_dict).reset_index()
 
         # パラメータ情報を追加
         for k, v in group_params.items():
