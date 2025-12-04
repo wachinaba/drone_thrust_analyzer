@@ -51,6 +51,11 @@ def parse_args():
         action="store_true",
         help="モーメントの position に符号付き x を使用（rear は負）",
     )
+    parser.add_argument(
+        "--split-by-flowdir",
+        action="store_true",
+        help="flowdir 列でグルーピングし、flowdir ごとに別グラフを生成",
+    )
     return parser.parse_args()
 
 
@@ -185,11 +190,8 @@ def overlay_inout_mean_rectangles_positive(g: sns.axisgrid.FacetGrid, df_source:
         return
 
     # Facet 配置
-    row_order = sorted(agg["distance"].dropna().unique().tolist())
-    col_pairs = (
-        agg.drop_duplicates(subset=["wall_spacing", "tilt_angle"])[["wall_spacing", "tilt_angle", "col_key"]]
-        .sort_values(["wall_spacing", "tilt_angle"])
-    )
+    row_order = sorted(df_source["distance"].dropna().unique().tolist())
+    col_pairs = df_source.drop_duplicates(subset=["wall_spacing", "tilt_angle"])[["wall_spacing", "tilt_angle", "col_key"]].sort_values(["wall_spacing", "tilt_angle"])
     col_order = col_pairs["col_key"].tolist()
 
     row_index = {val: i for i, val in enumerate(row_order)}
@@ -288,22 +290,62 @@ def main():
         print("集約後のデータが空です。", file=sys.stderr)
         sys.exit(1)
 
-    g = plot_overlay(
-        agg,
-        raw_long,
-        palette=args.palette,
-        show_markers=args.markers,
-        moment=args.moment or args.moment_signed,
-        moment_signed=args.moment_signed,
-    )
-
-    if args.output:
-        out_path = Path(args.output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        g.savefig(str(out_path), dpi=args.dpi, bbox_inches="tight")
-        print(f"保存しました: {out_path}")
+    # flowdir で分割描画（元データ df を基準にフィルタ → 再集約）
+    if args.split_by_flowdir:
+        if "flowdir" in df.columns:
+            flowdirs = [v for v in df["flowdir"].dropna().unique().tolist()]
+            if flowdirs:
+                for fd in flowdirs:
+                    sub_df = df[df["flowdir"] == fd]
+                    if sub_df.empty:
+                        continue
+                    sub_agg = reshape_and_aggregate(sub_df)
+                    sub_raw = reshape_to_long(sub_df)
+                    if sub_agg.empty:
+                        continue
+                    g = plot_overlay(
+                        sub_agg,
+                        sub_raw,
+                        palette=args.palette,
+                        show_markers=args.markers,
+                        moment=args.moment or args.moment_signed,
+                        moment_signed=args.moment_signed,
+                    )
+                    try:
+                        g.fig.suptitle(f"flowdir = {fd}")
+                    except Exception:
+                        pass
+                    if args.output:
+                        out_path = Path(args.output)
+                        out_path.parent.mkdir(parents=True, exist_ok=True)
+                        base = out_path.stem
+                        suffix = out_path.suffix or ".png"
+                        out_name = f"{base}_flowdir-{str(fd).replace(' ', '_')}{suffix}"
+                        out_file = out_path.with_name(out_name)
+                        g.savefig(str(out_file), dpi=args.dpi, bbox_inches="tight")
+                        print(f"保存しました: {out_file}")
+                if not args.output:
+                    plt.show()
+                # flowdir 分割が完了したので終了
+                return
+        else:
+            print("flowdir 列が見つからないため、分割せずに描画します。", file=sys.stderr)
     else:
-        plt.show()
+        g = plot_overlay(
+            agg,
+            raw_long,
+            palette=args.palette,
+            show_markers=args.markers,
+            moment=args.moment or args.moment_signed,
+            moment_signed=args.moment_signed,
+        )
+        if args.output:
+            out_path = Path(args.output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            g.savefig(str(out_path), dpi=args.dpi, bbox_inches="tight")
+            print(f"保存しました: {out_path}")
+        else:
+            plt.show()
 
 
 if __name__ == "__main__":
