@@ -82,6 +82,20 @@ def extract_parameters_generic(filename, param_rename_user=None, tail_keywords=N
 
     # 既定の自動リネーム
     default_rename = {
+        # abbreviations (default)
+        'd': 'distance',
+        'dir': 'direction',
+        'f': 'fold_angle',
+        'fdir': 'flow_direction',
+        'fdst': 'flow_distance',
+        'fhgt': 'fow_height',
+        'h': 'height',
+        'ps': 'prop_spacing',
+        's': 'slant_angle',
+        't': 'tilt_angle',
+        'wb': 'wheelbase',
+        'ws': 'wall_spacing',
+        # aliases / backward-compat
         'tilt': 'tilt_angle',
         'fold': 'fold_angle',
         'wheelbase': 'prop_spacing',
