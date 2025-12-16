@@ -167,8 +167,8 @@ def generate_launch_description():
                 "rack_pitch": 0.106214,
                 "gear_ratio": 1.0,
                 "control_frequency": 100.0,
-                "profile_velocity_deg_s": 1000.0,
-                "profile_accel_deg_ss": 80.0,
+                "profile_velocity_deg_s": 2000.0,
+                "profile_accel_deg_ss": 200.0,
                 "calibration_file": PathJoinSubstitution(
                     [
                         FindPackageShare("dynamixel_linear_slider"),
@@ -219,6 +219,30 @@ def generate_launch_description():
         ],
     )
 
+    leadscrew_slider_controller_vertical_node = Node(
+        package="dynamixel_leadscrew_slider",
+        executable="leadscrew_slider_controller",
+        name="leadscrew_slider_controller",
+        namespace="slider_vertical",
+        output="screen",
+        emulate_tty=True,
+        parameters=[
+            LaunchConfiguration("slider_params_file"),
+            {
+                "motor.id": 4,
+                "homing.origin_offset_mm": 0.0,
+                "homing.origin_reference": "max",
+                "homing.return_to_position_mm": 0.0,
+                "homing.seek_current_ma": 800,
+                "homing.seek_current_ma_max": 1000,
+            },
+        ],
+        remappings=[
+            ("/move_mm", "/slider_vertical/move_mm"),
+            ("/current_position", "/slider_vertical/current_position"),
+        ],
+    )
+
     # ホーミング実行（起動後に順次呼び出し）
     home_bottom_after_delay = TimerAction(
         period=5.0,
@@ -254,6 +278,23 @@ def generate_launch_description():
         ],
     )
 
+    home_vertical_after_delay = TimerAction(
+        period=60.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "ros2",
+                    "service",
+                    "call",
+                    "/slider_vertical/home",
+                    "std_srvs/srv/Trigger",
+                    "{}",
+                ],
+                output="screen",
+            )
+        ],
+    )
+
     return LaunchDescription(
         [
             use_sim_time_arg,
@@ -263,8 +304,10 @@ def generate_launch_description():
             calibrated_slider_controller_node,
             leadscrew_slider_controller_bottom_node,
             leadscrew_slider_controller_top_node,
+            leadscrew_slider_controller_vertical_node,
             home_bottom_after_delay,
             home_top_after_delay,
+            home_vertical_after_delay,
             force_sensor_node,
         ]
     )
