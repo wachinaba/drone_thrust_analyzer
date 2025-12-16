@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
 """
-カーネルリッジ回帰（KRR）による torque_x のモデル化スクリプト
+カーネルリッジ回帰（KRR）による目的変数（デフォルト: torque_x）のモデル化スクリプト
 
 使用例:
     python kernel_ridge_regression.py data.csv \
         --features distance,tilt_angle,force_z \
+        --target torque_x \
         --kernel rbf --alpha 1e-2 --gamma 0.5 \
         --do-grid-search --cv-folds 5 --cv-jobs 4 \
         --normalize --output krr_results.png
+
+派生ターゲットを式で指定する例（安全のため pandas.eval(engine='numexpr') 相当）:
+    python kernel_ridge_regression.py data.csv \
+        --target target_thrust \
+        --target-expr "force_z / 9.80665" \
+        --features distance,tilt_angle,force_z \
+        --plot-raw-fit --row-group-by distance --col-group-by tilt_angle \
+        --curve-x force_z \
+        --normalize --output krr.png
 """
 
 import pandas as pd
@@ -27,14 +37,49 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torque_x=None):
+def _ensure_target_column(df: pd.DataFrame, target_column: str, target_expr: str | None):
+    """
+    target_column が df に存在しない場合、target_expr から生成して追加する。
+    安全のため、生の eval は使わず pandas.eval(engine='numexpr') に限定する。
+    """
+    if target_column in df.columns:
+        return df
+    if not target_expr:
+        return df
+
+    expr = str(target_expr).strip()
+    if not expr:
+        return df
+    if '=' in expr:
+        raise ValueError(
+            "target-expr に代入式は使えません。"
+            "--target で列名を指定し、--target-expr には右辺の式だけを書いてください。"
+            "例: --target my_target --target-expr \"force_z / 9.80665\""
+        )
+
+    try:
+        # engine='numexpr' により、Python の任意コード実行を回避する
+        y = df.eval(expr, engine='numexpr')
+    except Exception as e:
+        raise ValueError(
+            f"target-expr の評価に失敗しました: {e}\n"
+            f"target='{target_column}', expr='{expr}'\n"
+            "列名に記号が含まれる場合はバッククォートで囲ってください（例: `torque-x`）。"
+        )
+    # df.eval は Series か ndarray/scalar になり得る
+    df[target_column] = y
+    return df
+
+
+def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torque_x=None, target_column: str = 'torque_x', target_expr: str | None = None):
     """
     CSVファイルを読み込み、データの前処理を行う
     
     Args:
         csv_file: CSVファイルのパス
-        selected_features: 使用する特徴量のリスト（Noneの場合はtorque_x以外の全列）
+        selected_features: 使用する特徴量のリスト（Noneの場合は目的変数以外の全列）
         max_variance_torque_x: 'variance_torque_x' の上限（Noneで無効）
+        target_column: 目的変数の列名（デフォルト: torque_x）
     """
     if not os.path.exists(csv_file):
         raise FileNotFoundError(f"ファイル '{csv_file}' が見つかりません。")
@@ -47,22 +92,25 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
     except Exception as e:
         raise Exception(f"CSVファイルの読み込み中にエラーが発生しました: {e}")
 
-    if 'torque_x' not in df.columns:
-        raise ValueError("必要な列が見つかりません: ['torque_x']")
+    # ターゲット列の生成（必要な場合）
+    df = _ensure_target_column(df, target_column=target_column, target_expr=target_expr)
+
+    if target_column not in df.columns:
+        raise ValueError(f"必要な列が見つかりません: ['{target_column}']")
 
     if selected_features is not None and len(selected_features) > 0:
-        if 'torque_x' in selected_features:
-            raise ValueError("'torque_x' は目的変数のため特徴量に含められません。")
+        if target_column in selected_features:
+            raise ValueError(f"'{target_column}' は目的変数のため特徴量に含められません。")
         missing = [c for c in selected_features if c not in df.columns]
         if missing:
             raise ValueError(f"指定された特徴量が見つかりません: {missing}")
         feature_columns = list(selected_features)
     else:
-        # 既定は torque_x 以外の全列
-        feature_columns = [c for c in df.columns if c != 'torque_x']
+        # 既定は 目的変数 以外の全列
+        feature_columns = [c for c in df.columns if c != target_column]
 
     # 数値化
-    numeric_columns = ['torque_x'] + feature_columns
+    numeric_columns = [target_column] + feature_columns
     for col in numeric_columns:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -75,7 +123,7 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
         print(f"variance_torque_x フィルタ: {before - after} 行を除外（閾値 {max_variance_torque_x}）")
 
     # NaN除去
-    df_clean = df.dropna(subset=['torque_x'] + feature_columns)
+    df_clean = df.dropna(subset=[target_column] + feature_columns)
     if df_clean.empty:
         raise ValueError("有効なデータがありません。")
 
@@ -130,15 +178,15 @@ def evaluate_model(model, X_test, y_test, X_train=None, y_train=None, cv_folds=0
     return metrics
 
 
-def plot_results(y_test, y_pred, output_file=None):
+def plot_results(y_test, y_pred, output_file=None, target_column: str = 'torque_x'):
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
 
     # 1. 予測値 vs 実際の値
     ax1 = axes[0, 0]
     ax1.scatter(y_test, y_pred, alpha=0.6, s=50)
     ax1.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
-    ax1.set_xlabel('実際の値 (torque_x)')
-    ax1.set_ylabel('予測値 (torque_x)')
+    ax1.set_xlabel(f'実際の値 ({target_column})')
+    ax1.set_ylabel(f'予測値 ({target_column})')
     ax1.set_title('予測値 vs 実際の値')
     ax1.grid(True, alpha=0.3)
 
@@ -147,7 +195,7 @@ def plot_results(y_test, y_pred, output_file=None):
     residuals = y_test - y_pred
     ax2.scatter(y_pred, residuals, alpha=0.6, s=50)
     ax2.axhline(y=0, color='r', linestyle='--')
-    ax2.set_xlabel('予測値 (torque_x)')
+    ax2.set_xlabel(f'予測値 ({target_column})')
     ax2.set_ylabel('残差')
     ax2.set_title('残差プロット')
     ax2.grid(True, alpha=0.3)
@@ -163,7 +211,7 @@ def plot_results(y_test, y_pred, output_file=None):
     ax4.plot(indices, y_test, 'o-', label='実際の値', alpha=0.7)
     ax4.plot(indices, y_pred, 's-', label='予測値', alpha=0.7)
     ax4.set_xlabel('データポイント')
-    ax4.set_ylabel('torque_x')
+    ax4.set_ylabel(target_column)
     ax4.set_title('時系列での比較')
     ax4.legend()
     ax4.grid(True, alpha=0.3)
@@ -177,15 +225,15 @@ def plot_results(y_test, y_pred, output_file=None):
     plt.close()
 
 
-def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by, curve_x=None, curve_points=200, ranges=None, output_file=None):
+def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by, curve_x=None, curve_points=200, ranges=None, output_file=None, target_column: str = 'torque_x'):
     """
     指定した group_by 特徴量でデータをグループ化し、各グループで
-    - 生の散布 (curve_x vs torque_x)
+    - 生の散布 (curve_x vs target_column)
     - KRR のフィット曲線 (curve_x を掃引、他特徴量はグループの中央値固定)
     を同一サブプロット上に描画する。
 
     Args:
-        df_clean: 前処理済み DataFrame（目的変数 'torque_x' を含む）
+        df_clean: 前処理済み DataFrame（目的変数 target_column を含む）
         feature_columns: 学習に使用した特徴量列
         model: 学習済み KRR モデル
         scaler: StandardScaler もしくは None
@@ -256,7 +304,7 @@ def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by,
         if curve_x not in df_group.columns:
             raise ValueError(f"x 軸列 '{curve_x}' がデータに存在しません。")
         x_raw = df_group[curve_x].values
-        y_raw = df_group['torque_x'].values
+        y_raw = df_group[target_column].values
         ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
 
         # 予測用グリッド（curve_x を掃引、他は中央値固定（group 内））
@@ -294,7 +342,7 @@ def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by,
 
         ax.set_title(', '.join(title_parts))
         ax.set_xlabel(curve_x)
-        ax.set_ylabel('torque_x')
+        ax.set_ylabel(target_column)
         ax.grid(True, alpha=0.3)
         ax.legend(frameon=True, fontsize=9)
 
@@ -308,6 +356,211 @@ def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by,
     if output_file:
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
         print(f"グループ別 Raw vs Fit を '{output_file}' に保存しました。")
+        plt.close(fig)
+    else:
+        plt.show()
+        plt.close(fig)
+
+
+def apply_facet_filters(df: pd.DataFrame, facet_filters):
+    """
+    ファセット描画前の事前フィルタを適用する。
+
+    facet_filters: ["col:min,max", ...] を想定（複数指定可）
+    """
+    if not facet_filters:
+        return df
+
+    df_out = df
+    for item in facet_filters:
+        if not item or (':' not in item) or (',' not in item):
+            continue
+        col, span = item.split(':', 1)
+        col = col.strip()
+        if col not in df_out.columns:
+            print(f"[facet-filter] 警告: 列 '{col}' が存在しません。スキップ: {item}")
+            continue
+        lo_s, hi_s = span.split(',', 1)
+        try:
+            lo = float(lo_s)
+            hi = float(hi_s)
+        except Exception:
+            print(f"[facet-filter] 警告: 範囲の数値化に失敗。スキップ: {item}")
+            continue
+
+        before = len(df_out)
+        df_out = df_out[(df_out[col] >= lo) & (df_out[col] <= hi)]
+        after = len(df_out)
+        print(f"[facet-filter] {col}: [{lo}, {hi}] で {before-after} 行を除外")
+    return df_out
+
+
+def plot_facet_raw_and_fit_krr(
+    df_clean,
+    feature_columns,
+    model,
+    scaler,
+    row_group_by,
+    col_group_by,
+    curve_x=None,
+    curve_points=200,
+    ranges=None,
+    output_file=None,
+):
+    """
+    行方向(row_group_byの組) × 列方向(col_group_byの組)のファセットで、
+    各セルに Raw 散布と KRR フィット曲線を描画する。
+    """
+    if not row_group_by and not col_group_by:
+        print("[plot_facet_raw_and_fit_krr] row/col が未指定のためスキップします。")
+        return
+
+    target_column = getattr(plot_facet_raw_and_fit_krr, "_target_column", "torque_x")
+
+    # x 軸の決定
+    if curve_x is None:
+        excluded = set((row_group_by or []) + (col_group_by or []))
+        candidates = [c for c in feature_columns if c not in excluded]
+        if not candidates:
+            raise ValueError("curve_x を自動決定できません。--curve-x を指定してください。")
+        curve_x = candidates[0]
+    if curve_x not in feature_columns:
+        raise ValueError(f"curve_x '{curve_x}' は学習特徴量に含まれていません。feature_columns={feature_columns}")
+
+    # レンジ（全ファセットで共有するグローバルな範囲）
+    if ranges is not None and isinstance(ranges, tuple) and len(ranges) == 2:
+        mins, maxs = ranges
+    else:
+        mins = {c: float(df_clean[c].min()) for c in feature_columns}
+        maxs = {c: float(df_clean[c].max()) for c in feature_columns}
+
+    # 全ファセットで共通の X / Y 範囲
+    global_x_min = mins.get(curve_x, float(df_clean[curve_x].min()))
+    global_x_max = maxs.get(curve_x, float(df_clean[curve_x].max()))
+    if not np.isfinite(global_x_min) or not np.isfinite(global_x_max):
+        global_x_min = float(df_clean[curve_x].min())
+        global_x_max = float(df_clean[curve_x].max())
+    if global_x_min == global_x_max:
+        global_x_min -= 1e-6
+        global_x_max += 1e-6
+
+    global_y_min = float(df_clean[target_column].min())
+    global_y_max = float(df_clean[target_column].max())
+    if not np.isfinite(global_y_min) or not np.isfinite(global_y_max):
+        global_y_min = -1.0
+        global_y_max = 1.0
+    if global_y_min == global_y_max:
+        global_y_min -= 1e-6
+        global_y_max += 1e-6
+
+    def make_keys(group_cols):
+        if not group_cols:
+            return [()]
+        uniq = df_clean[group_cols].drop_duplicates()
+        keys = [tuple(row[c] for c in group_cols) for _, row in uniq.iterrows()]
+        return keys
+
+    row_keys = make_keys(row_group_by)
+    col_keys = make_keys(col_group_by)
+
+    n_rows = max(1, len(row_keys))
+    n_cols = max(1, len(col_keys))
+
+    plt.rcParams.update({'font.size': 18})
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6.0 * n_cols, 5.0 * n_rows), squeeze=False)
+
+    for r_idx, rkey in enumerate(row_keys):
+        for c_idx, ckey in enumerate(col_keys):
+            ax = axes[r_idx, c_idx]
+
+            # 行ヘッダ（左側）/ 列ヘッダ（上側）
+            if (c_idx == 0) and row_group_by:
+                row_title = '\n'.join(
+                    [f"{col}={val:g}" if isinstance(val, float) else f"{col}={val}"
+                     for col, val in zip(row_group_by, rkey)]
+                )
+                ax.set_ylabel(target_column)
+                ax.annotate(
+                    row_title,
+                    xy=(-0.40, 0.5),
+                    xycoords='axes fraction',
+                    rotation=0,
+                    ha='right',
+                    va='center',
+                    fontsize=18,
+                    linespacing=1.0,
+                    annotation_clip=False
+                )
+            else:
+                ax.set_ylabel(target_column)
+
+            if (r_idx == 0) and col_group_by:
+                col_title = '\n'.join(
+                    [f"{col}={val:g}" if isinstance(val, float) else f"{col}={val}"
+                     for col, val in zip(col_group_by, ckey)]
+                )
+                ax.set_title(col_title, fontsize=20)
+            else:
+                ax.set_title('')
+
+            # マスク作成
+            mask = np.ones(len(df_clean), dtype=bool)
+            if row_group_by:
+                for col, val in zip(row_group_by, rkey):
+                    mask &= (df_clean[col] == val)
+            if col_group_by:
+                for col, val in zip(col_group_by, ckey):
+                    mask &= (df_clean[col] == val)
+
+            df_cell = df_clean[mask]
+            if df_cell.empty:
+                ax.grid(False)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_xlabel(curve_x)
+                continue
+
+            # 生データ散布
+            x_raw = df_cell[curve_x].values
+            y_raw = df_cell[target_column].values
+            ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
+
+            # 予測用グリッド（全ファセット共通の X 範囲）
+            x_grid = np.linspace(global_x_min, global_x_max, int(curve_points))
+            X_grid = np.zeros((len(x_grid), len(feature_columns)), dtype=float)
+            for j, fcol in enumerate(feature_columns):
+                if fcol == curve_x:
+                    X_grid[:, j] = x_grid
+                elif (row_group_by and fcol in row_group_by):
+                    val = rkey[row_group_by.index(fcol)] if fcol in row_group_by else float(df_cell[fcol].median())
+                    X_grid[:, j] = float(val)
+                elif (col_group_by and fcol in col_group_by):
+                    val = ckey[col_group_by.index(fcol)] if fcol in col_group_by else float(df_cell[fcol].median())
+                    X_grid[:, j] = float(val)
+                else:
+                    X_grid[:, j] = float(df_cell[fcol].median())
+
+            if scaler is not None:
+                try:
+                    X_infer = scaler.transform(X_grid)
+                except Exception:
+                    X_infer = X_grid
+            else:
+                X_infer = X_grid
+
+            y_pred = model.predict(X_infer)
+            ax.plot(x_grid, y_pred, color='red', lw=3.0, label='KRR fit')
+
+            ax.set_xlim(global_x_min, global_x_max)
+            ax.set_ylim(global_y_min, global_y_max)
+            ax.set_xlabel(curve_x)
+            ax.grid(True, alpha=0.3)
+            ax.legend(frameon=True, fontsize=10)
+
+    plt.tight_layout()
+    if output_file:
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"ファセット Raw vs KRR Fit を '{output_file}' に保存しました。")
         plt.close(fig)
     else:
         plt.show()
@@ -375,6 +628,7 @@ def parse_ranges(ranges, feature_columns, df_clean):
 
 
 def generate_pairwise_heatmaps_krr(model, feature_columns, df_clean, scaler, grid_size, fixes, ranges, output_prefix):
+    target_column = getattr(generate_pairwise_heatmaps_krr, "_target_column", "torque_x")
     fixed_values = parse_fixed_values(fixes, feature_columns, df_clean)
     mins, maxs = parse_ranges(ranges, feature_columns, df_clean)
 
@@ -408,10 +662,10 @@ def generate_pairwise_heatmaps_krr(model, feature_columns, df_clean, scaler, gri
             plt.imshow(Z, origin='lower', aspect='auto',
                        extent=[mins[fi], maxs[fi], mins[fj], maxs[fj]],
                        cmap='viridis')
-            plt.colorbar(label='予測値 (torque_x)')
+            plt.colorbar(label=f'予測値 ({target_column})')
             plt.xlabel(fi)
             plt.ylabel(fj)
-            plt.title(f'予測ヒートマップ(KRR): {fi} vs {fj}')
+            plt.title(f'予測ヒートマップ(KRR): {target_column} / {fi} vs {fj}')
             if output_prefix:
                 out = f"{output_prefix}_results_{fi}__{fj}.png"
                 plt.savefig(out, dpi=200, bbox_inches='tight')
@@ -464,6 +718,10 @@ def main():
     parser = argparse.ArgumentParser(description='カーネルリッジ回帰によるtorque_xのモデル化')
     parser.add_argument('csv_file', help='入力CSVファイルのパス')
     parser.add_argument('--output', '-o', help='出力画像ファイルのパス（指定しない場合は表示のみ）')
+    parser.add_argument('--target', type=str, default='torque_x', help='目的変数の列名（デフォルト: torque_x）')
+    parser.add_argument('--target-expr', type=str, default=None,
+                        help="目的変数を式から生成する（例: \"force_z / 9.80665\"）。"
+                             "安全のため pandas.eval(engine='numexpr') で評価。代入式は不可。")
     parser.add_argument('--test-size', type=float, default=0.2, help='テストデータの割合（デフォルト: 0.2）')
     parser.add_argument('--kernel', choices=['rbf', 'linear', 'poly', 'rbf_linear'], default='rbf', help='カーネルの種類')
     parser.add_argument('--alpha', type=float, default=1e-2, help='リッジ正則化係数（デフォルト: 1e-2）')
@@ -475,7 +733,7 @@ def main():
     parser.add_argument('--cv-folds', type=int, default=0, help='クロスバリデーションの分割数（0で無効）')
     parser.add_argument('--cv-jobs', type=int, default=1, help='クロスバリデーションの並列数（デフォルト: 1）')
     parser.add_argument('--max-train-samples', type=int, default=None, help='学習に使用する最大サンプル数（指定時はランダム抽出）')
-    parser.add_argument('--features', type=str, default=None, help='使用する特徴量をカンマ区切りで指定（未指定ならtorque_x以外の全列）')
+    parser.add_argument('--features', type=str, default=None, help='使用する特徴量をカンマ区切りで指定（未指定なら目的変数以外の全列）')
     parser.add_argument('--list-features', action='store_true', help='利用可能な特徴量候補を一覧表示して終了')
     parser.add_argument('--max-variance-torque-x', type=float, default=None, help='variance_torque_x の上限で高分散サンプルを除外')
     parser.add_argument('--do-grid-search', action='store_true', help='alpha/gamma(degree)の簡易グリッドサーチを実行')
@@ -492,6 +750,9 @@ def main():
     parser.add_argument('--curve-x', type=str, default=None, help='フィット曲線の横軸にする特徴量（未指定なら group_by 以外の最初の特徴量）')
     parser.add_argument('--curve-points', type=int, default=200, help='フィット曲線の分解能')
     parser.add_argument('--groupfit-output', type=str, default=None, help='グループ別 Raw vs Fit 図の出力パス（未指定なら表示、--output 指定時は派生名を使用）')
+    parser.add_argument('--row-group-by', type=str, default=None, help='行方向のファセットに用いる列（カンマ区切りの複数可）')
+    parser.add_argument('--col-group-by', type=str, default=None, help='列方向のファセットに用いる列（カンマ区切りの複数可）')
+    parser.add_argument('--facet-filter', action='append', default=None, help="ファセット用の事前フィルタ 'col:min,max' を複数指定可")
 
     args = parser.parse_args()
 
@@ -509,8 +770,9 @@ def main():
             if not os.path.exists(args.csv_file):
                 raise FileNotFoundError(f"ファイル '{args.csv_file}' が見つかりません。")
             df_head = pd.read_csv(args.csv_file, nrows=5)
-            candidates = [c for c in df_head.columns if c != 'torque_x']
+            candidates = [c for c in df_head.columns if c != args.target]
             print(f"利用可能な特徴量候補: {candidates}")
+            print(f"選択中の目的変数: {args.target}")
             return 0
 
         # 読み込みと前処理
@@ -521,11 +783,13 @@ def main():
         df_clean, feature_columns = load_and_preprocess_data(
             args.csv_file,
             selected_features,
-            max_variance_torque_x=args.max_variance_torque_x
+            max_variance_torque_x=args.max_variance_torque_x,
+            target_column=args.target,
+            target_expr=args.target_expr,
         )
 
         X = df_clean[feature_columns].values
-        y = df_clean['torque_x'].values
+        y = df_clean[args.target].values
 
         print(f"特徴量の形状: {X.shape}")
         print(f"目的変数の形状: {y.shape}")
@@ -598,7 +862,7 @@ def main():
             results_output = f"{base_name}_results.png"
             importance_output = f"{base_name}_importance.png"
 
-        plot_results(y_test, metrics['y_pred'], results_output)
+        plot_results(y_test, metrics['y_pred'], results_output, target_column=args.target)
 
         if args.perm_importance:
             plot_permutation_importance(model, X_test, y_test, feature_columns, importance_output)
@@ -611,6 +875,7 @@ def main():
             output_prefix = None
             if args.output:
                 output_prefix = os.path.splitext(args.output)[0]
+            generate_pairwise_heatmaps_krr._target_column = args.target
             generate_pairwise_heatmaps_krr(
                 model,
                 feature_columns,
@@ -626,27 +891,41 @@ def main():
         print(f"\n=== 統計情報 ===")
         print(f"使用した特徴量: {feature_columns}")
         print(f"データポイント数: {len(df_clean)}")
-        print(f"torque_xの範囲: {y.min():.6f} - {y.max():.6f}")
-        print(f"torque_xの平均: {y.mean():.6f}")
-        print(f"torque_xの標準偏差: {y.std():.6f}")
+        print(f"{args.target}の範囲: {y.min():.6f} - {y.max():.6f}")
+        print(f"{args.target}の平均: {y.mean():.6f}")
+        print(f"{args.target}の標準偏差: {y.std():.6f}")
 
         # 生データとフィット曲線の比較
         if args.plot_raw_fit:
-            group_by = None
-            if args.group_by:
-                group_by = [c.strip() for c in args.group_by.split(',') if c.strip()]
-            if not group_by:
-                print("(注意) --plot-raw-fit が指定されましたが --group-by が空です。スキップします。")
-            else:
-                # レンジ（既存の --range 指定を流用）
-                mins, maxs = parse_ranges(args.ranges, feature_columns, df_clean)
+            row_group_by = [c.strip() for c in args.row_group_by.split(',') if c.strip()] if args.row_group_by else None
+            col_group_by = [c.strip() for c in args.col_group_by.split(',') if c.strip()] if args.col_group_by else None
+            group_by = [c.strip() for c in args.group_by.split(',') if c.strip()] if (args.group_by and not row_group_by and not col_group_by) else None
 
-                groupfit_output = args.groupfit_output
-                if not groupfit_output and args.output:
-                    base_name = os.path.splitext(args.output)[0]
-                    groupfit_output = f"{base_name}_groupfit.png"
+            # レンジ（既存の --range 指定を流用）
+            mins, maxs = parse_ranges(args.ranges, feature_columns, df_clean)
 
-                try:
+            groupfit_output = args.groupfit_output
+            if not groupfit_output and args.output:
+                base_name = os.path.splitext(args.output)[0]
+                groupfit_output = f"{base_name}_groupfit.png"
+
+            try:
+                if row_group_by or col_group_by:
+                    df_for_facet = apply_facet_filters(df_clean, args.facet_filter)
+                    plot_facet_raw_and_fit_krr._target_column = args.target
+                    plot_facet_raw_and_fit_krr(
+                        df_clean=df_for_facet,
+                        feature_columns=feature_columns,
+                        model=model,
+                        scaler=scaler,
+                        row_group_by=row_group_by,
+                        col_group_by=col_group_by,
+                        curve_x=args.curve_x,
+                        curve_points=args.curve_points,
+                        ranges=(mins, maxs),
+                        output_file=groupfit_output,
+                    )
+                elif group_by:
                     plot_grouped_raw_and_fit(
                         df_clean=df_clean,
                         feature_columns=feature_columns,
@@ -657,9 +936,12 @@ def main():
                         curve_points=args.curve_points,
                         ranges=(mins, maxs),
                         output_file=groupfit_output,
+                        target_column=args.target,
                     )
-                except Exception as e:
-                    print(f"グループ別 Raw vs Fit の描画でエラー: {e}")
+                else:
+                    print("(注意) --plot-raw-fit は指定されましたが、--group-by も --row-group-by/--col-group-by も未指定です。スキップします。")
+            except Exception as e:
+                print(f"グループ別 Raw vs Fit の描画でエラー: {e}")
 
         return 0
 
