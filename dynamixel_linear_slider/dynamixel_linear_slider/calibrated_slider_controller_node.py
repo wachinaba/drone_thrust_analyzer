@@ -4,6 +4,9 @@ import math
 import os
 from typing import List, Optional, Tuple
 
+from collections import deque
+from statistics import median
+
 import rclpy
 from rclpy.node import Node
 
@@ -40,8 +43,8 @@ class CalibratedSliderControllerNode(Node):
         self.declare_parameter("control_frequency", 100.0)
         self.declare_parameter("profile_velocity_deg_s", 100.0)
         self.declare_parameter("profile_accel_deg_ss", 20.0)
-        # AR マーカー値の平均化に使うサンプル数
-        self.declare_parameter("ar_average_window_size", 10)
+        # AR マーカー値の中央値計算に使うサンプル数（直近 N サンプル）
+        self.declare_parameter("ar_average_window_size", 20)
         self.declare_parameter(
             "calibration_file",
             os.path.join(
@@ -62,6 +65,12 @@ class CalibratedSliderControllerNode(Node):
             "profile_accel_deg_ss"
         ).value
         self.calibration_file: str = self.get_parameter("calibration_file").value
+
+        # AR マーカー中央値用バッファ
+        self.ar_average_window_size: int = int(
+            self.get_parameter("ar_average_window_size").value
+        )
+        self.ar_position_buffer = deque(maxlen=self.ar_average_window_size)
 
         # 内部状態
         self.current_motor_position_deg: float = 0.0
@@ -122,30 +131,43 @@ class CalibratedSliderControllerNode(Node):
         )
 
         # サービス
+        # 各サービスはノードのプライベート名前空間（~）配下に作成
         self.clear_calib_srv = self.create_service(
             Trigger,
-            "clear_calibration",
+            "~/clear_calibration",
             self.clear_calibration_callback,
         )
         self.add_calib_srv = self.create_service(
             Trigger,
-            "add_calibration_point",
+            "~/add_calibration_point",
             self.add_calibration_point_callback,
         )
         self.finalize_calib_srv = self.create_service(
             Trigger,
-            "finalize_calibration",
+            "~/finalize_calibration",
             self.finalize_calibration_callback,
         )
         self.save_calib_srv = self.create_service(
             Trigger,
-            "save_calibration",
+            "~/save_calibration",
             self.save_calibration_callback,
         )
         self.load_calib_srv = self.create_service(
             Trigger,
-            "load_calibration",
+            "~/load_calibration",
             self.load_calibration_callback,
+        )
+
+        # トルク ON/OFF 用サービス（キャリブレーション時の手動操作などに使用）
+        self.enable_output_srv = self.create_service(
+            Trigger,
+            "~/enable_output",
+            self.enable_output_callback,
+        )
+        self.disable_output_srv = self.create_service(
+            Trigger,
+            "~/disable_output",
+            self.disable_output_callback,
         )
 
         # 制御タイマ
@@ -154,8 +176,14 @@ class CalibratedSliderControllerNode(Node):
             self.control_timer_callback,
         )
 
-        # 起動時にキャリブレーションファイルを読み込み
-        self.load_calibration_from_file(initial_load=True)
+        # 起動時にキャリブレーションファイルを読み込み（ログは見やすいように warn レベルで出す）
+        success, msg = self.load_calibration_from_file(initial_load=True)
+        if success:
+            # 読み込み成功時はキャリブレーション内容を強調表示したいので warn とする
+            self.get_logger().warn(msg)
+        else:
+            # ファイル未存在などの情報は info として通知
+            self.get_logger().info(msg)
 
         self.get_logger().info("CalibratedSliderControllerNode initialized")
         self.get_logger().info(f"motor_id={self.motor_id}")
@@ -198,6 +226,7 @@ class CalibratedSliderControllerNode(Node):
         """AR由来のスライダ位置[m]"""
         self.current_ar_position_m = msg.data
         self.current_ar_valid = True
+        self.ar_position_buffer.append(msg.data)
 
     def target_position_callback(self, msg: Float64) -> None:
         """目標位置[m]"""
@@ -227,8 +256,31 @@ class CalibratedSliderControllerNode(Node):
             self.get_logger().warn("Failed to add calibration point: AR position invalid")
             return response
 
+        # 直近 ar_average_window_size サンプルの中央値を基準値として使用
+        num_samples = len(self.ar_position_buffer)
+        if num_samples == 0:
+            response.success = False
+            response.message = "No AR samples in buffer"
+            self.get_logger().warn("Failed to add calibration point: AR buffer is empty")
+            return response
+
+        if num_samples < self.ar_average_window_size:
+            self.get_logger().warn(
+                f"AR buffer has only {num_samples} samples "
+                f"(configured window_size={self.ar_average_window_size}). "
+                "Using current median but more samples are recommended."
+            )
+
+        try:
+            ar_median = median(self.ar_position_buffer)
+        except Exception as e:
+            response.success = False
+            response.message = f"Failed to compute median of AR samples: {e}"
+            self.get_logger().error(response.message)
+            return response
+
         theta = float(self.current_motor_position_deg)
-        x = float(self.current_ar_position_m)
+        x = float(ar_median)
         self.calibration_points.append((theta, x))
         self.calibration_ready = len(self.calibration_points) >= 2
 
@@ -303,9 +355,7 @@ class CalibratedSliderControllerNode(Node):
 
         if not os.path.exists(self.calibration_file):
             msg = f"Calibration file not found: {self.calibration_file}"
-            if initial_load:
-                # 初回ロード時は情報としてログを出す程度
-                self.get_logger().info(msg)
+            # 初回ロード時もサービス呼び出し時も、存在しないことが分かりやすいようにそのまま返す
             return False, msg
 
         try:
@@ -347,6 +397,32 @@ class CalibratedSliderControllerNode(Node):
             f"(file motor_id={file_motor_id}, rack_pitch={file_rack_pitch}, gear_ratio={file_gear_ratio})"
         )
         return True, msg
+
+    # --- トルク ON/OFF サービス ---
+
+    def enable_output_callback(self, request, response):
+        """Dynamixel のトルクを ON にする"""
+        cmd = DxlCommandsX()
+        cmd.status.id_list = [self.motor_id]
+        cmd.status.torque = [True]
+        self.dxl_command_pub.publish(cmd)
+
+        response.success = True
+        response.message = "Torque ON"
+        self.get_logger().info("Motor torque ON (via enable_output service)")
+        return response
+
+    def disable_output_callback(self, request, response):
+        """Dynamixel のトルクを OFF にする"""
+        cmd = DxlCommandsX()
+        cmd.status.id_list = [self.motor_id]
+        cmd.status.torque = [False]
+        self.dxl_command_pub.publish(cmd)
+
+        response.success = True
+        response.message = "Torque OFF"
+        self.get_logger().info("Motor torque OFF (via disable_output service)")
+        return response
 
     # --- マッピング関数 ---
 
