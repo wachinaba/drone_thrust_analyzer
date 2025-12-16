@@ -30,7 +30,7 @@ from joblib import dump, load
 import sklearn
 warnings.filterwarnings('ignore')
 
-def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torque_x=None, target_column='torque_x'):
+def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torque_x=None, target_column='torque_x', debug=False):
     """
     CSVファイルを読み込み、データの前処理を行う
     
@@ -39,6 +39,7 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
         selected_features: 使用する特徴量のリスト（Noneの場合はtorque_x以外の全列）
         max_variance_torque_x: 'variance_torque_x' による上限フィルタ（Noneで無効）
         target_column: 目的変数の列名
+        debug: 前処理の詳細ログを出す
     
     Returns:
         df_clean: 前処理済みのデータフレーム
@@ -77,7 +78,12 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
     numeric_columns = [target_column] + feature_columns
     for col in numeric_columns:
         if col in df.columns:
+            before_na = int(df[col].isna().sum())
             df[col] = pd.to_numeric(df[col], errors='coerce')
+            after_na = int(df[col].isna().sum())
+            new_na = after_na - before_na
+            if debug and new_na > 0:
+                print(f"[debug] 数値変換で NaN 増加: col='{col}', +{new_na} (before={before_na}, after={after_na})")
     
     # 高分散サンプル除外（指定があり、列が存在する場合）
     if max_variance_torque_x is not None and 'variance_torque_x' in df.columns:
@@ -86,8 +92,63 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
         after = len(df)
         print(f"variance_torque_x フィルタ: {before-after} 行を除外（閾値 {max_variance_torque_x}）")
     
+    # dropna 前の状態を保持（デバッグ用）
+    df_before_dropna = df
+
     # NaNを含む行を削除
     df_clean = df.dropna(subset=[target_column] + feature_columns)
+    # 後段のインデックス対応を簡単にするため 0..N-1 に振り直す
+    df_clean = df_clean.reset_index(drop=True)
+
+    if debug:
+        subset_cols = [target_column] + feature_columns
+        dropped = len(df_before_dropna) - len(df_clean)
+        print(f"[debug] dropna(subset={subset_cols}) により除外: {dropped} 行")
+
+        # fold_angle の分布がどう変わったか（存在する場合）
+        if 'fold_angle' in df_before_dropna.columns:
+            try:
+                before_vc = df_before_dropna['fold_angle'].value_counts(dropna=False)
+                after_vc = df_clean['fold_angle'].value_counts(dropna=False)
+                all_vals = sorted(set(before_vc.index.tolist()) | set(after_vc.index.tolist()))
+                print("[debug] fold_angle: before_dropna vs after_dropna (kept / dropped)")
+                for v in all_vals:
+                    b = int(before_vc.get(v, 0))
+                    a = int(after_vc.get(v, 0))
+                    d = b - a
+                    print(f"[debug]   fold_angle={v!s}: before={b}, after={a}, dropped={d}")
+            except Exception as e:
+                print(f"[debug] fold_angle before/after 集計に失敗: {e}")
+
+            # fold_angle=5 にフォーカスして、欠損列の内訳を表示
+            try:
+                fa5 = df_before_dropna[df_before_dropna['fold_angle'] == 5]
+                if len(fa5) > 0:
+                    miss_counts = fa5[subset_cols].isna().sum().astype(int)
+                    total = len(fa5)
+                    print(f"[debug] fold_angle==5 rows in before_dropna: {total}")
+                    # どの列が欠けているか（欠損がある列のみ）
+                    miss_nonzero = miss_counts[miss_counts > 0]
+                    if len(miss_nonzero) == 0:
+                        print("[debug] fold_angle==5: subset_cols に欠損はありません（dropna原因ではない可能性）")
+                    else:
+                        print("[debug] fold_angle==5: 欠損列内訳（count / total）")
+                        for col, cnt in miss_nonzero.items():
+                            print(f"[debug]   {col}: {int(cnt)}/{total}")
+
+                        # 代表サンプル（欠損がある行を最大5件）
+                        bad = fa5[fa5[subset_cols].isna().any(axis=1)]
+                        if len(bad) > 0:
+                            show_n = min(5, len(bad))
+                            print(f"[debug] fold_angle==5: 欠損行サンプル（先頭 {show_n} 件）")
+                            # インデックスと欠損列名のみ表示
+                            for i, row in bad.head(show_n).iterrows():
+                                missing_cols = [c for c in subset_cols if pd.isna(row.get(c, np.nan))]
+                                print(f"[debug]   idx={i}, missing={missing_cols}")
+                else:
+                    print("[debug] fold_angle==5 rows in before_dropna: 0（読み込み/変換/フィルタ時点で存在しません）")
+            except Exception as e:
+                print(f"[debug] fold_angle==5 欠損内訳の表示に失敗: {e}")
     
     if df_clean.empty:
         raise ValueError("有効なデータがありません。")
@@ -96,6 +157,42 @@ def load_and_preprocess_data(csv_file, selected_features=None, max_variance_torq
     print(f"使用する特徴量: {feature_columns}")
     
     return df_clean, feature_columns
+
+def _debug_print_distribution(df, cols, stage_name, topk=20):
+    """
+    指定列の分布（value_counts）と fold_angle=5 の件数などをログ出力する。
+    """
+    if df is None:
+        return
+    print(f"\n[debug] --- {stage_name} --- rows={len(df)}")
+    for col in cols:
+        if col not in df.columns:
+            print(f"[debug] '{col}': (missing)")
+            continue
+        s = df[col]
+        n_na = int(s.isna().sum())
+        n_unique = int(s.nunique(dropna=True))
+        print(f"[debug] '{col}': unique={n_unique}, na={n_na}, dtype={s.dtype}")
+
+        try:
+            vc = s.value_counts(dropna=False)
+            if len(vc) <= topk:
+                # value_counts は頻度順。混在型だと sort が例外になることがあるのでそのまま表示
+                print(vc.to_string())
+            else:
+                print(vc.head(int(topk)).to_string())
+                print(f"[debug] ... ({len(vc) - int(topk)} more)")
+        except Exception as e:
+            print(f"[debug] value_counts failed for '{col}': {e}")
+
+        # fold_angle=5 が欲しいケースが多いので、固定で件数を出す
+        if col == 'fold_angle':
+            try:
+                s_num = pd.to_numeric(s, errors='coerce')
+                cnt5 = int((s_num == 5).sum())
+                print(f"[debug] '{col}' count(value==5): {cnt5}")
+            except Exception:
+                pass
 
 def create_gp_model(kernel_type='rbf', alpha=1e-6, n_restarts_optimizer=2, n_features=None, anisotropic=False, length_scale_bounds=None, matern_nu=1.5):
     """
@@ -763,12 +860,32 @@ def plot_facet_raw_and_fit_gpr(
     if curve_x not in feature_columns:
         raise ValueError(f"curve_x '{curve_x}' は学習特徴量に含まれていません。feature_columns={feature_columns}")
 
-    # レンジ
+    # レンジ（全ファセットで共有するグローバルな範囲）
     if ranges is not None and isinstance(ranges, tuple) and len(ranges) == 2:
         mins, maxs = ranges
     else:
         mins = {c: float(df_clean[c].min()) for c in feature_columns}
         maxs = {c: float(df_clean[c].max()) for c in feature_columns}
+
+    # 全ファセットで共通の X 軸（curve_x）範囲を決定
+    global_x_min = mins.get(curve_x, float(df_clean[curve_x].min()))
+    global_x_max = maxs.get(curve_x, float(df_clean[curve_x].max()))
+    if not np.isfinite(global_x_min) or not np.isfinite(global_x_max):
+        global_x_min = float(df_clean[curve_x].min())
+        global_x_max = float(df_clean[curve_x].max())
+    if global_x_min == global_x_max:
+        global_x_min -= 1e-6
+        global_x_max += 1e-6
+
+    # 全ファセットで共通の Y 軸（目的変数）範囲を決定
+    global_y_min = float(df_clean[target_column].min())
+    global_y_max = float(df_clean[target_column].max())
+    if not np.isfinite(global_y_min) or not np.isfinite(global_y_max):
+        global_y_min = -1.0
+        global_y_max = 1.0
+    if global_y_min == global_y_max:
+        global_y_min -= 1e-6
+        global_y_max += 1e-6
 
     # キー生成のヘルパ
     def make_keys(group_cols):
@@ -856,16 +973,8 @@ def plot_facet_raw_and_fit_gpr(
             y_raw = df_cell[target_column].values
             ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
 
-            # 予測用グリッド
-            x_min = mins.get(curve_x, float(df_cell[curve_x].min()))
-            x_max = maxs.get(curve_x, float(df_cell[curve_x].max()))
-            if not np.isfinite(x_min) or not np.isfinite(x_max):
-                x_min = float(df_cell[curve_x].min())
-                x_max = float(df_cell[curve_x].max())
-            if x_min == x_max:
-                x_min -= 1e-6
-                x_max += 1e-6
-            x_grid = np.linspace(x_min, x_max, int(curve_points))
+            # 予測用グリッド（全ファセット共通の X 範囲を使用）
+            x_grid = np.linspace(global_x_min, global_x_max, int(curve_points))
 
             X_grid = np.zeros((len(x_grid), len(feature_columns)), dtype=float)
             for j, fcol in enumerate(feature_columns):
@@ -897,6 +1006,9 @@ def plot_facet_raw_and_fit_gpr(
                 y_mean = model.predict(X_infer, return_std=False)
                 ax.plot(x_grid, y_mean, color='red', lw=3.0, label='GPR fit')
 
+            # 全ファセットで共通の軸スケールを設定
+            ax.set_xlim(global_x_min, global_x_max)
+            ax.set_ylim(global_y_min, global_y_max)
             ax.set_xlabel(curve_x)
             ax.grid(True, alpha=0.3)
             ax.legend(frameon=True, fontsize=10)
@@ -965,6 +1077,10 @@ def main():
     # モデル保存/読み込み
     parser.add_argument('--save-model', type=str, default=None, help='学習済みモデルの保存先パス（.joblib 推奨）')
     parser.add_argument('--load-model', type=str, default=None, help='保存済みモデルの読み込みパス')
+    # デバッグ
+    parser.add_argument('--debug-splits', action='store_true', help='前処理/分割/サブサンプル各段階の分布ログを出力')
+    parser.add_argument('--debug-columns', type=str, default=None, help="分布を見る列（カンマ区切り、未指定なら fold_angle があればそれ）")
+    parser.add_argument('--debug-topk', type=int, default=20, help='value_counts の上位表示数（デフォルト: 20）')
     
     args = parser.parse_args()
     
@@ -1021,8 +1137,20 @@ def main():
             args.csv_file,
             selected_features,
             max_variance_torque_x=args.max_variance_torque_x,
-            target_column=args.target
+            target_column=args.target,
+            debug=args.debug_splits
         )
+
+        # デバッグ対象列の決定
+        debug_cols = []
+        if args.debug_columns:
+            debug_cols = [c.strip() for c in args.debug_columns.split(',') if c.strip()]
+        else:
+            if 'fold_angle' in df_clean.columns:
+                debug_cols = ['fold_angle']
+
+        if args.debug_splits and debug_cols:
+            _debug_print_distribution(df_clean, debug_cols, stage_name="df_clean (after preprocess)", topk=args.debug_topk)
         
         # 特徴量と目的変数の準備
         X = df_clean[feature_columns].values
@@ -1049,10 +1177,17 @@ def main():
                 scaler = StandardScaler()
                 X = scaler.fit_transform(X)
         
-        # 訓練データとテストデータの分割
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=args.test_size, random_state=args.random_state
+        # 訓練データとテストデータの分割（デバッグ用にインデックスも保持）
+        all_indices = np.arange(len(df_clean))
+        train_idx, test_idx = train_test_split(
+            all_indices, test_size=args.test_size, random_state=args.random_state
         )
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        if args.debug_splits and debug_cols:
+            _debug_print_distribution(df_clean.iloc[train_idx], debug_cols, stage_name="train (before subsampling)", topk=args.debug_topk)
+            _debug_print_distribution(df_clean.iloc[test_idx], debug_cols, stage_name="test", topk=args.debug_topk)
         
         print(f"訓練データ数: {len(X_train)}")
         print(f"テストデータ数: {len(X_test)}")
@@ -1061,6 +1196,10 @@ def main():
         if args.max_train_samples is not None and len(X_train) > args.max_train_samples:
             rs = np.random.RandomState(args.random_state)
             indices = rs.choice(len(X_train), size=args.max_train_samples, replace=False)
+            if args.debug_splits and debug_cols:
+                # train_idx に対応する df を 0.. に振り直して indices で参照できるようにする
+                df_train_full = df_clean.iloc[train_idx].reset_index(drop=True)
+                _debug_print_distribution(df_train_full.iloc[indices], debug_cols, stage_name="train (after subsampling)", topk=args.debug_topk)
             X_train = X_train[indices]
             y_train = y_train[indices]
             print(f"学習データをサブサンプリング: {len(indices)} サンプルを使用")
