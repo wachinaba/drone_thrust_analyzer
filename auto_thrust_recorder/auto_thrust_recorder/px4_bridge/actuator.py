@@ -38,14 +38,14 @@ class ActuatorController(Node):
         self.max_thrust_percent = self.declare_parameter(
             'max_thrust_percent', 50.0).get_parameter_value().double_value
         self.control_smoothing_factor = self.declare_parameter(
-            'control_smoothing_factor', 0.1).get_parameter_value().double_value
+            'control_smoothing_factor', 0.3).get_parameter_value().double_value
         
         self.get_logger().info(f"max_thrust_percent: {self.max_thrust_percent}")
         self.get_logger().info(f"control_smoothing_factor: {self.control_smoothing_factor}")
 
         self.update_timer = self.create_timer(
             1 / self.declare_parameter(
-                'update_rate', 100.0).get_parameter_value().double_value,
+                'update_rate', 50.0).get_parameter_value().double_value,
             self.update_control
             )
 
