@@ -16,7 +16,7 @@ CSV に morphing drone の座標変換由来パラメータ列 + 計算列を追
   - arm_length [m] (arm_length 列が無い/NaN の場合 wheelbase から推定)
   - distance_center, distance_rotortip [m]
   - thrust_coefficient: thrust_coefficient = force_z / control^2
-  - normalized_moment: normalized_moment = torque_x_bias_corrected / (prop_spacing_y * target_thrust / 2) * 100
+  - normalized_moment: normalized_moment = torque_x_bias_corrected / (prop_spacing_y * force_z / 2) * 100
   - normalized_thrust:
       tilt=fold=slant=0deg における推力係数 [a,b,c] を用いて control -> thrust を推定し、
       thrust を thrust vector の大きさとみなして alpha,beta から鉛直成分 base_thrust_z を作り、
@@ -239,15 +239,15 @@ def _compute_thrust_coefficient(df: pd.DataFrame) -> pd.Series:
 
 
 def _compute_normalized_moment(df: pd.DataFrame) -> pd.Series:
-    required = ["torque_x_bias_corrected", "prop_spacing_y", "target_thrust"]
+    required = ["torque_x_bias_corrected", "prop_spacing_y", "force_z"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         _warn_missing(missing, context="normalized_moment")
         return pd.Series(np.nan, index=df.index, dtype=float)
     torque = pd.to_numeric(df["torque_x_bias_corrected"], errors="coerce")
     prop_spacing_y = pd.to_numeric(df["prop_spacing_y"], errors="coerce")
-    target_thrust = pd.to_numeric(df["target_thrust"], errors="coerce")
-    denom = prop_spacing_y * target_thrust / 2.0
+    force_z = pd.to_numeric(df["force_z"], errors="coerce")
+    denom = prop_spacing_y * force_z / 2.0
     denom = denom.where(denom != 0.0, np.nan)
     return torque / denom * 100.0
 
