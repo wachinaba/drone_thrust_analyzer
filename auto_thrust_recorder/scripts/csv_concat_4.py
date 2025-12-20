@@ -154,7 +154,7 @@ def extract_parameters_generic(filename, param_rename_user=None, tail_keywords=N
         'f': 'fold_angle',
         'fdir': 'flow_direction',
         'fdst': 'flow_distance',
-        'fhgt': 'fow_height',
+        'fhgt': 'flow_height',
         'h': 'height',
         'ps': 'prop_spacing',
         's': 'slant_angle',
