@@ -140,8 +140,11 @@ def _make_arm_pose(
     """
     z = np.array([0.0, 0.0, 1.0], dtype=float)
 
-    phi = _deg2rad(phi_deg)
-    psi = _deg2rad(psi_deg)
+    # Sign convention:
+    # Treat input phi/psi with opposite sign compared to the original implementation.
+    # (+phi, +psi) now rotate in the opposite direction.
+    phi = _deg2rad(-phi_deg)
+    psi = _deg2rad(-psi_deg)
     theta = _deg2rad(theta_deg)
 
     R_fold = _rot_z(phi)
@@ -192,6 +195,8 @@ def plot_morphing_drone(
     theta_deg: float,
     symmetry: str = "none",
     force_2d: bool = False,
+    y_clearance: float = 0.0,
+    draw_y0_plane: bool = True,
     save_path: str | None = None,
     dpi: int = 200,
     show: bool = True,
@@ -199,6 +204,29 @@ def plot_morphing_drone(
 ):
     # Import pyplot lazily so that main() can set backend beforehand.
     import matplotlib.pyplot as plt
+
+    def thrust_angles_alpha_beta_deg(thrust_vec: np.ndarray) -> tuple[float, float]:
+        """
+        thrust_vec: (3,) 推力ベクトル（ここではロータ法線ベクトル）を想定。
+
+        定義:
+          alpha: thrustをyz平面に射影したベクトルが +z 軸となす角
+          beta : thrustをzx平面に射影したベクトルが +z 軸となす角
+
+        角度は符号付きで返す（+y側/+x側に倒れると正、-y/-xで負）。
+        """
+        v = _normalize(np.asarray(thrust_vec, dtype=float).reshape(3))
+        vx, vy, vz = float(v[0]), float(v[1]), float(v[2])
+        alpha = float(np.degrees(np.arctan2(vy, vz)))  # yz-plane
+        beta = float(np.degrees(np.arctan2(vx, vz)))   # zx-plane
+        return alpha, beta
+
+    def format_alpha_beta(poses_list: list[ArmPose]) -> str:
+        lines = ["alpha/beta (deg) from thrust vec (rotor_normal):"]
+        for i, p in enumerate(poses_list):
+            a, b = thrust_angles_alpha_beta_deg(p.rotor_normal)
+            lines.append(f"  rotor{i}: alpha={a:+6.1f}, beta={b:+6.1f}")
+        return "\n".join(lines)
 
     """
     Assumption (documented):
@@ -209,6 +237,26 @@ def plot_morphing_drone(
     """
     if symmetry not in {"none", "mirror_xy"}:
         raise ValueError(f"Unknown symmetry mode: {symmetry}")
+
+    def compute_y_offset(_poses: list[ArmPose], _L: float, _clearance: float) -> float:
+        """
+        y+方向に平行移動する量 dy を返す。
+        定義: 全ロータ円周のうち y=0 平面に最も近い点（最小y）を y_min として、
+          dy = clearance - y_min
+        とする（移動後は最小yが clearance になる）。
+
+        解析的に:
+          y_min(rotor) = y_center - R * sqrt(1 - n_y^2)
+        """
+        ymins = []
+        for _pose in _poses:
+            y_center = float(_pose.hinge[1] + _L * _pose.arm_dir[1])
+            ny = float(_pose.rotor_normal[1])
+            extent = rotor_radius_m * float(np.sqrt(max(0.0, 1.0 - ny * ny)))
+            ymins.append(y_center - extent)
+        if not ymins:
+            return 0.0
+        return float(_clearance) - float(min(ymins))
 
     def compute_poses(_phi: float, _psi: float, _theta: float) -> list[ArmPose]:
         # Base definition: one arm in +x,+y quadrant
@@ -261,11 +309,13 @@ def plot_morphing_drone(
         ]
 
     poses = compute_poses(phi_deg, psi_deg, theta_deg)
+    dy = compute_y_offset(poses, arm_length_m, y_clearance)
 
     title = (
         f"Morphing drone visualization\n"
         f"cx={cx:.3f} m, cy={cy:.3f} m, R={rotor_radius_m:.4f} m, L={arm_length_m:.3f} m\n"
-        f"fold(phi)={phi_deg:.1f} deg, slant(psi)={psi_deg:.1f} deg, tilt(theta)={theta_deg:.1f} deg"
+        f"fold(phi)={phi_deg:.1f} deg, slant(psi)={psi_deg:.1f} deg, tilt(theta)={theta_deg:.1f} deg\n"
+        f"y_clearance={y_clearance:.3f} m"
     )
 
     use_3d = _HAS_3D and (not force_2d)
@@ -281,11 +331,12 @@ def plot_morphing_drone(
     hs = np.array(hinges_for_outline + [hinges_for_outline[0]])
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
 
-    def _format_title(_L: float, _phi: float, _psi: float, _theta: float) -> str:
+    def _format_title(_L: float, _phi: float, _psi: float, _theta: float, _y_clear: float) -> str:
         return (
             f"Morphing drone visualization\n"
             f"cx={cx:.3f} m, cy={cy:.3f} m, R={rotor_radius_m:.4f} m, L={_L:.3f} m\n"
-            f"fold(phi)={_phi:.1f} deg, slant(psi)={_psi:.1f} deg, tilt(theta)={_theta:.1f} deg"
+            f"fold(phi)={_phi:.1f} deg, slant(psi)={_psi:.1f} deg, tilt(theta)={_theta:.1f} deg\n"
+            f"y_clearance={_y_clear:.3f} m"
         )
 
     def _set_3d_line(line, xs, ys, zs):
@@ -316,10 +367,23 @@ def plot_morphing_drone(
         logging.info("Creating 3D figure/axes...")
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection="3d")
-        ax.set_title(_format_title(arm_length_m, phi_deg, psi_deg, theta_deg))
+        ax.set_title(_format_title(arm_length_m, phi_deg, psi_deg, theta_deg, y_clearance))
+
+        angle_text = ax.text2D(
+            0.02,
+            0.98,
+            format_alpha_beta(poses),
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=9,
+            family="monospace",
+        )
 
         # Body outline (hinge square)
-        body_line = ax.plot(hs[:, 0], hs[:, 1], hs[:, 2], color="k", linewidth=1.5, label="hinge square")[0]
+        hs_shift = hs.copy()
+        hs_shift[:, 1] += dy
+        body_line = ax.plot(hs_shift[:, 0], hs_shift[:, 1], hs_shift[:, 2], color="k", linewidth=1.5, label="hinge square")[0]
 
         arm_lines = []
         hinge_pts = []
@@ -329,8 +393,8 @@ def plot_morphing_drone(
 
         for i, pose in enumerate(poses):
             c = colors[i % len(colors)]
-            p0 = pose.hinge
-            p1 = pose.hinge + arm_length_m * pose.arm_dir
+            p0 = pose.hinge + np.array([0.0, dy, 0.0])
+            p1 = p0 + arm_length_m * pose.arm_dir
 
             arm_lines.append(
                 ax.plot(
@@ -366,23 +430,47 @@ def plot_morphing_drone(
         ax.set_ylabel("y [m]")
         ax.set_zlabel("z [m]")
 
-        _compute_limits(poses, arm_length_m)
+        _compute_limits([ArmPose(hinge=p.hinge + np.array([0.0, dy, 0.0]), arm_dir=p.arm_dir, rotor_normal=p.rotor_normal) for p in poses], arm_length_m)
+
+        y0_plane_artist = None
+
+        def _draw_plane():
+            nonlocal y0_plane_artist
+            if not bool(draw_y0_plane):
+                return
+            if y0_plane_artist is not None:
+                try:
+                    y0_plane_artist.remove()
+                except Exception:
+                    pass
+                y0_plane_artist = None
+            xlim = ax.get_xlim3d()
+            zlim = ax.get_zlim3d()
+            xs = np.linspace(float(xlim[0]), float(xlim[1]), 2)
+            zs = np.linspace(float(zlim[0]), float(zlim[1]), 2)
+            X, Z = np.meshgrid(xs, zs)
+            Y = np.zeros_like(X)
+            y0_plane_artist = ax.plot_surface(X, Y, Z, color="gray", alpha=0.12, shade=False)
+
+        _draw_plane()
 
         sliders_enabled = bool(sliders_enabled) and bool(show)
         if sliders_enabled:
             from matplotlib.widgets import Slider, Button
 
-            fig.subplots_adjust(bottom=0.27)
-            ax_phi = fig.add_axes([0.12, 0.18, 0.76, 0.03])
-            ax_psi = fig.add_axes([0.12, 0.14, 0.76, 0.03])
-            ax_theta = fig.add_axes([0.12, 0.10, 0.76, 0.03])
-            ax_L = fig.add_axes([0.12, 0.06, 0.76, 0.03])
+            fig.subplots_adjust(bottom=0.32)
+            ax_phi = fig.add_axes([0.12, 0.23, 0.76, 0.03])
+            ax_psi = fig.add_axes([0.12, 0.19, 0.76, 0.03])
+            ax_theta = fig.add_axes([0.12, 0.15, 0.76, 0.03])
+            ax_L = fig.add_axes([0.12, 0.11, 0.76, 0.03])
+            ax_clear = fig.add_axes([0.12, 0.07, 0.76, 0.03])
             ax_reset = fig.add_axes([0.82, 0.01, 0.12, 0.04])
 
             s_phi = Slider(ax_phi, "phi [deg]", -180.0, 180.0, valinit=float(phi_deg), valstep=1.0)
             s_psi = Slider(ax_psi, "psi [deg]", -90.0, 90.0, valinit=float(psi_deg), valstep=1.0)
             s_theta = Slider(ax_theta, "theta [deg]", -180.0, 180.0, valinit=float(theta_deg), valstep=1.0)
             s_L = Slider(ax_L, "arm L [m]", 0.05, 0.50, valinit=float(arm_length_m), valstep=0.005)
+            s_clear = Slider(ax_clear, "y_clear [m]", 0.0, 0.20, valinit=float(y_clearance), valstep=0.001)
             b_reset = Button(ax_reset, "Reset")
 
             def _update(_val=None):
@@ -390,14 +478,18 @@ def plot_morphing_drone(
                 new_psi = float(s_psi.val)
                 new_theta = float(s_theta.val)
                 new_L = float(s_L.val)
+                new_clear = float(s_clear.val)
 
                 new_poses = compute_poses(new_phi, new_psi, new_theta)
+                new_dy = compute_y_offset(new_poses, new_L, new_clear)
+                angle_text.set_text(format_alpha_beta(new_poses))
                 new_hs = np.array([p.hinge for p in new_poses] + [new_poses[0].hinge])
+                new_hs[:, 1] += new_dy
                 _set_3d_line(body_line, new_hs[:, 0], new_hs[:, 1], new_hs[:, 2])
 
                 for i, pose in enumerate(new_poses):
-                    p0 = pose.hinge
-                    p1 = pose.hinge + new_L * pose.arm_dir
+                    p0 = pose.hinge + np.array([0.0, new_dy, 0.0])
+                    p1 = p0 + new_L * pose.arm_dir
                     _set_3d_line(arm_lines[i], [p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]])
                     _set_3d_point(hinge_pts[i], p0)
                     _set_3d_point(tip_pts[i], p1)
@@ -409,8 +501,9 @@ def plot_morphing_drone(
                     p2 = p1 + n_scale * pose.rotor_normal
                     _set_3d_line(normal_lines[i], [p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]])
 
-                ax.set_title(_format_title(new_L, new_phi, new_psi, new_theta))
-                _compute_limits(new_poses, new_L)
+                ax.set_title(_format_title(new_L, new_phi, new_psi, new_theta, new_clear))
+                _compute_limits([ArmPose(hinge=p.hinge + np.array([0.0, new_dy, 0.0]), arm_dir=p.arm_dir, rotor_normal=p.rotor_normal) for p in new_poses], new_L)
+                _draw_plane()
                 fig.canvas.draw_idle()
 
             def _reset(_event=None):
@@ -418,11 +511,13 @@ def plot_morphing_drone(
                 s_psi.reset()
                 s_theta.reset()
                 s_L.reset()
+                s_clear.reset()
 
             s_phi.on_changed(_update)
             s_psi.on_changed(_update)
             s_theta.on_changed(_update)
             s_L.on_changed(_update)
+            s_clear.on_changed(_update)
             b_reset.on_clicked(_reset)
         else:
             plt.tight_layout()
@@ -445,13 +540,21 @@ def plot_morphing_drone(
             ax.set_ylabel(yl)
             ax.set_aspect("equal", adjustable="box")
             ax.grid(True, alpha=0.3)
-            ax.plot(hs[:, i0], hs[:, i1], color="k", linewidth=1.5)
+            hs2 = hs.copy()
+            hs2[:, 1] += dy
+            ax.plot(hs2[:, i0], hs2[:, i1], color="k", linewidth=1.5)
+            if bool(draw_y0_plane):
+                # Projections that include y (xy, yz) can show y=0 as a line.
+                if name == "xy":
+                    ax.axhline(0.0, color="gray", linewidth=1.0, alpha=0.4)
+                if name == "yz":
+                    ax.axvline(0.0, color="gray", linewidth=1.0, alpha=0.4)
 
         all_proj = []
         for i, pose in enumerate(poses):
             c = colors[i % len(colors)]
-            p0 = pose.hinge
-            p1 = pose.hinge + arm_length_m * pose.arm_dir
+            p0 = pose.hinge + np.array([0.0, dy, 0.0])
+            p1 = p0 + arm_length_m * pose.arm_dir
             circ = _circle_points(center=p1, normal=pose.rotor_normal, radius=rotor_radius_m, n=200)
             all_proj.append(p0)
             all_proj.append(p1)
@@ -527,6 +630,13 @@ def main():
         help="How to build 4 arms. 'mirror_xy' enforces symmetry about X/Y axes by mirroring one computed arm.",
     )
     parser.add_argument("--force-2d", action="store_true", help="Force 2D projections even if 3D is available.")
+    parser.add_argument(
+        "--y-clearance",
+        type=float,
+        default=0.0,
+        help="Offset drone in +y so that the closest rotor rim point has distance y_clearance to the y=0 plane. Default: 0.0",
+    )
+    parser.add_argument("--no-y0-plane", action="store_true", help="Do not draw y=0 plane (or y=0 line in 2D projections).")
     parser.add_argument("--save", type=str, default=None, help="Save figure to a file (e.g. out.png).")
     parser.add_argument("--dpi", type=int, default=200, help="DPI for --save. Default: 200")
     parser.add_argument("--no-show", action="store_true", help="Do not open a window (useful with --save on WSL/headless).")
@@ -589,6 +699,8 @@ def main():
         theta_deg=float(args.theta),
         symmetry=str(args.symmetry),
         force_2d=bool(args.force_2d),
+        y_clearance=float(args.y_clearance),
+        draw_y0_plane=(not bool(args.no_y0_plane)),
         save_path=(str(args.save) if args.save else None),
         dpi=int(args.dpi),
         show=(not bool(args.no_show)),
