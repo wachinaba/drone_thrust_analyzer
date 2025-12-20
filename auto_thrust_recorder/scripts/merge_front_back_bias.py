@@ -11,6 +11,26 @@ import numpy as np
 import pandas as pd
 
 
+def _iter_progress(iterable, *, total=None, desc=None, leave=True, progress: str = "auto"):
+    """tqdm が利用可能なら進捗表示付きで iterable を返す。無ければそのまま返す。
+
+    progress:
+      - 'auto': stderr が TTY のときだけ tqdm（推奨）
+      - 'on'  : 常に tqdm を試みる（tqdm が無ければ無効）
+      - 'off' : tqdm を使わない
+    """
+    mode = (progress or "auto").lower()
+    if mode == "off":
+        return iterable
+    if mode == "auto" and not sys.stderr.isatty():
+        return iterable
+    try:
+        from tqdm.auto import tqdm  # type: ignore
+    except Exception:
+        return iterable
+    return tqdm(iterable, total=total, desc=desc, leave=leave)
+
+
 def _parse_param_renames(rename_args):
     """--param-rename で与えられた 'old:new' の配列を辞書に変換"""
     rename_map = {}
@@ -198,6 +218,13 @@ def parse_arguments():
     emit_group.add_argument('--emit-bias-columns', dest='emit_bias_columns', action='store_true', help="bias_* 列の出力を有効化（デフォルト）")
     emit_group.add_argument('--no-emit-bias-columns', dest='emit_bias_columns', action='store_false', help="bias_* 列の出力を無効化")
     parser.set_defaults(emit_bias_columns=True)
+    parser.add_argument(
+        "--progress",
+        type=str,
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="tqdm による進捗表示（auto=TTYのみ, on=常に, off=無効）。tqdm 未インストールなら自動で無効化。",
+    )
     return parser.parse_args()
 
 
@@ -327,7 +354,13 @@ def main():
     failed_data_files: List[Tuple[str, str]] = []
     processed_groups = 0
 
-    for group_tuple, sides in sorted(grouped_files.items()):
+    sorted_groups = sorted(grouped_files.items())
+    for group_tuple, sides in _iter_progress(
+        sorted_groups,
+        total=len(sorted_groups),
+        desc="merge_front_back_bias: groups",
+        progress=getattr(args, "progress", "auto"),
+    ):
         front_files = sides['front']
         back_files = sides['back_reversed']
         if not front_files or not back_files:
@@ -337,7 +370,13 @@ def main():
         print(f"\n処理グループ: {group_tuple}")
         # front 読み込み
         front_frames = []
-        for f in front_files:
+        for f in _iter_progress(
+            front_files,
+            total=len(front_files),
+            desc="  front",
+            leave=False,
+            progress=getattr(args, "progress", "auto"),
+        ):
             df, reason = read_and_extract_data(
                 f,
                 dropna_mode=getattr(args, 'dropna_mode', 'any'),
@@ -356,7 +395,13 @@ def main():
 
         # back 読み込み
         back_frames = []
-        for f in back_files:
+        for f in _iter_progress(
+            back_files,
+            total=len(back_files),
+            desc="  back",
+            leave=False,
+            progress=getattr(args, "progress", "auto"),
+        ):
             df, reason = read_and_extract_data(
                 f,
                 dropna_mode=getattr(args, 'dropna_mode', 'any'),

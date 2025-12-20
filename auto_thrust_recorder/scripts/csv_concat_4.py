@@ -9,6 +9,25 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+def _iter_progress(iterable, *, total=None, desc=None, leave=True, progress: str = "auto"):
+    """tqdm が利用可能なら進捗表示付きで iterable を返す。無ければそのまま返す。
+
+    progress:
+      - 'auto': stderr が TTY のときだけ tqdm（推奨）
+      - 'on'  : 常に tqdm を試みる（tqdm が無ければ無効）
+      - 'off' : tqdm を使わない
+    """
+    mode = (progress or "auto").lower()
+    if mode == "off":
+        return iterable
+    if mode == "auto" and not sys.stderr.isatty():
+        return iterable
+    try:
+        from tqdm.auto import tqdm  # type: ignore
+    except Exception:
+        return iterable
+    return tqdm(iterable, total=total, desc=desc, leave=leave)
+
 def _parse_param_renames(rename_args):
     """--param-rename で与えられた 'old:new' の配列を辞書に変換"""
     rename_map = {}
@@ -43,6 +62,53 @@ def _coerce_value(val_str):
         except Exception:
             pass
     return s.lower()
+
+def _parse_column_defaults(default_args):
+    """--default-column で与えられた 'col=value' を辞書に変換する。
+
+    value は _coerce_value により int/float 化を試みる。
+    'nan'/'none'/'null'（大文字小文字不問）は np.nan として扱う。
+    """
+    defaults = {}
+    if not default_args:
+        return defaults
+    for item in default_args:
+        if not isinstance(item, str) or '=' not in item:
+            continue
+        col, val = item.split('=', 1)
+        col = col.strip()
+        val = val.strip()
+        if not col:
+            continue
+        if val.lower() in ('nan', 'none', 'null'):
+            defaults[col] = np.nan
+        else:
+            defaults[col] = _coerce_value(val)
+    return defaults
+
+def _apply_column_defaults(df, defaults, mode='missing'):
+    """DataFrame に列デフォルト値を適用する。
+
+    - mode='missing': 列が存在しない場合のみ作成してデフォルトで埋める
+    - mode='na':      列が存在する場合のみ NaN をデフォルトで埋める（列未存在は作らない）
+    - mode='both':    列未存在なら作成、存在する列は NaN を埋める
+    """
+    if df is None or not hasattr(df, 'columns'):
+        return df
+    if not defaults:
+        return df
+    mode = (mode or 'missing').lower()
+    for col, default_val in defaults.items():
+        exists = col in df.columns
+        if (not exists) and mode in ('missing', 'both'):
+            df.loc[:, col] = default_val
+        elif exists and mode in ('na', 'both'):
+            try:
+                df.loc[:, col] = df[col].fillna(default_val)
+            except Exception:
+                # dtype 不整合などで失敗したら安全にスキップ
+                pass
+    return df
 
 def _strip_trailing_keyword_timestamp(base_filename, tail_keywords):
     """末尾の '_<kw>_...' セグメントを取り除き、末尾に存在するタイムスタンプを返す。
@@ -264,9 +330,20 @@ def parse_arguments():
     parser.add_argument('--drop-zero-columns', nargs='+', type=str, default=None, help="指定した列で値が0のセルをNaNとして扱い、IQR判定および集計で無視する")
     parser.add_argument('--dropna-mode', type=str, choices=['any', 'all', 'none'], default='any', help="dropnaのモード（any/all/none、デフォルト: any）")
     parser.add_argument('--dropna-subset', nargs='+', type=str, default=None, help="dropnaを適用する列名のリスト（指定しない場合は全列）")
+    parser.add_argument('--default-column', action='append', default=[],
+                        help="列のデフォルト値を指定 'col=value'（複数指定可）。例: --default-column front_in=0 --default-column rear_in=0")
+    parser.add_argument('--default-column-mode', type=str, choices=['missing', 'na', 'both'], default='missing',
+                        help="デフォルト値の適用モード（missing=列が無い時だけ作成, na=既存列のNaNだけ埋める, both=両方）")
     parser.add_argument('--param-rename', action='append', default=[], help="パラメータ名のリネーム規則 'old:new' を複数指定可")
     parser.add_argument('--group-keys', nargs='+', type=str, default=['auto'], help="グループ化に使用するパラメータ名の並び（デフォルト: auto）")
     parser.add_argument('--sensor-bias', type=str, choices=['on', 'off'], default='on', help="センサバイアス補正を有効/無効化（デフォルト: on）")
+    parser.add_argument(
+        "--progress",
+        type=str,
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="tqdm による進捗表示（auto=TTYのみ, on=常に, off=無効）。tqdm 未インストールなら自動で無効化。",
+    )
     return parser.parse_args()
 
 def apply_iqr_filter(df, columns, multiplier=1.5, mode='any'):
@@ -336,6 +413,8 @@ def export_data_to_csv(combined_df, output_file):
 def main():
     """メイン関数。"""
     args = parse_arguments()
+    column_defaults = _parse_column_defaults(getattr(args, 'default_column', []))
+    column_default_mode = getattr(args, 'default_column_mode', 'missing')
 
     # ファイルの検索
     csv_files = find_csv_files(args.keywords, args.directory, args.and_keywords)
@@ -354,7 +433,12 @@ def main():
     is_auto_group_keys = (len(group_keys) == 1 and group_keys[0] == 'auto')
     param_keys_union = set()
     # 第1段階: 全ファイルからパラメータだけ収集（auto の場合はここで union を作る）
-    for file in csv_files:
+    for file in _iter_progress(
+        csv_files,
+        total=len(csv_files),
+        desc="csv_concat_4: scan params",
+        progress=getattr(args, "progress", "auto"),
+    ):
         filename = os.path.basename(file)
         params = extract_parameters_generic(
             filename,
@@ -370,7 +454,13 @@ def main():
             param_keys_union.remove('file_timestamp')
         group_keys = sorted(param_keys_union)
     # 第2段階: グルーピングキーに基づいて分類（auto 以外は従来通り不足キーでスキップ）
-    for file, params in file_params_map.items():
+    items = list(file_params_map.items())
+    for file, params in _iter_progress(
+        items,
+        total=len(items),
+        desc="csv_concat_4: group files",
+        progress=getattr(args, "progress", "auto"),
+    ):
         filename = os.path.basename(file)
         if not is_auto_group_keys:
             if not params:
@@ -420,7 +510,12 @@ def main():
     combined_data = []
 
     # 各グループの処理
-    for param_tuple in sorted_parameters:
+    for param_tuple in _iter_progress(
+        sorted_parameters,
+        total=len(sorted_parameters),
+        desc="csv_concat_4: process groups",
+        progress=getattr(args, "progress", "auto"),
+    ):
         group_params = dict(zip(group_keys, param_tuple))
         print(f"\nパラメータグループ: {group_params}")
         files = grouped_files[param_tuple]
@@ -447,6 +542,10 @@ def main():
                 for col in ['front_in', 'front_out', 'rear_out', 'rear_in']:
                     if col not in df_processed.columns:
                         df_processed[col] = np.nan
+
+                # 任意列のデフォルト値を適用（列が無い場合の作成や NaN 埋め）
+                if column_defaults:
+                    df_processed = _apply_column_defaults(df_processed, column_defaults, mode=column_default_mode)
 
                 # 先頭スキップ（time列から計算した time_elapsed を使用）
                 if hasattr(args, 'skip_seconds') and args.skip_seconds > 0:
