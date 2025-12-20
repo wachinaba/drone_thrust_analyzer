@@ -8,7 +8,7 @@ postprocess_all.bash と同等の処理を Python で実行するランチャ。
 - 各サブフォルダで:
     1) merge_front_back_bias.py
     2) csv_concat_4.py (concat.csv)
-    3) add_morph_params_to_csv.py (concat.csv を上書き)
+    3) add_calculated_columns_to_csv.py (concat.csv を上書き)
   を並列実行
 - 最後に root で:
     4) merge_csv.py (concat_merged.csv)
@@ -173,12 +173,12 @@ def _run_one_dir(
     if rc != 0:
         return JobResult(dir_path=dir_path, ok=False, returncode=rc, log_path=log_path, error=err)
 
-    # 3) add_morph_params_to_csv.py -> concat.csv (overwrite)
+    # 3) add_calculated_columns_to_csv.py -> concat.csv (overwrite)
     if do_morph:
         rc, err = _run(
             [
                 python_bin,
-                str(scripts_dir / "add_morph_params_to_csv.py"),
+                str(scripts_dir / "add_calculated_columns_to_csv.py"),
                 "--input",
                 "concat.csv",
                 "--output",
@@ -211,11 +211,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--step-warmup", type=float, default=0.3, help="merge_front_back_bias.py --step-warmup (default: 0.3)")
     p.add_argument("--bias-scope", default="per-step", choices=["global", "per-step"], help="merge_front_back_bias.py --bias-scope")
 
-    # morph step
-    p.add_argument("--no-morph", action="store_true", help="disable add_morph_params_to_csv.py step")
-    p.add_argument("--morph-cx", type=float, default=0.035, help="add_morph_params_to_csv.py --cx (default: 0.035)")
-    p.add_argument("--morph-cy", type=float, default=0.035, help="add_morph_params_to_csv.py --cy (default: 0.035)")
-    p.add_argument("--morph-rotor-radius-in", type=float, default=3.5, help="add_morph_params_to_csv.py --rotor-radius-in (default: 3.5)")
+    # morph/derived-columns step
+    p.add_argument("--no-morph", action="store_true", help="disable add_calculated_columns_to_csv.py step")
+    p.add_argument("--morph-cx", type=float, default=0.035, help="add_calculated_columns_to_csv.py --cx (default: 0.035)")
+    p.add_argument("--morph-cy", type=float, default=0.035, help="add_calculated_columns_to_csv.py --cy (default: 0.035)")
+    p.add_argument(
+        "--morph-rotor-radius-in", type=float, default=3.5, help="add_calculated_columns_to_csv.py --rotor-radius-in (default: 3.5)"
+    )
 
     # root-level steps
     p.add_argument("--no-krr", action="store_true", help="skip kernel_ridge_regression.py")

@@ -24,8 +24,8 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
   --default-column slant_angle=0 \
   --default-column-mode missing
 
-# morphing drone 由来の派生パラメータ列を concat.csv に追加（上書き出力）
-"$PYTHON_BIN" "$SCRIPT_DIR/add_morph_params_to_csv.py" \
+# morphing drone 由来の派生パラメータ列 + 計算列を concat.csv に追加（上書き出力）
+"$PYTHON_BIN" "$SCRIPT_DIR/add_calculated_columns_to_csv.py" \
   --input concat.csv \
   --output concat.csv
 

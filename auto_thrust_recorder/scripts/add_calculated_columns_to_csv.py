@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CSV に morphing drone の座標変換由来パラメータ列を追加する。
+CSV に morphing drone の座標変換由来パラメータ列 + 計算列を追加する。
 
 座標変換の定義は auto_thrust_recorder/scripts/visualize_morph_drone.py に準拠:
   fold(phi) -> slant(psi) -> tilt(theta)
@@ -15,6 +15,14 @@ CSV に morphing drone の座標変換由来パラメータ列を追加する。
   - prop_spacing_x, prop_spacing_y, aspect_ratio
   - arm_length [m] (arm_length 列が無い/NaN の場合 wheelbase から推定)
   - distance_center, distance_rotortip [m]
+  - thrust_coefficient: thrust_coefficient = force_z / control^2
+  - normalized_moment: normalized_moment = torque_x_bias_corrected / (prop_spacing_y * target_thrust / 2) * 100
+  - normalized_thrust:
+      tilt=fold=slant=0deg における推力係数 [a,b,c] を用いて control -> thrust を推定し、
+      thrust を thrust vector の大きさとみなして alpha,beta から鉛直成分 base_thrust_z を作り、
+      normalized_thrust = force_z_bias_corrected / base_thrust_z として正規化する。
+  - base_thrust: 上記モデルで推定した推力ベクトルの大きさ T (= a*control^2 + b*control + c)
+  - base_thrust_z: 上記 base_thrust の鉛直成分
 
 距離補正の考え方:
   入力の distance は [R]（ロータ半径単位）の「設定値」とみなし、m へ変換する。
@@ -28,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -173,7 +182,7 @@ def _build_output_path(input_path: str, output_path: str | None) -> Path:
         return Path(output_path)
     in_path = Path(input_path)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return in_path.with_name(f"{in_path.stem}_morphparams_{ts}{in_path.suffix}")
+    return in_path.with_name(f"{in_path.stem}_calccols_{ts}{in_path.suffix}")
 
 
 def _ensure_constant_column(df: pd.DataFrame, col: str, value) -> pd.DataFrame:
@@ -211,6 +220,100 @@ def _fill_arm_length_from_wheelbase(df: pd.DataFrame, *, rotor_radius_default_m:
     return df
 
 
+def _warn_missing(cols: list[str], *, context: str) -> None:
+    if cols:
+        print(f"[add_calculated_columns_to_csv] WARN: missing columns for {context}: {cols}", file=sys.stderr)
+
+
+def _compute_thrust_coefficient(df: pd.DataFrame) -> pd.Series:
+    required = ["force_z", "control"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        _warn_missing(missing, context="thrust_coefficient")
+        return pd.Series(np.nan, index=df.index, dtype=float)
+    force_z = pd.to_numeric(df["force_z"], errors="coerce")
+    control = pd.to_numeric(df["control"], errors="coerce")
+    denom = control * control
+    denom = denom.where(denom != 0.0, np.nan)
+    return force_z / denom
+
+
+def _compute_normalized_moment(df: pd.DataFrame) -> pd.Series:
+    required = ["torque_x_bias_corrected", "prop_spacing_y", "target_thrust"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        _warn_missing(missing, context="normalized_moment")
+        return pd.Series(np.nan, index=df.index, dtype=float)
+    torque = pd.to_numeric(df["torque_x_bias_corrected"], errors="coerce")
+    prop_spacing_y = pd.to_numeric(df["prop_spacing_y"], errors="coerce")
+    target_thrust = pd.to_numeric(df["target_thrust"], errors="coerce")
+    denom = prop_spacing_y * target_thrust / 2.0
+    denom = denom.where(denom != 0.0, np.nan)
+    return torque / denom * 100.0
+
+
+def _compute_base_thrust_z_from_control(
+    df: pd.DataFrame,
+    *,
+    a: float,
+    b: float,
+    c: float,
+) -> pd.Series:
+    """
+    base_thrust_z:
+      control -> thrust magnitude: T = a*x^2 + b*x + c
+      alpha,beta -> unit vector z component: v_z = 1/sqrt(1+tan(alpha)^2+tan(beta)^2)
+      base_thrust_z = T * v_z
+    """
+    required = ["control", "alpha", "beta"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        _warn_missing(missing, context="base_thrust_z(normalized_thrust)")
+        return pd.Series(np.nan, index=df.index, dtype=float)
+
+    x = pd.to_numeric(df["control"], errors="coerce")
+    alpha_deg = pd.to_numeric(df["alpha"], errors="coerce")
+    beta_deg = pd.to_numeric(df["beta"], errors="coerce")
+
+    # thrust magnitude model (scalar)
+    T = float(a) * (x * x) + float(b) * x + float(c)
+
+    # v_z from alpha,beta definition:
+    # alpha = atan2(vy, vz), beta = atan2(vx, vz)
+    # => tan(alpha)=vy/vz, tan(beta)=vx/vz, and ||v||=1
+    alpha = np.deg2rad(alpha_deg.astype(float))
+    beta = np.deg2rad(beta_deg.astype(float))
+    ta = np.tan(alpha)
+    tb = np.tan(beta)
+    vz = 1.0 / np.sqrt(1.0 + ta * ta + tb * tb)
+
+    # if alpha/beta are NaN, vz becomes NaN; keep it
+    return T * vz
+
+
+def _compute_base_thrust_from_control(df: pd.DataFrame, *, a: float, b: float, c: float) -> pd.Series:
+    required = ["control"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        _warn_missing(missing, context="base_thrust")
+        return pd.Series(np.nan, index=df.index, dtype=float)
+    x = pd.to_numeric(df["control"], errors="coerce")
+    return float(a) * (x * x) + float(b) * x + float(c)
+
+
+def _compute_normalized_thrust(df: pd.DataFrame, *, a: float, b: float, c: float) -> pd.Series:
+    required = ["force_z_bias_corrected"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        _warn_missing(missing, context="normalized_thrust")
+        return pd.Series(np.nan, index=df.index, dtype=float)
+
+    base_thrust_z = _compute_base_thrust_z_from_control(df, a=float(a), b=float(b), c=float(c))
+    denom = base_thrust_z.where(base_thrust_z != 0.0, np.nan)
+    fz = pd.to_numeric(df["force_z_bias_corrected"], errors="coerce")
+    return fz / denom
+
+
 def process_csv(input_csv: str, *, cx: float, cy: float, rotor_radius_in: float) -> pd.DataFrame:
     df = pd.read_csv(input_csv)
 
@@ -234,7 +337,20 @@ def process_csv(input_csv: str, *, cx: float, cy: float, rotor_radius_in: float)
     df = _fill_arm_length_from_wheelbase(df, rotor_radius_default_m=rotor_radius_m)
 
     # 数値化（計算に必要なもの）
-    for c in ["tilt_angle", "fold_angle", "slant_angle", "distance", "rotor_radius", "fold_center_x", "fold_center_y", "arm_length"]:
+    for c in [
+        "tilt_angle",
+        "fold_angle",
+        "slant_angle",
+        "distance",
+        "rotor_radius",
+        "fold_center_x",
+        "fold_center_y",
+        "arm_length",
+        "force_z",
+        "control",
+        "torque_x_bias_corrected",
+        "target_thrust",
+    ]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -310,12 +426,20 @@ def process_csv(input_csv: str, *, cx: float, cy: float, rotor_radius_in: float)
         df = df.drop(columns=[c for c in computed_cols if c in df.columns], errors="ignore")
     # uniq は key_cols の drop_duplicates から作っているので many_to_one を期待
     df = df.merge(computed, on=key_cols, how="left", validate="many_to_one")
+
+    # 追加の計算列（既存があっても上書きして常に最新式に合わせる）
+    df["thrust_coefficient"] = _compute_thrust_coefficient(df)
+    df["normalized_moment"] = _compute_normalized_moment(df)
+    # normalized_thrust (defaults from tilt=fold=slant=0deg calibration)
+    df["base_thrust"] = _compute_base_thrust_from_control(df, a=116.47, b=20.482, c=0.6069)
+    df["base_thrust_z"] = _compute_base_thrust_z_from_control(df, a=116.47, b=20.482, c=0.6069)
+    df["normalized_thrust"] = _compute_normalized_thrust(df, a=116.47, b=20.482, c=0.6069)
     return df
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="visualize_morph_drone.py 準拠の座標変換パラメータ列をCSVに追加する"
+        description="visualize_morph_drone.py 準拠の派生パラメータ列 + 計算列をCSVに追加する"
     )
     parser.add_argument("--input", required=True, help="入力CSVパス")
     parser.add_argument("--output", default=None, help="出力CSVパス（省略時は input と同階層に自動生成）")
@@ -327,6 +451,9 @@ def main() -> None:
         default=3.5,
         help="ロータ半径 [inch]（列 rotor_radius が無い場合に使用。列には m で保存）デフォルト: 3.5",
     )
+    parser.add_argument("--thrust-coef-a", type=float, default=116.47, help="thrust model coef a (default: 116.47)")
+    parser.add_argument("--thrust-coef-b", type=float, default=20.482, help="thrust model coef b (default: 20.482)")
+    parser.add_argument("--thrust-coef-c", type=float, default=0.6069, help="thrust model coef c (default: 0.6069)")
     args = parser.parse_args()
 
     in_path = str(args.input)
@@ -334,6 +461,14 @@ def main() -> None:
         raise SystemExit(f"InputNotFound: {in_path}")
 
     df_out = process_csv(in_path, cx=float(args.cx), cy=float(args.cy), rotor_radius_in=float(args.rotor_radius_in))
+    # overwrite baseline columns with user-specified coefficients if provided
+    # (kept here to avoid changing process_csv signature)
+    a = float(args.thrust_coef_a)
+    b = float(args.thrust_coef_b)
+    c = float(args.thrust_coef_c)
+    df_out["base_thrust"] = _compute_base_thrust_from_control(df_out, a=a, b=b, c=c)
+    df_out["base_thrust_z"] = _compute_base_thrust_z_from_control(df_out, a=a, b=b, c=c)
+    df_out["normalized_thrust"] = _compute_normalized_thrust(df_out, a=a, b=b, c=c)
     out_path = _build_output_path(in_path, args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df_out.to_csv(out_path, index=False)
