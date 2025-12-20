@@ -27,6 +27,8 @@ import matplotlib.pyplot as plt
 import argparse
 import os
 import japanize_matplotlib
+import ast
+import re
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split, cross_val_score
@@ -35,6 +37,106 @@ from sklearn.inspection import permutation_importance
 from sklearn.metrics.pairwise import rbf_kernel, linear_kernel, polynomial_kernel
 import warnings
 warnings.filterwarnings('ignore')
+
+
+def _eval_expr_safe(df: pd.DataFrame, expr: str):
+    """
+    numexpr が無い環境向けの安全な式評価。
+    - 列名（識別子）を df[col] として解決
+    - 数値定数、+ - * / **、単項 +/-
+    - いくつかの関数（abs, sqrt, log, log10, exp）
+    - バッククォート列名: `col-name` をサポート（内部で置換）
+    """
+    expr = str(expr).strip()
+
+    # バッククォートで囲われた列名を安全な仮名に置換
+    # 例: `torque-x` -> __col0
+    bt_map: dict[str, str] = {}
+    def _repl(m):
+        key = m.group(1)
+        if key not in bt_map:
+            bt_map[key] = f"__col{len(bt_map)}"
+        return bt_map[key]
+    expr2 = re.sub(r"`([^`]+)`", _repl, expr)
+
+    # 評価環境
+    env: dict[str, object] = {}
+    for k, v in bt_map.items():
+        if k not in df.columns:
+            raise ValueError(f"式中の列 `{k}` がデータに存在しません。")
+        env[v] = df[k]
+
+    # 通常の識別子列名は AST の Name として解決する（存在チェックは後段）
+    allowed_funcs = {
+        "abs": np.abs,
+        "sqrt": np.sqrt,
+        "log": np.log,
+        "log10": np.log10,
+        "exp": np.exp,
+    }
+    env.update({"pi": float(np.pi), "e": float(np.e)})
+
+    tree = ast.parse(expr2, mode="eval")
+
+    class _SafeEval(ast.NodeVisitor):
+        def visit(self, node):
+            return super().visit(node)
+
+        def visit_Expression(self, node: ast.Expression):
+            return self.visit(node.body)
+
+        def visit_Constant(self, node: ast.Constant):
+            if isinstance(node.value, (int, float, bool)):
+                return node.value
+            raise ValueError("式では数値/真偽値以外の定数は使えません。")
+
+        def visit_Name(self, node: ast.Name):
+            name = node.id
+            if name in env:
+                return env[name]
+            if name in allowed_funcs:
+                return allowed_funcs[name]
+            if name in df.columns:
+                return df[name]
+            raise ValueError(f"式中の識別子 '{name}' が解決できません（列名が存在しない？）。")
+
+        def visit_UnaryOp(self, node: ast.UnaryOp):
+            v = self.visit(node.operand)
+            if isinstance(node.op, ast.UAdd):
+                return +v
+            if isinstance(node.op, ast.USub):
+                return -v
+            raise ValueError("許可されていない単項演算子です。")
+
+        def visit_BinOp(self, node: ast.BinOp):
+            l = self.visit(node.left)
+            r = self.visit(node.right)
+            if isinstance(node.op, ast.Add):
+                return l + r
+            if isinstance(node.op, ast.Sub):
+                return l - r
+            if isinstance(node.op, ast.Mult):
+                return l * r
+            if isinstance(node.op, ast.Div):
+                return l / r
+            if isinstance(node.op, ast.Pow):
+                return l ** r
+            raise ValueError("許可されていない二項演算子です。")
+
+        def visit_Call(self, node: ast.Call):
+            fn = self.visit(node.func)
+            if fn not in allowed_funcs.values():
+                raise ValueError("許可されていない関数呼び出しです。")
+            if node.keywords:
+                raise ValueError("キーワード引数は使えません。")
+            args = [self.visit(a) for a in node.args]
+            return fn(*args)
+
+        # それ以外は全部禁止
+        def generic_visit(self, node):
+            raise ValueError(f"許可されていない構文です: {type(node).__name__}")
+
+    return _SafeEval().visit(tree)
 
 
 def _ensure_target_column(df: pd.DataFrame, target_column: str, target_expr: str | None):
@@ -57,15 +159,22 @@ def _ensure_target_column(df: pd.DataFrame, target_column: str, target_expr: str
             "例: --target my_target --target-expr \"force_z / 9.80665\""
         )
 
+    # まず numexpr が使えるなら pandas.eval(engine='numexpr') を試す。
+    # numexpr が未導入の場合は、安全な簡易評価へフォールバックする。
     try:
-        # engine='numexpr' により、Python の任意コード実行を回避する
         y = df.eval(expr, engine='numexpr')
     except Exception as e:
-        raise ValueError(
-            f"target-expr の評価に失敗しました: {e}\n"
-            f"target='{target_column}', expr='{expr}'\n"
-            "列名に記号が含まれる場合はバッククォートで囲ってください（例: `torque-x`）。"
-        )
+        # "numexpr is not installed" / ImportError 系を含む幅広い例外をフォールバック対象にする
+        try:
+            y = _eval_expr_safe(df, expr)
+            print("[target-expr] 注意: numexpr が利用できないため、簡易評価（安全制限あり）で式を計算しました。")
+        except Exception as e2:
+            raise ValueError(
+                f"target-expr の評価に失敗しました: {e}\n"
+                f"(fallback error) {e2}\n"
+                f"target='{target_column}', expr='{expr}'\n"
+                "列名に記号が含まれる場合はバッククォートで囲ってください（例: `torque-x`）。"
+            )
     # df.eval は Series か ndarray/scalar になり得る
     df[target_column] = y
     return df
