@@ -3,7 +3,8 @@
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction, ExecuteProcess
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -28,6 +29,24 @@ def generate_launch_description():
             ]
         ),
         description="Leadscrew slider params YAML",
+    )
+
+    enable_bottom_slider_arg = DeclareLaunchArgument(
+        "enable_bottom_slider",
+        default_value="true",
+        description="Enable bottom leadscrew slider (slider_bottom namespace)",
+    )
+
+    enable_top_slider_arg = DeclareLaunchArgument(
+        "enable_top_slider",
+        default_value="true",
+        description="Enable top leadscrew slider (slider_top namespace)",
+    )
+
+    enable_vertical_slider_arg = DeclareLaunchArgument(
+        "enable_vertical_slider",
+        default_value="true",
+        description="Enable vertical leadscrew slider (slider_vertical namespace)",
     )
 
     # DynamixelHandler_ros2 ノード
@@ -186,6 +205,7 @@ def generate_launch_description():
         executable="leadscrew_slider_controller",
         name="leadscrew_slider_controller",
         namespace="slider_bottom",
+        condition=IfCondition(LaunchConfiguration("enable_bottom_slider")),
         output="screen",
         emulate_tty=True,
         parameters=[
@@ -205,6 +225,7 @@ def generate_launch_description():
         executable="leadscrew_slider_controller",
         name="leadscrew_slider_controller",
         namespace="slider_top",
+        condition=IfCondition(LaunchConfiguration("enable_top_slider")),
         output="screen",
         emulate_tty=True,
         parameters=[
@@ -224,6 +245,7 @@ def generate_launch_description():
         executable="leadscrew_slider_controller",
         name="leadscrew_slider_controller",
         namespace="slider_vertical",
+        condition=IfCondition(LaunchConfiguration("enable_vertical_slider")),
         output="screen",
         emulate_tty=True,
         parameters=[
@@ -246,6 +268,7 @@ def generate_launch_description():
     # ホーミング実行（起動後に順次呼び出し）
     home_bottom_after_delay = TimerAction(
         period=5.0,
+        condition=IfCondition(LaunchConfiguration("enable_bottom_slider")),
         actions=[
             ExecuteProcess(
                 cmd=[
@@ -263,6 +286,7 @@ def generate_launch_description():
 
     home_top_after_delay = TimerAction(
         period=6.0,
+        condition=IfCondition(LaunchConfiguration("enable_top_slider")),
         actions=[
             ExecuteProcess(
                 cmd=[
@@ -280,6 +304,49 @@ def generate_launch_description():
 
     home_vertical_after_delay = TimerAction(
         period=60.0,
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("enable_vertical_slider"),
+                    "' == 'true' and ('",
+                    LaunchConfiguration("enable_bottom_slider"),
+                    "' == 'true' or '",
+                    LaunchConfiguration("enable_top_slider"),
+                    "' == 'true')",
+                ]
+            )
+        ),
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "ros2",
+                    "service",
+                    "call",
+                    "/slider_vertical/home",
+                    "std_srvs/srv/Trigger",
+                    "{}",
+                ],
+                output="screen",
+            )
+        ],
+    )
+
+    home_vertical_immediate = TimerAction(
+        period=0.1,
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("enable_vertical_slider"),
+                    "' == 'true' and '",
+                    LaunchConfiguration("enable_bottom_slider"),
+                    "' == 'false' and '",
+                    LaunchConfiguration("enable_top_slider"),
+                    "' == 'false'",
+                ]
+            )
+        ),
         actions=[
             ExecuteProcess(
                 cmd=[
@@ -299,6 +366,9 @@ def generate_launch_description():
         [
             use_sim_time_arg,
             slider_params_arg,
+            enable_bottom_slider_arg,
+            enable_top_slider_arg,
+            enable_vertical_slider_arg,
             dynamixel_handler_node,
             ar_marker_web_client_node,
             calibrated_slider_controller_node,
@@ -307,6 +377,7 @@ def generate_launch_description():
             leadscrew_slider_controller_vertical_node,
             home_bottom_after_delay,
             home_top_after_delay,
+            home_vertical_immediate,
             home_vertical_after_delay,
             force_sensor_node,
         ]
