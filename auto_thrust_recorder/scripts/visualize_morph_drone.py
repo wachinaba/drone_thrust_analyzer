@@ -97,6 +97,167 @@ def _rot_axis_angle(axis: np.ndarray, angle_rad: float) -> np.ndarray:
     )
 
 
+def _thrust_vec_from_alpha_beta_deg(alpha_deg: float, beta_deg: float) -> np.ndarray:
+    """
+    plot_morphing_drone() 内の thrust_angles_alpha_beta_deg() の逆変換（同じ符号規約）。
+
+    定義（既存）:
+      alpha = -atan2(vy, vz) [deg]
+      beta  = -atan2(vx, vz) [deg]
+    ここから unit vector v を復元する。
+    """
+    a = _deg2rad(float(alpha_deg))
+    b = _deg2rad(float(beta_deg))
+    kx = -float(np.tan(b))  # vx = kx * vz
+    ky = -float(np.tan(a))  # vy = ky * vz
+    vz = 1.0 / float(np.sqrt(1.0 + kx * kx + ky * ky))
+    vx = kx * vz
+    vy = ky * vz
+    return _normalize(np.array([vx, vy, vz], dtype=float))
+
+
+def _arm_dir2_and_rotor_n2_from_phi_psi(arm_dir0: np.ndarray, phi_deg: float, psi_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    _make_arm_pose() の fold+slant までを切り出したもの。
+    Returns:
+      arm_dir2: fold+slant 後のアーム方向(unit)
+      rotor_n2: fold+slant 後のロータ法線(unit)（tilt前）
+    """
+    z = np.array([0.0, 0.0, 1.0], dtype=float)
+
+    # _make_arm_pose() と同じ符号規約（phi/psi は内部で反転）
+    phi = _deg2rad(-float(phi_deg))
+    psi = _deg2rad(-float(psi_deg))
+
+    R_fold = _rot_z(phi)
+    arm_dir1 = _normalize(R_fold @ _normalize(np.asarray(arm_dir0, dtype=float).reshape(3)))
+
+    slant_axis = np.cross(z, arm_dir1)
+    if np.linalg.norm(slant_axis) < 1e-10:
+        R_slant = np.eye(3, dtype=float)
+    else:
+        R_slant = _rot_axis_angle(slant_axis, psi)
+
+    arm_dir2 = _normalize(R_slant @ arm_dir1)
+    rotor_n2 = _normalize(R_slant @ (R_fold @ z))
+    return arm_dir2, rotor_n2
+
+
+def solve_psi_theta_from_alpha_beta_deg(
+    *,
+    phi_deg: float,
+    alpha_deg: float,
+    beta_deg: float,
+    psi_search_range: tuple[float, float] = (-90.0, 90.0),
+) -> tuple[float, float, float]:
+    """
+    alpha/beta (deg) から psi/theta (deg) を逆算する（phi は固定）。
+    - rotor0（+x,+y象限のアーム）基準
+    - psi は 1次元探索で dot(arm_axis, rotor_n2) と dot(arm_axis, target) を一致させる
+    - theta はその psi で軸回り回転角を解析的に求める
+
+    Returns:
+      (psi_deg, theta_deg, residual_deg)
+      residual_deg は最終的なロータ法線と target の角度誤差（deg）
+    """
+    v_target = _thrust_vec_from_alpha_beta_deg(alpha_deg=float(alpha_deg), beta_deg=float(beta_deg))
+    arm_dir0 = _normalize(np.array([+1.0, +1.0, 0.0], dtype=float))  # rotor0
+
+    psi_lo, psi_hi = float(psi_search_range[0]), float(psi_search_range[1])
+    psi_lo = max(-90.0, psi_lo)
+    psi_hi = min(90.0, psi_hi)
+
+    def f(psi: float) -> float:
+        a, u = _arm_dir2_and_rotor_n2_from_phi_psi(arm_dir0, phi_deg=float(phi_deg), psi_deg=float(psi))
+        return float(np.dot(a, u) - np.dot(a, v_target))
+
+    def theta_for_psi(psi: float) -> float:
+        a, u = _arm_dir2_and_rotor_n2_from_phi_psi(arm_dir0, phi_deg=float(phi_deg), psi_deg=float(psi))
+        a = _normalize(a)
+        u = _normalize(u)
+        v = v_target
+        u_perp = u - a * float(np.dot(a, u))
+        v_perp = v - a * float(np.dot(a, v))
+        nu = float(np.linalg.norm(u_perp))
+        nv = float(np.linalg.norm(v_perp))
+        if nu < 1e-12 or nv < 1e-12:
+            return 0.0
+        u_perp /= nu
+        v_perp /= nv
+        # oriented angle around axis a from u_perp to v_perp
+        ang = float(np.arctan2(np.dot(a, np.cross(u_perp, v_perp)), np.dot(u_perp, v_perp)))
+        th = float(np.degrees(ang))
+        # wrap to [-180, 180]
+        if th > 180.0:
+            th -= 360.0
+        if th < -180.0:
+            th += 360.0
+        return th
+
+    def residual_deg(psi: float, theta: float) -> float:
+        a, u = _arm_dir2_and_rotor_n2_from_phi_psi(arm_dir0, phi_deg=float(phi_deg), psi_deg=float(psi))
+        R = _rot_axis_angle(_normalize(a), _deg2rad(float(theta)))
+        v = _normalize(R @ _normalize(u))
+        dotv = float(np.clip(np.dot(v, v_target), -1.0, 1.0))
+        return float(np.degrees(np.arccos(dotv)))
+
+    # Find candidate roots by scanning for sign changes.
+    n_scan = 181  # 1 deg step across [-90, 90]
+    psis = np.linspace(psi_lo, psi_hi, n_scan)
+    fs = np.array([f(float(p)) for p in psis], dtype=float)
+
+    brackets: list[tuple[float, float]] = []
+    for i in range(len(psis) - 1):
+        f0, f1 = float(fs[i]), float(fs[i + 1])
+        if f0 == 0.0:
+            brackets.append((float(psis[i]), float(psis[i])))
+        elif f0 * f1 < 0.0:
+            brackets.append((float(psis[i]), float(psis[i + 1])))
+
+    def bisect(a0: float, a1: float) -> float:
+        if a0 == a1:
+            return a0
+        lo, hi = a0, a1
+        flo, fhi = f(lo), f(hi)
+        # If not a valid bracket (numerical), just return midpoint.
+        if flo == 0.0:
+            return lo
+        if fhi == 0.0:
+            return hi
+        if flo * fhi > 0.0:
+            return 0.5 * (lo + hi)
+        for _ in range(50):
+            mid = 0.5 * (lo + hi)
+            fm = f(mid)
+            if abs(fm) < 1e-10 or abs(hi - lo) < 1e-6:
+                return mid
+            if flo * fm <= 0.0:
+                hi, fhi = mid, fm
+            else:
+                lo, flo = mid, fm
+        return 0.5 * (lo + hi)
+
+    candidates: list[tuple[float, float, float]] = []
+    if brackets:
+        for (b0, b1) in brackets[:12]:  # cap
+            psi_star = bisect(b0, b1)
+            th = theta_for_psi(psi_star)
+            res = residual_deg(psi_star, th)
+            candidates.append((psi_star, th, res))
+    else:
+        # No sign change found -> pick psi that minimizes |f|.
+        idx = int(np.argmin(np.abs(fs)))
+        psi_star = float(psis[idx])
+        th = theta_for_psi(psi_star)
+        res = residual_deg(psi_star, th)
+        candidates.append((psi_star, th, res))
+
+    # Select best candidate: smallest residual, then smallest |theta|.
+    candidates.sort(key=lambda t: (float(t[2]), abs(float(t[1]))))
+    psi_best, th_best, res_best = candidates[0]
+    return float(psi_best), float(th_best), float(res_best)
+
+
 def _set_axes_equal(ax):
     # Matplotlib 3D: make x/y/z scales equal.
     x_limits = ax.get_xlim3d()
@@ -198,7 +359,11 @@ def plot_morphing_drone(
     force_2d: bool = False,
     y_clearance: float = 0.0,
     draw_y0_plane: bool = True,
+    view_elev: float | None = None,
+    view_azim: float | None = None,
     save_path: str | None = None,
+    transparent: bool = True,
+    drone_lw: float = 1.0,
     dpi: int = 200,
     show: bool = True,
     sliders_enabled: bool = True,
@@ -335,6 +500,7 @@ def plot_morphing_drone(
     hinges_for_outline = [pose.hinge for pose in poses]
     hs = np.array(hinges_for_outline + [hinges_for_outline[0]])
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    lw_scale = max(0.0, float(drone_lw))
 
     def _format_title(_L: float, _phi: float, _psi: float, _theta: float, _y_clear: float) -> str:
         return (
@@ -372,6 +538,9 @@ def plot_morphing_drone(
         logging.info("Creating 3D figure/axes...")
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection="3d")
+        # Camera pose (optional). Keep matplotlib default if not specified.
+        if (view_elev is not None) or (view_azim is not None):
+            ax.view_init(elev=view_elev, azim=view_azim)
         if not bool(hide_decorations):
             ax.set_title(_format_title(arm_length_m, phi_deg, psi_deg, theta_deg, y_clearance))
 
@@ -394,7 +563,14 @@ def plot_morphing_drone(
         # Body outline (hinge square)
         hs_shift = hs.copy()
         hs_shift[:, 1] += dy
-        body_line = ax.plot(hs_shift[:, 0], hs_shift[:, 1], hs_shift[:, 2], color="k", linewidth=1.5, label="hinge square")[0]
+        body_line = ax.plot(
+            hs_shift[:, 0],
+            hs_shift[:, 1],
+            hs_shift[:, 2],
+            color="k",
+            linewidth=1.5 * lw_scale,
+            label="hinge square",
+        )[0]
 
         arm_lines = []
         hinge_pts = []
@@ -413,7 +589,7 @@ def plot_morphing_drone(
                     [p0[1], p1[1]],
                     [p0[2], p1[2]],
                     color=c,
-                    linewidth=3.0,
+                    linewidth=3.0 * lw_scale,
                     label=f"arm {i}" if i == 0 else None,
                 )[0]
             )
@@ -421,12 +597,20 @@ def plot_morphing_drone(
             tip_pts.append(ax.scatter([p1[0]], [p1[1]], [p1[2]], color=c, s=40))
 
             circ = _circle_points(center=p1, normal=pose.rotor_normal, radius=rotor_radius_m, n=200)
-            rotor_lines.append(ax.plot(circ[:, 0], circ[:, 1], circ[:, 2], color=c, linewidth=1.5)[0])
+            rotor_lines.append(ax.plot(circ[:, 0], circ[:, 1], circ[:, 2], color=c, linewidth=1.5 * lw_scale)[0])
 
             # Rotor normal (simple line; easier to update than quiver)
             n_scale = rotor_radius_m * 0.8
             p2 = p1 + n_scale * pose.rotor_normal
-            normal_lines.append(ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]], color=c, linewidth=1.2)[0])
+            normal_lines.append(
+                ax.plot(
+                    [p1[0], p2[0]],
+                    [p1[1], p2[1]],
+                    [p1[2], p2[2]],
+                    color=c,
+                    linewidth=1.2 * lw_scale,
+                )[0]
+            )
 
         origin = np.array([0.0, 0.0, 0.0])
         axis_len = max(arm_length_m + rotor_radius_m, 0.15)
@@ -457,9 +641,11 @@ def plot_morphing_drone(
                 ax.set_zticks([])
 
         y0_plane_artist = None
+        y0_plane_border_lines = []
+        y0_plane_hatch_lines = []
 
         def _draw_plane():
-            nonlocal y0_plane_artist
+            nonlocal y0_plane_artist, y0_plane_border_lines, y0_plane_hatch_lines
             if not bool(draw_y0_plane):
                 return
             if y0_plane_artist is not None:
@@ -468,6 +654,20 @@ def plot_morphing_drone(
                 except Exception:
                     pass
                 y0_plane_artist = None
+            if y0_plane_border_lines:
+                for _ln in y0_plane_border_lines:
+                    try:
+                        _ln.remove()
+                    except Exception:
+                        pass
+                y0_plane_border_lines = []
+            if y0_plane_hatch_lines:
+                for _ln in y0_plane_hatch_lines:
+                    try:
+                        _ln.remove()
+                    except Exception:
+                        pass
+                y0_plane_hatch_lines = []
             xlim = ax.get_xlim3d()
             zlim = ax.get_zlim3d()
             xs = np.linspace(float(xlim[0]), float(xlim[1]), 2)
@@ -475,6 +675,68 @@ def plot_morphing_drone(
             X, Z = np.meshgrid(xs, zs)
             Y = np.zeros_like(X)
             y0_plane_artist = ax.plot_surface(X, Y, Z, color="gray", alpha=0.12, shade=False)
+            # 3D "wall" border (outline rectangle) to remain visible even when decorations are hidden.
+            x0, x1 = float(xlim[0]), float(xlim[1])
+            z0, z1 = float(zlim[0]), float(zlim[1])
+            xr = [x0, x1, x1, x0, x0]
+            yr = [0.0, 0.0, 0.0, 0.0, 0.0]
+            zr = [z0, z0, z1, z1, z0]
+            try:
+                (border_line,) = ax.plot(xr, yr, zr, color="gray", alpha=0.55, linewidth=1.0)
+                y0_plane_border_lines = [border_line]
+            except Exception:
+                y0_plane_border_lines = []
+            # Pseudo-hatching: draw many diagonal line segments on the wall plane (y=0).
+            # This is more robust than true hatch support in 3D.
+            hatch_pitch_m = 0.03  # spacing between lines
+            hatch_alpha = 0.18
+            hatch_lw = 0.8
+
+            def _clip_line_x_minus_z_eq_s(_s: float):
+                # Line in x-z plane: x - z = s (slope +1, like ////)
+                pts = []
+                # Intersections with x = x0/x1
+                z_at_x0 = x0 - _s
+                if z0 <= z_at_x0 <= z1:
+                    pts.append((x0, z_at_x0))
+                z_at_x1 = x1 - _s
+                if z0 <= z_at_x1 <= z1:
+                    pts.append((x1, z_at_x1))
+                # Intersections with z = z0/z1
+                x_at_z0 = _s + z0
+                if x0 <= x_at_z0 <= x1:
+                    pts.append((x_at_z0, z0))
+                x_at_z1 = _s + z1
+                if x0 <= x_at_z1 <= x1:
+                    pts.append((x_at_z1, z1))
+                # Deduplicate (floating comparisons: keep simple)
+                uniq = []
+                for p in pts:
+                    if all((abs(p[0] - q[0]) > 1e-9) or (abs(p[1] - q[1]) > 1e-9) for q in uniq):
+                        uniq.append(p)
+                if len(uniq) < 2:
+                    return None
+                return uniq[0], uniq[1]
+
+            # Sweep s over the rectangle extent.
+            s_min = x0 - z1
+            s_max = x1 - z0
+            if hatch_pitch_m > 1e-9:
+                n_lines = int(np.ceil((s_max - s_min) / hatch_pitch_m)) + 1
+                n_lines = max(0, min(n_lines, 400))  # safety cap
+                ss = np.linspace(s_min, s_max, n_lines)
+                hatch_lines = []
+                for s in ss:
+                    seg = _clip_line_x_minus_z_eq_s(float(s))
+                    if seg is None:
+                        continue
+                    (xa, za), (xb, zb) = seg
+                    try:
+                        (ln,) = ax.plot([xa, xb], [0.0, 0.0], [za, zb], color="gray", alpha=hatch_alpha, linewidth=hatch_lw)
+                        hatch_lines.append(ln)
+                    except Exception:
+                        break
+                y0_plane_hatch_lines = hatch_lines
 
         _draw_plane()
 
@@ -554,10 +816,28 @@ def plot_morphing_drone(
 
     if save_path:
         logging.info("Saving figure to %s (dpi=%d)...", save_path, int(dpi))
+        if bool(transparent):
+            try:
+                fig.patch.set_alpha(0.0)
+            except Exception:
+                pass
+            try:
+                ax.set_facecolor((0, 0, 0, 0))
+            except Exception:
+                pass
+            # 3D panes (optional; depends on backend/matplotlib version)
+            try:
+                for a in (ax.xaxis, ax.yaxis, ax.zaxis):
+                    try:
+                        a.pane.set_alpha(0.0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         if bool(hide_decorations):
-            fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight", pad_inches=0.0)
+            fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight", pad_inches=0.0, transparent=bool(transparent))
         else:
-            fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight")
+            fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight", transparent=bool(transparent))
         logging.info("Saved: %s", save_path)
 
     if show:
@@ -658,7 +938,12 @@ def plot_three_view_drone(
     symmetry: str = "mirror_xy",
     y_clearance: float = 0.0,
     draw_y0_plane: bool = True,
+    view_elev: float | None = 25.0,
+    view_azim: float | None = -30.0,
     save_path: str | None = None,
+    save_split: bool = False,
+    transparent: bool = True,
+    drone_lw: float = 1.0,
     dpi: int = 200,
     show: bool = True,
     include_3d_view: bool = True,
@@ -676,12 +961,14 @@ def plot_three_view_drone(
     - Top view (平面図): Z軸方向から見た XY平面への投影 (Y軸横、X軸縦)
     
     include_3d_view=True の場合、4つ目のサブプロットに3Dビューを追加。
+    view_elev/view_azim: 3Dビューのカメラ姿勢（度）。None の場合は matplotlib のデフォルトに従う。
     drone_center: ドローン中心のオフセット (x, y, z) [m]
     rotor_inflow_offset: ロータ中心を流入側（推力の逆方向）にオフセットする量 [m]
     hide_decorations: True の場合、軸ラベル、グリッド、タイトルなどを非表示
     drone_color: "multi" で4色、それ以外は指定した1色でロータを描画
     body_color: ボディ（ヒンジスクエア、アーム）の色
     """
+    lw_scale = max(0.0, float(drone_lw))
     drone_offset = np.array(drone_center, dtype=float)
     import matplotlib.pyplot as plt
 
@@ -835,7 +1122,7 @@ def plot_three_view_drone(
         hinges_for_outline = [pose.hinge + drone_offset for pose in poses]
         hs = np.array(hinges_for_outline + [hinges_for_outline[0]])
         hs_2d = np.array([proj_func(p) for p in hs])
-        ax.plot(hs_2d[:, 0], hs_2d[:, 1], color=body_color, linewidth=1.5, label="body", zorder=1)
+        ax.plot(hs_2d[:, 0], hs_2d[:, 1], color=body_color, linewidth=1.5 * lw_scale, label="body", zorder=1)
 
         # Sort arms and rotors by depth (draw back to front)
         arm_rotor_data = list(zip(arm_segments, rotor_circles))
@@ -853,19 +1140,25 @@ def plot_three_view_drone(
             # Arm (hinge to arm tip) - use body_color
             p0_2d = proj_func(p0)
             arm_tip_2d = proj_func(arm_tip)
-            ax.plot([p0_2d[0], arm_tip_2d[0]], [p0_2d[1], arm_tip_2d[1]], color=body_color, linewidth=2.5, zorder=base_zorder)
+            ax.plot(
+                [p0_2d[0], arm_tip_2d[0]],
+                [p0_2d[1], arm_tip_2d[1]],
+                color=body_color,
+                linewidth=2.5 * lw_scale,
+                zorder=base_zorder,
+            )
             ax.scatter([p0_2d[0]], [p0_2d[1]], color=body_color, s=25, zorder=base_zorder + 1)
             ax.scatter([arm_tip_2d[0]], [arm_tip_2d[1]], color=body_color, s=35, zorder=base_zorder + 2)
 
             # Line from arm tip to rotor center - use body_color
             rotor_center_2d = proj_func(rotor_center)
             ax.plot([arm_tip_2d[0], rotor_center_2d[0]], [arm_tip_2d[1], rotor_center_2d[1]], 
-                    color=body_color, linewidth=1.5, zorder=base_zorder + 2)
+                    color=body_color, linewidth=1.5 * lw_scale, zorder=base_zorder + 2)
 
             # Rotor circle - use rotor_c (drone_color)
             circ = _circle_points(center=rotor_center, normal=normal, radius=rotor_radius_m, n=100)
             circ_2d = np.array([proj_func(pt) for pt in circ])
-            ax.plot(circ_2d[:, 0], circ_2d[:, 1], color=rotor_c, linewidth=1.2, zorder=base_zorder + 3)
+            ax.plot(circ_2d[:, 0], circ_2d[:, 1], color=rotor_c, linewidth=1.2 * lw_scale, zorder=base_zorder + 3)
 
             # Rotor normal arrow - use rotor_c (drone_color)
             n_scale = rotor_radius_m * 0.6
@@ -875,7 +1168,7 @@ def plot_three_view_drone(
                 "",
                 xy=(p2_2d[0], p2_2d[1]),
                 xytext=(rotor_center_2d[0], rotor_center_2d[1]),
-                arrowprops=dict(arrowstyle="->", color=rotor_c, lw=1.0, zorder=base_zorder + 4),
+                arrowprops=dict(arrowstyle="->", color=rotor_c, lw=1.0 * lw_scale, zorder=base_zorder + 4),
                 zorder=base_zorder + 4,
             )
 
@@ -898,7 +1191,23 @@ def plot_three_view_drone(
     draw_2d_view(ax_front, proj_front, depth_front, "Y [m]", "Z [m]", "Front View (from +X)")
     ax_front.set_xlim(y_center - max_half, y_center + max_half)
     ax_front.set_ylim(z_center - max_half, z_center + max_half)
-    if draw_y0_plane and not hide_decorations:
+    # 壁(y=0)は decorations を隠しても表示したい（--no-y0-plane 指定時のみ非表示）
+    if draw_y0_plane:
+        # Hatching for y<0 region (left side in this projection)
+        try:
+            x_left = float(min(ax_front.get_xlim()))
+            ax_front.axvspan(
+                x_left,
+                0.0,
+                facecolor=(0, 0, 0, 0),
+                edgecolor="gray",
+                hatch="////",
+                linewidth=0.0,
+                alpha=0.35,
+                zorder=0.2,
+            )
+        except Exception:
+            pass
         ax_front.axvline(x=0, color="gray", linestyle="--", alpha=0.5, label="y=0 (wall)")
 
     # Side view: -Y方向から見る -> XZ平面
@@ -925,7 +1234,22 @@ def plot_three_view_drone(
     draw_2d_view(ax_top, proj_top, depth_top, "Y [m]", "X [m]", "Top View (from +Z)")
     ax_top.set_xlim(y_center - max_half, y_center + max_half)
     ax_top.set_ylim(x_center + max_half, x_center - max_half)  # X軸反転
-    if draw_y0_plane and not hide_decorations:
+    if draw_y0_plane:
+        # Hatching for y<0 region (left side in this projection)
+        try:
+            x_left = float(min(ax_top.get_xlim()))
+            ax_top.axvspan(
+                x_left,
+                0.0,
+                facecolor=(0, 0, 0, 0),
+                edgecolor="gray",
+                hatch="////",
+                linewidth=0.0,
+                alpha=0.35,
+                zorder=0.2,
+            )
+        except Exception:
+            pass
         ax_top.axvline(x=0, color="gray", linestyle="--", alpha=0.5, label="y=0")
 
     # 3D view (if enabled)
@@ -933,30 +1257,43 @@ def plot_three_view_drone(
         # Body outline
         hinges_for_outline = [pose.hinge + drone_offset for pose in poses]
         hs = np.array(hinges_for_outline + [hinges_for_outline[0]])
-        ax_3d.plot(hs[:, 0], hs[:, 1], hs[:, 2], color=body_color, linewidth=1.5)
+        ax_3d.plot(hs[:, 0], hs[:, 1], hs[:, 2], color=body_color, linewidth=1.5 * lw_scale)
 
         for (p0, arm_tip, rotor_c), (rotor_center, normal, _, _) in zip(arm_segments, rotor_circles):
             # Arm (hinge to arm tip) - use body_color
-            ax_3d.plot([p0[0], arm_tip[0]], [p0[1], arm_tip[1]], [p0[2], arm_tip[2]], color=body_color, linewidth=2.5)
+            ax_3d.plot(
+                [p0[0], arm_tip[0]],
+                [p0[1], arm_tip[1]],
+                [p0[2], arm_tip[2]],
+                color=body_color,
+                linewidth=2.5 * lw_scale,
+            )
             ax_3d.scatter([p0[0]], [p0[1]], [p0[2]], color=body_color, s=25)
             ax_3d.scatter([arm_tip[0]], [arm_tip[1]], [arm_tip[2]], color=body_color, s=35)
 
             # Line from arm tip to rotor center - use body_color
             ax_3d.plot([arm_tip[0], rotor_center[0]], [arm_tip[1], rotor_center[1]], [arm_tip[2], rotor_center[2]], 
-                       color=body_color, linewidth=1.5)
+                       color=body_color, linewidth=1.5 * lw_scale)
 
             # Rotor circle - use rotor_c (drone_color)
             circ = _circle_points(center=rotor_center, normal=normal, radius=rotor_radius_m, n=100)
-            ax_3d.plot(circ[:, 0], circ[:, 1], circ[:, 2], color=rotor_c, linewidth=1.2)
+            ax_3d.plot(circ[:, 0], circ[:, 1], circ[:, 2], color=rotor_c, linewidth=1.2 * lw_scale)
 
             # Rotor normal arrow - use rotor_c (drone_color)
             n_scale = rotor_radius_m * 0.6
             p2 = rotor_center + n_scale * normal
-            ax_3d.plot([rotor_center[0], p2[0]], [rotor_center[1], p2[1]], [rotor_center[2], p2[2]], color=rotor_c, linewidth=1.0)
+            ax_3d.plot(
+                [rotor_center[0], p2[0]],
+                [rotor_center[1], p2[1]],
+                [rotor_center[2], p2[2]],
+                color=rotor_c,
+                linewidth=1.0 * lw_scale,
+            )
 
         # Set initial camera angle (X軸寄りに傾ける)
         # elev: 仰角 (Z軸からの角度), azim: 方位角 (XY平面上の回転)
-        ax_3d.view_init(elev=25, azim=-30)
+        if (view_elev is not None) or (view_azim is not None):
+            ax_3d.view_init(elev=view_elev, azim=view_azim)
 
         # Equal aspect
         ax_3d.set_xlim(x_center - max_half, x_center + max_half)
@@ -977,13 +1314,65 @@ def plot_three_view_drone(
             ax_3d.set_ylabel("Y [m]")
             ax_3d.set_zlabel("Z [m]")
             ax_3d.set_title("3D View")
+        # 壁(y=0)は decorations を隠しても表示したい（--no-y0-plane 指定時のみ非表示）
+        if draw_y0_plane:
+            xs = np.linspace(x_center - max_half, x_center + max_half, 2)
+            zs = np.linspace(z_center - max_half, z_center + max_half, 2)
+            X, Z = np.meshgrid(xs, zs)
+            Y = np.zeros_like(X)
+            ax_3d.plot_surface(X, Y, Z, color="gray", alpha=0.12, shade=False)
+            # Outline border (rectangle) for the wall plane
+            xr = [x_center - max_half, x_center + max_half, x_center + max_half, x_center - max_half, x_center - max_half]
+            yr = [0.0, 0.0, 0.0, 0.0, 0.0]
+            zr = [z_center - max_half, z_center - max_half, z_center + max_half, z_center + max_half, z_center - max_half]
+            try:
+                ax_3d.plot(xr, yr, zr, color="gray", alpha=0.55, linewidth=1.0)
+            except Exception:
+                pass
+            # Pseudo-hatching (diagonal lines) on the 3D wall plane.
+            try:
+                x0, x1 = float(x_center - max_half), float(x_center + max_half)
+                z0, z1 = float(z_center - max_half), float(z_center + max_half)
+                hatch_pitch_m = 0.03
+                hatch_alpha = 0.18
+                hatch_lw = 0.8
 
-            if draw_y0_plane:
-                xs = np.linspace(x_center - max_half, x_center + max_half, 2)
-                zs = np.linspace(z_center - max_half, z_center + max_half, 2)
-                X, Z = np.meshgrid(xs, zs)
-                Y = np.zeros_like(X)
-                ax_3d.plot_surface(X, Y, Z, color="gray", alpha=0.12, shade=False)
+                def _clip_line_x_minus_z_eq_s(_s: float):
+                    pts = []
+                    z_at_x0 = x0 - _s
+                    if z0 <= z_at_x0 <= z1:
+                        pts.append((x0, z_at_x0))
+                    z_at_x1 = x1 - _s
+                    if z0 <= z_at_x1 <= z1:
+                        pts.append((x1, z_at_x1))
+                    x_at_z0 = _s + z0
+                    if x0 <= x_at_z0 <= x1:
+                        pts.append((x_at_z0, z0))
+                    x_at_z1 = _s + z1
+                    if x0 <= x_at_z1 <= x1:
+                        pts.append((x_at_z1, z1))
+                    uniq = []
+                    for p in pts:
+                        if all((abs(p[0] - q[0]) > 1e-9) or (abs(p[1] - q[1]) > 1e-9) for q in uniq):
+                            uniq.append(p)
+                    if len(uniq) < 2:
+                        return None
+                    return uniq[0], uniq[1]
+
+                s_min = x0 - z1
+                s_max = x1 - z0
+                if hatch_pitch_m > 1e-9:
+                    n_lines = int(np.ceil((s_max - s_min) / hatch_pitch_m)) + 1
+                    n_lines = max(0, min(n_lines, 400))
+                    ss = np.linspace(s_min, s_max, n_lines)
+                    for s in ss:
+                        seg = _clip_line_x_minus_z_eq_s(float(s))
+                        if seg is None:
+                            continue
+                        (xa, za), (xb, zb) = seg
+                        ax_3d.plot([xa, xb], [0.0, 0.0], [za, zb], color="gray", alpha=hatch_alpha, linewidth=hatch_lw)
+            except Exception:
+                pass
 
     # Title with rotor-to-wall distance
     if not hide_decorations:
@@ -1001,10 +1390,68 @@ def plot_three_view_drone(
 
     plt.tight_layout()
 
+    # Prepare transparent output (default) when saving.
+    if bool(transparent):
+        try:
+            fig.patch.set_alpha(0.0)
+        except Exception:
+            pass
+        for _ax in [ax_top, ax_side, ax_front]:
+            try:
+                _ax.set_facecolor((0, 0, 0, 0))
+            except Exception:
+                pass
+        if ax_3d is not None:
+            try:
+                ax_3d.set_facecolor((0, 0, 0, 0))
+            except Exception:
+                pass
+            try:
+                for a in (ax_3d.xaxis, ax_3d.yaxis, ax_3d.zaxis):
+                    try:
+                        a.pane.set_alpha(0.0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
     if save_path:
         logging.info("Saving three-view figure to %s (dpi=%d)...", save_path, int(dpi))
-        fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight")
+        fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight", transparent=bool(transparent))
         logging.info("Saved: %s", save_path)
+
+        # Optional: save each subplot as a separate image with derived filenames.
+        if bool(save_split):
+            try:
+                # Ensure artists are laid out; needed for tightbbox.
+                fig.canvas.draw()
+                renderer = fig.canvas.get_renderer()
+
+                def _split_path(_suffix: str) -> str:
+                    d = os.path.dirname(str(save_path))
+                    base = os.path.basename(str(save_path))
+                    stem, ext = os.path.splitext(base)
+                    if not ext:
+                        ext = ".png"
+                    return os.path.join(d, f"{stem}_{_suffix}{ext}")
+
+                def _save_ax(_ax, _suffix: str):
+                    # bbox in display coords -> inches
+                    bb = _ax.get_tightbbox(renderer).transformed(fig.dpi_scale_trans.inverted())
+                    out = _split_path(_suffix)
+                    fig.savefig(out, dpi=int(dpi), bbox_inches=bb, transparent=bool(transparent))
+                    logging.info("Saved split: %s", out)
+
+                # NOTE: axes exist regardless of hide_decorations; they may be axis_off but bbox still works.
+                _save_ax(ax_front, "front")
+                _save_ax(ax_side, "side")
+                _save_ax(ax_top, "top")
+                if ax_3d is not None:
+                    _save_ax(ax_3d, "3d")
+                else:
+                    logging.info("Split save: 3D axis not available; skipping *_3d.*")
+            except Exception as e:
+                logging.warning("Failed to save split views: %r", e)
 
     if show:
         logging.info("Calling plt.show()...")
@@ -1032,6 +1479,13 @@ def main():
     parser.add_argument("--phi", type=float, default=0.0, help="Fold angle Phi [deg]. Default: 0")
     parser.add_argument("--psi", type=float, default=0.0, help="Slant angle Psi [deg]. Default: 0")
     parser.add_argument("--theta", type=float, default=0.0, help="Tilt angle Theta [deg]. Default: 0")
+    parser.add_argument("--alpha", type=float, default=None, help="Target alpha [deg] (derived from rotor0 thrust vec).")
+    parser.add_argument("--beta", type=float, default=None, help="Target beta [deg] (derived from rotor0 thrust vec).")
+    parser.add_argument(
+        "--solve-psi-theta",
+        action="store_true",
+        help="Solve psi/theta from given --alpha/--beta while keeping --phi fixed. rotor0 (+x,+y arm) is used.",
+    )
     parser.add_argument(
         "--symmetry",
         type=str,
@@ -1048,6 +1502,16 @@ def main():
     )
     parser.add_argument("--no-y0-plane", action="store_true", help="Do not draw y=0 plane (or y=0 line in 2D projections).")
     parser.add_argument("--save", type=str, default=None, help="Save figure to a file (e.g. out.png).")
+    parser.add_argument(
+        "--save-split",
+        action="store_true",
+        help="(three-view only) Also save each view as a separate image with derived filenames, e.g. out_front.png, out_side.png, out_top.png, out_3d.png.",
+    )
+    parser.add_argument(
+        "--opaque",
+        action="store_true",
+        help="Save images with opaque background (disable transparency). Default is transparent output.",
+    )
     parser.add_argument("--dpi", type=int, default=200, help="DPI for --save. Default: 200")
     parser.add_argument("--no-show", action="store_true", help="Do not open a window (useful with --save on WSL/headless).")
     parser.add_argument("--no-sliders", action="store_true", help="Disable slider UI (enabled by default when showing).")
@@ -1088,7 +1552,19 @@ def main():
     parser.add_argument(
         "--hide-decorations",
         action="store_true",
-        help="Hide axis labels, grid, titles, and wall lines (show only the drone).",
+        help="Hide axis labels, grid, titles, etc. Note: wall (y=0) is still shown unless --no-y0-plane is specified.",
+    )
+    parser.add_argument(
+        "--view-elev",
+        type=float,
+        default=None,
+        help="3D view camera elevation angle [deg]. If omitted, keep matplotlib default (or function default in three-view).",
+    )
+    parser.add_argument(
+        "--view-azim",
+        type=float,
+        default=None,
+        help="3D view camera azimuth angle [deg]. If omitted, keep matplotlib default (or function default in three-view).",
     )
     parser.add_argument(
         "--drone-color",
@@ -1101,6 +1577,12 @@ def main():
         type=str,
         default="gray",
         help="Body color (hinge square, arms). Default: gray",
+    )
+    parser.add_argument(
+        "--drone-lw",
+        type=float,
+        default=1.0,
+        help="Line width scale for drone geometry (body/arms/rotors/normals). Default: 1.0",
     )
     parser.add_argument(
         "--log-level",
@@ -1150,10 +1632,33 @@ def main():
 
     rotor_radius_m = float(args.rotor_radius_in) * 0.0254
 
+    # Optional inverse: alpha/beta -> psi/theta (phi fixed)
+    if bool(args.solve_psi_theta):
+        if args.alpha is None or args.beta is None:
+            raise SystemExit("--solve-psi-theta requires both --alpha and --beta.")
+        psi_s, th_s, res = solve_psi_theta_from_alpha_beta_deg(
+            phi_deg=float(args.phi),
+            alpha_deg=float(args.alpha),
+            beta_deg=float(args.beta),
+        )
+        logging.info(
+            "Solved from alpha/beta: target alpha=%.3f beta=%.3f => psi=%.3f theta=%.3f (residual=%.3f deg)",
+            float(args.alpha),
+            float(args.beta),
+            float(psi_s),
+            float(th_s),
+            float(res),
+        )
+        args.psi = float(psi_s)
+        args.theta = float(th_s)
+
     # Check if three-view mode is requested
     use_three_view = bool(args.three_view) or bool(args.three_view_only)
 
     if use_three_view:
+        # three-view has its own defaults; only override when user explicitly specifies.
+        tv_elev = 25.0 if args.view_elev is None else float(args.view_elev)
+        tv_azim = -30.0 if args.view_azim is None else float(args.view_azim)
         plot_three_view_drone(
             cx=float(args.cx),
             cy=float(args.cy),
@@ -1165,7 +1670,12 @@ def main():
             symmetry=str(args.symmetry),
             y_clearance=float(args.y_clearance),
             draw_y0_plane=(not bool(args.no_y0_plane)),
+            view_elev=tv_elev,
+            view_azim=tv_azim,
             save_path=(str(args.save) if args.save else None),
+            save_split=bool(args.save_split),
+            transparent=(not bool(args.opaque)),
+            drone_lw=float(args.drone_lw),
             dpi=int(args.dpi),
             show=(not bool(args.no_show)),
             include_3d_view=(not bool(args.three_view_only)),
@@ -1192,7 +1702,11 @@ def main():
             force_2d=bool(args.force_2d),
             y_clearance=float(args.y_clearance),
             draw_y0_plane=(not bool(args.no_y0_plane)),
+            view_elev=(None if args.view_elev is None else float(args.view_elev)),
+            view_azim=(None if args.view_azim is None else float(args.view_azim)),
             save_path=(str(args.save) if args.save else None),
+            transparent=(not bool(args.opaque)),
+            drone_lw=float(args.drone_lw),
             dpi=int(args.dpi),
             show=(not bool(args.no_show)),
             sliders_enabled=(not bool(args.no_sliders)),
