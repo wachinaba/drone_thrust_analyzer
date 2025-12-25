@@ -44,6 +44,8 @@ class AutoThrustRecorder(Node):
             "linear": [0.0, 1.0, 0.0],
             # slant -15deg
             ## fold 0deg
+            "tilt30deg_fold0deg_slant-15deg": [96.185, 17.625, 0.6216], #y = 96.185x2 + 17.625x + 0.6216
+            "tilt15deg_fold0deg_slant-15deg": [108.59, 18.681, 0.5947], #y = 108.59x2 + 18.681x + 0.5947
             "tilt0deg_fold0deg_slant-15deg": [111.5, 21.129, 0.7433], #y = 111.5x2 + 21.129x + 0.7433
             "tilt-15deg_fold0deg_slant-15deg": [108.97, 18.88, 0.8118], #y = 108.97x2 + 18.88x + 0.8118
             "tilt-30deg_fold0deg_slant-15deg": [100.06, 16.024, 0.6129], #y = 100.06x2 + 16.024x + 0.6129
@@ -81,11 +83,14 @@ class AutoThrustRecorder(Node):
             "tilt30deg_fold15deg_slant0deg": [92.596, 17.961, 0.5213], #92.596x2 + 17.961x + 0.5213
             # slant 15deg
             ## fold 0deg
+            "tilt-30deg_fold0deg_slant15deg": [106.17, 18.674, 0.5654], #y = 106.17x2 + 18.674x + 0.5654
             "tilt-15deg_fold0deg_slant15deg": [110.34, 19.409, 0.6955], #y = 110.34x2 + 19.409x + 0.6955
             "tilt0deg_fold0deg_slant15deg": [110.87, 20.433, 0.8024], #y = 110.87x2 + 20.433x + 0.8024
             "tilt15deg_fold0deg_slant15deg": [108.59, 20.639, 0.669], #y = 108.59x2 + 20.639x + 0.669
             "tilt30deg_fold0deg_slant15deg": [99.874, 17.767, 0.6262], #y = 99.874x2 + 17.767x + 0.6262
             ## fold 15deg
+            
+            "tilt-15deg_fold15deg_slant15deg": [110.34, 19.409, 0.6955], # example value!! TODO: find actual value
             "tilt0deg_fold15deg_slant15deg": [115.3, 19.694, 0.5929], #y = 115.3x2 + 19.694x + 0.5929
             "tilt15deg_fold15deg_slant15deg": [108.23, 20.094, 0.7166], #y = 108.23x2 + 20.094x + 0.7166
             "tilt30deg_fold15deg_slant15deg": [101.4, 17.914, 0.4998], #y = 101.4x2 + 17.914x + 0.4998
