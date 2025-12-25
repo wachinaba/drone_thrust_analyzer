@@ -23,12 +23,16 @@ python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/plot_
 python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/plot_gpytorch_fit_curve_with_raw.py ../merged_20251221.csv --load-model ../gpr_force.pkl --curve-x distance --hue-raw target_thrust --hue-raw-cmap viridis --hue-raw-range 10.0,25.0 --hue-fit force_z --hue-fit-cmap viridis --hue-fit-range 10.0,25.0 --fix wall_spacing=1.6 --fix fold_angle=0 --trust-model t --output plot_f_t15_f0_s15.png --fix tilt_angle=15 --fix slant_angle=15 --ylim="-0.05,0.3" --no-title --drone f --raw-alpha 0.1 --xlabel "Distance [R]" --ylabel "Force [N]" --colorbar-label "Vertical Thrust [N]" --figsize 10,4 --no-uncertainty --fit-extrema t --fit-extrema-marker t --fit-extrema-vline t &&
 
 
-cd 20251105wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 && cd ../.. &&
-cd 20251203wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 && cd ../.. &&
-cd 20251212wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 && cd ../.. &&
-cd 20251214wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 && cd ../.. &&
-cd 20251215wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 && cd ../.. &&
-cd 20251216wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 && cd ../.. &&
+# postprocess
+
+cd 20251105wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 --recreate-corrected && cd ../.. &&
+cd 20251203wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 --recreate-corrected && cd ../.. &&
+cd 20251212wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 --recreate-corrected && cd ../.. &&
+cd 20251214wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 --recreate-corrected && cd ../.. &&
+cd 20251215wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 --recreate-corrected && cd ../.. &&
+cd 20251216wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 --recreate-corrected && cd ../.. &&
+cd 20251222wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 --recreate-corrected && cd ../.. &&
+cd 20251224wef/meas && python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/postprocess_all.py -j 8 --recreate-corrected && cd ../.. &&
 
 python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/gpr_effects_analysis.py ../../merged_20251221.csv --load-model ../../gpr_moment.pkl --device cpu --trust-model t --metric moment_abs --grad-dims distance --integrate-over force_z:10.0,25.0:5 --fix wall_spacing=1.60 --fix prop_spacing_x=0.25 --fix prop_spacing_y=0.25 --integrate-over distance:0.0,6.20 --viz-range alpha:-40.0,40.0:30 --viz-range beta:-40.0,40.0:30 --overlay-raw-all --cumulative-over force_z:3 --normalize-ref alpha=0.0,beta=0.0 --normalize-ref-per-step --normalize-as-change-rate --colormap custom_rdbu --heatmap-range="-100,300" --output-eval gpr_effects_moment_abs_2w1.60_norm.png &&
 python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/gpr_effects_analysis.py ../../merged_20251221.csv --load-model ../../gpr_moment.pkl --device cpu --trust-model t --metric moment_abs --grad-dims distance --integrate-over force_z:10.0,25.0:5 --fix wall_spacing=1.20 --fix prop_spacing_x=0.25 --fix prop_spacing_y=0.25 --integrate-over distance:0.0,4.25 --viz-range alpha:-40.0,40.0:30 --viz-range beta:-40.0,40.0:30 --overlay-raw-all --cumulative-over force_z:3 --normalize-ref alpha=0.0,beta=0.0 --normalize-ref-per-step --normalize-as-change-rate --colormap custom_rdbu --heatmap-range="-100,300" --output-eval gpr_effects_moment_abs_2w1.20_norm.png &&
