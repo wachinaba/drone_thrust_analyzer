@@ -1,3 +1,8 @@
+# prop coef finder
+ros2 run auto_thrust_recorder auto_thrust_recorder --ros-args -p min_thrust:=0.000 -p max_thrust:=0.400 -p step_duration:=1.000 -p step_size:=0.010 -p mode:=linear -p num_repetitions:=5 -p filename_prefix:=thrust -p enable_breakpoint:=False -p coef_name:=linear -p sensor_reversed:=false -p skip_sensor_calibration:=false
+
+
+
 # moment vs distance plot
 
 python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/plot_gpytorch_fit_curve_with_raw.py ../merged_20251221.csv --load-model ../gpr_moment.pkl --curve-x distance --hue-raw target_thrust --hue-raw-cmap viridis --hue-raw-range 10.0,25.0 --hue-fit force_z --hue-fit-cmap viridis --hue-fit-range 10.0,25.0 --fix wall_spacing=1.6 --fix fold_angle=0 --trust-model t --output plot_m_t-15_f0_s-15.png --fix tilt_angle=-15 --fix slant_angle=-15 --ylim="-12,12" --no-title --drone f --raw-alpha 0.1 --xlabel "Distance [R]" --ylabel "Normalized Moment [%]" --colorbar-label "Vertical Thrust [N]" --figsize 10,4 --no-uncertainty --fit-extrema t --fit-extrema-marker t --fit-extrema-vline t  &&
