@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+import io
 
 import numpy as np
 import matplotlib as mpl
@@ -201,6 +202,7 @@ def plot_morphing_drone(
     dpi: int = 200,
     show: bool = True,
     sliders_enabled: bool = True,
+    hide_decorations: bool = False,
 ):
     # Import pyplot lazily so that main() can set backend beforehand.
     import matplotlib.pyplot as plt
@@ -213,12 +215,13 @@ def plot_morphing_drone(
           alpha: thrustをyz平面に射影したベクトルが +z 軸となす角
           beta : thrustをzx平面に射影したベクトルが +z 軸となす角
 
-        角度は符号付きで返す（+y側/+x側に倒れると正、-y/-xで負）。
+        角度は符号付きで返す（+y側/+x側に倒れると負、-y/-xで正）。  # 出力のみ符号反転
         """
         v = _normalize(np.asarray(thrust_vec, dtype=float).reshape(3))
         vx, vy, vz = float(v[0]), float(v[1]), float(v[2])
-        alpha = float(np.degrees(np.arctan2(vy, vz)))  # yz-plane
-        beta = float(np.degrees(np.arctan2(vx, vz)))   # zx-plane
+        # NOTE: alpha/beta の符号規約変更（出力のみ反転）
+        alpha = -float(np.degrees(np.arctan2(vy, vz)))  # yz-plane
+        beta = -float(np.degrees(np.arctan2(vx, vz)))   # zx-plane
         return alpha, beta
 
     def format_alpha_beta(poses_list: list[ArmPose]) -> str:
@@ -318,14 +321,16 @@ def plot_morphing_drone(
         f"y_clearance={y_clearance:.3f} m"
     )
 
-    use_3d = _HAS_3D and (not force_2d)
-    if not use_3d and _AXES3D_IMPORT_ERROR is not None:
-        print(
-            "Warning: 3D projection is unavailable in this Python environment.\n"
-            f"  Reason: {_AXES3D_IMPORT_ERROR}\n"
-            "  Falling back to 2D projections (xy/xz/yz).\n"
-            "  If you want 3D, ensure matplotlib and mpl_toolkits are from the same installation."
+    # --- 3D only ---
+    # 要求: 必ず3Dプロットする。2Dフォールバックは禁止。
+    if bool(force_2d):
+        raise RuntimeError("force_2d=True は禁止されています（フォールバック禁止のため）。")
+    if not _HAS_3D:
+        raise RuntimeError(
+            "3D projection is unavailable in this Python environment (fallback disabled). "
+            f"Reason: {_AXES3D_IMPORT_ERROR!r}"
         )
+    use_3d = True
 
     hinges_for_outline = [pose.hinge for pose in poses]
     hs = np.array(hinges_for_outline + [hinges_for_outline[0]])
@@ -367,7 +372,8 @@ def plot_morphing_drone(
         logging.info("Creating 3D figure/axes...")
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection="3d")
-        ax.set_title(_format_title(arm_length_m, phi_deg, psi_deg, theta_deg, y_clearance))
+        if not bool(hide_decorations):
+            ax.set_title(_format_title(arm_length_m, phi_deg, psi_deg, theta_deg, y_clearance))
 
         angle_text = ax.text2D(
             0.02,
@@ -379,6 +385,11 @@ def plot_morphing_drone(
             fontsize=9,
             family="monospace",
         )
+        if bool(hide_decorations):
+            try:
+                angle_text.set_visible(False)
+            except Exception:
+                pass
 
         # Body outline (hinge square)
         hs_shift = hs.copy()
@@ -419,18 +430,31 @@ def plot_morphing_drone(
 
         origin = np.array([0.0, 0.0, 0.0])
         axis_len = max(arm_length_m + rotor_radius_m, 0.15)
-        ax.quiver(origin[0], origin[1], origin[2], 1, 0, 0, length=axis_len, color="r")
-        ax.quiver(origin[0], origin[1], origin[2], 0, 1, 0, length=axis_len, color="g")
-        ax.quiver(origin[0], origin[1], origin[2], 0, 0, 1, length=axis_len, color="b")
-        ax.text(axis_len, 0, 0, "x", color="r")
-        ax.text(0, axis_len, 0, "y", color="g")
-        ax.text(0, 0, axis_len, "z", color="b")
+        if not bool(hide_decorations):
+            ax.quiver(origin[0], origin[1], origin[2], 1, 0, 0, length=axis_len, color="r")
+            ax.quiver(origin[0], origin[1], origin[2], 0, 1, 0, length=axis_len, color="g")
+            ax.quiver(origin[0], origin[1], origin[2], 0, 0, 1, length=axis_len, color="b")
+            ax.text(axis_len, 0, 0, "x", color="r")
+            ax.text(0, axis_len, 0, "y", color="g")
+            ax.text(0, 0, axis_len, "z", color="b")
 
-        ax.set_xlabel("x [m]")
-        ax.set_ylabel("y [m]")
-        ax.set_zlabel("z [m]")
+            ax.set_xlabel("x [m]")
+            ax.set_ylabel("y [m]")
+            ax.set_zlabel("z [m]")
 
         _compute_limits([ArmPose(hinge=p.hinge + np.array([0.0, dy, 0.0]), arm_dir=p.arm_dir, rotor_normal=p.rotor_normal) for p in poses], arm_length_m)
+
+        if bool(hide_decorations):
+            try:
+                ax.set_axis_off()
+            except Exception:
+                # fallback: hide labels/ticks
+                ax.set_xlabel("")
+                ax.set_ylabel("")
+                ax.set_zlabel("")
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_zticks([])
 
         y0_plane_artist = None
 
@@ -454,7 +478,7 @@ def plot_morphing_drone(
 
         _draw_plane()
 
-        sliders_enabled = bool(sliders_enabled) and bool(show)
+        sliders_enabled = bool(sliders_enabled) and bool(show) and (not bool(hide_decorations))
         if sliders_enabled:
             from matplotlib.widgets import Slider, Button
 
@@ -522,78 +546,18 @@ def plot_morphing_drone(
         else:
             plt.tight_layout()
     else:
-        # 2D fallback: xy / xz / yz projections
-        if sliders_enabled and show:
-            logging.warning("Sliders are currently implemented only for 3D mode; continuing without sliders (2D fallback).")
-        fig, axs = plt.subplots(1, 3, figsize=(13, 4))
-        fig.suptitle(title)
-
-        views = [
-            ("xy", (0, 1), ("x [m]", "y [m]")),
-            ("xz", (0, 2), ("x [m]", "z [m]")),
-            ("yz", (1, 2), ("y [m]", "z [m]")),
-        ]
-
-        for ax, (name, (i0, i1), (xl, yl)) in zip(axs, views, strict=True):
-            ax.set_title(name)
-            ax.set_xlabel(xl)
-            ax.set_ylabel(yl)
-            ax.set_aspect("equal", adjustable="box")
-            ax.grid(True, alpha=0.3)
-            hs2 = hs.copy()
-            hs2[:, 1] += dy
-            ax.plot(hs2[:, i0], hs2[:, i1], color="k", linewidth=1.5)
-            if bool(draw_y0_plane):
-                # Projections that include y (xy, yz) can show y=0 as a line.
-                if name == "xy":
-                    ax.axhline(0.0, color="gray", linewidth=1.0, alpha=0.4)
-                if name == "yz":
-                    ax.axvline(0.0, color="gray", linewidth=1.0, alpha=0.4)
-
-        all_proj = []
-        for i, pose in enumerate(poses):
-            c = colors[i % len(colors)]
-            p0 = pose.hinge + np.array([0.0, dy, 0.0])
-            p1 = p0 + arm_length_m * pose.arm_dir
-            circ = _circle_points(center=p1, normal=pose.rotor_normal, radius=rotor_radius_m, n=200)
-            all_proj.append(p0)
-            all_proj.append(p1)
-            all_proj.append(circ)
-
-            for ax, (_, (i0, i1), _) in zip(axs, views, strict=True):
-                ax.plot([p0[i0], p1[i0]], [p0[i1], p1[i1]], color=c, linewidth=2.5)
-                ax.scatter([p0[i0]], [p0[i1]], color=c, s=20)
-                ax.scatter([p1[i0]], [p1[i1]], color=c, s=25)
-                ax.plot(circ[:, i0], circ[:, i1], color=c, linewidth=1.2)
-
-        # Set common limits with padding
-        pts = []
-        for item in all_proj:
-            if isinstance(item, np.ndarray) and item.ndim == 2:
-                pts.append(item)
-            else:
-                pts.append(np.array(item, dtype=float).reshape(1, 3))
-        P = np.vstack(pts)
-        pad = rotor_radius_m * 1.2
-
-        # xy
-        axs[0].set_xlim(P[:, 0].min() - pad, P[:, 0].max() + pad)
-        axs[0].set_ylim(P[:, 1].min() - pad, P[:, 1].max() + pad)
-        # xz
-        axs[1].set_xlim(P[:, 0].min() - pad, P[:, 0].max() + pad)
-        axs[1].set_ylim(P[:, 2].min() - pad, P[:, 2].max() + pad)
-        # yz
-        axs[2].set_xlim(P[:, 1].min() - pad, P[:, 1].max() + pad)
-        axs[2].set_ylim(P[:, 2].min() - pad, P[:, 2].max() + pad)
-
-        plt.tight_layout()
+        # ここには到達しない（3D only）
+        raise RuntimeError("internal error: reached 2D fallback path but fallback is disabled")
 
     if fig is None:
         raise RuntimeError("internal error: figure was not created")
 
     if save_path:
         logging.info("Saving figure to %s (dpi=%d)...", save_path, int(dpi))
-        fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight")
+        if bool(hide_decorations):
+            fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight", pad_inches=0.0)
+        else:
+            fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight")
         logging.info("Saved: %s", save_path)
 
     if show:
@@ -604,6 +568,452 @@ def plot_morphing_drone(
 
     plt.close(fig)
     logging.info("Figure closed; done.")
+
+
+def render_morphing_drone_rgba(
+    phi_deg: float,
+    psi_deg: float,
+    theta_deg: float,
+    *,
+    cx: float = 0.035,
+    cy: float = 0.035,
+    rotor_radius_in: float = 3.5,
+    arm_length_m: float = 0.18,
+    symmetry: str = "mirror_xy",
+    force_2d: bool = False,
+    y_clearance: float = 0.0,
+    draw_y0_plane: bool = False,
+    dpi: int = 160,
+    figsize: tuple[float, float] = (3.2, 2.6),
+) -> np.ndarray:
+    """
+    Morphing drone の図を RGBA (H,W,4) uint8 として返す。
+    - ファイル保存なし
+    - window表示なし
+    - GPR ファセット背景貼り付け用途
+    """
+    # Ensure headless rendering.
+    try:
+        mpl.use("Agg", force=True)
+    except Exception:
+        pass
+
+    import matplotlib.pyplot as plt
+
+    # plot_morphing_drone は内部で figure を作るので、ここでは save_path を BytesIO にする。
+    buf = io.BytesIO()
+    # plot_morphing_drone は fig を close するので、bufにpngを書き込んだ後に読み取る。
+    plot_morphing_drone(
+        cx=float(cx),
+        cy=float(cy),
+        rotor_radius_m=float(rotor_radius_in) * 0.0254,
+        arm_length_m=float(arm_length_m),
+        phi_deg=float(phi_deg),
+        psi_deg=float(psi_deg),
+        theta_deg=float(theta_deg),
+        symmetry=str(symmetry),
+        force_2d=bool(force_2d),
+        y_clearance=float(y_clearance),
+        draw_y0_plane=bool(draw_y0_plane),
+        save_path=buf,
+        dpi=int(dpi),
+        show=False,
+        sliders_enabled=False,
+        hide_decorations=True,
+    )
+    buf.seek(0)
+
+    # Read PNG bytes -> RGBA numpy
+    try:
+        from PIL import Image
+
+        img = Image.open(buf).convert("RGBA")
+        arr = np.asarray(img, dtype=np.uint8)
+        return arr
+    except Exception:
+        # fallback: matplotlib imread (may accept file-like)
+        try:
+            import matplotlib.image as mpimg
+
+            arr = mpimg.imread(buf)
+            # mpimg.imread may return float [0,1] with shape (H,W,4)
+            if arr.dtype != np.uint8:
+                arr = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
+            if arr.shape[-1] == 3:
+                alpha = np.full((arr.shape[0], arr.shape[1], 1), 255, dtype=np.uint8)
+                arr = np.concatenate([arr, alpha], axis=-1)
+            return arr
+        except Exception as e:
+            raise RuntimeError(f"Failed to decode rendered image bytes: {e}") from e
+
+
+def plot_three_view_drone(
+    cx: float,
+    cy: float,
+    rotor_radius_m: float,
+    arm_length_m: float,
+    phi_deg: float,
+    psi_deg: float,
+    theta_deg: float,
+    symmetry: str = "mirror_xy",
+    y_clearance: float = 0.0,
+    draw_y0_plane: bool = True,
+    save_path: str | None = None,
+    dpi: int = 200,
+    show: bool = True,
+    include_3d_view: bool = True,
+    drone_center: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    rotor_inflow_offset: float = 0.02,
+    hide_decorations: bool = False,
+    drone_color: str = "multi",
+    body_color: str = "gray",
+):
+    """
+    3面図 (正面図・側面図・平面図) を描画する。
+    
+    - Front view (正面図): Y軸方向から見た XZ平面への投影
+    - Side view (側面図): X軸方向から見た YZ平面への投影
+    - Top view (平面図): Z軸方向から見た XY平面への投影 (Y軸横、X軸縦)
+    
+    include_3d_view=True の場合、4つ目のサブプロットに3Dビューを追加。
+    drone_center: ドローン中心のオフセット (x, y, z) [m]
+    rotor_inflow_offset: ロータ中心を流入側（推力の逆方向）にオフセットする量 [m]
+    hide_decorations: True の場合、軸ラベル、グリッド、タイトルなどを非表示
+    drone_color: "multi" で4色、それ以外は指定した1色でロータを描画
+    body_color: ボディ（ヒンジスクエア、アーム）の色
+    """
+    drone_offset = np.array(drone_center, dtype=float)
+    import matplotlib.pyplot as plt
+
+    def compute_poses(_phi: float, _psi: float, _theta: float) -> list[ArmPose]:
+        base_hinge = np.array([+cx, +cy, 0.0], dtype=float)
+        base_arm_dir0 = _normalize(np.array([+1.0, +1.0, 0.0], dtype=float))
+
+        base_pose = _make_arm_pose(
+            hinge=base_hinge,
+            arm_dir0=base_arm_dir0,
+            phi_deg=float(_phi),
+            psi_deg=float(_psi),
+            theta_deg=float(_theta),
+        )
+
+        if symmetry == "mirror_xy":
+            M_id = np.diag([1.0, 1.0, 1.0])
+            M_x = np.diag([-1.0, 1.0, 1.0])
+            M_y = np.diag([1.0, -1.0, 1.0])
+            M_xy = np.diag([-1.0, -1.0, 1.0])
+
+            Ms = [M_id, M_x, M_xy, M_y]
+            poses_local = []
+            for M in Ms:
+                poses_local.append(
+                    ArmPose(
+                        hinge=(M @ base_pose.hinge),
+                        arm_dir=_normalize(M @ base_pose.arm_dir),
+                        rotor_normal=_normalize(M @ base_pose.rotor_normal),
+                    )
+                )
+            return poses_local
+
+        hinges = [
+            np.array([+cx, +cy, 0.0]),
+            np.array([-cx, +cy, 0.0]),
+            np.array([-cx, -cy, 0.0]),
+            np.array([+cx, -cy, 0.0]),
+        ]
+
+        arm_dirs0 = []
+        for h in hinges:
+            sx = 1.0 if h[0] >= 0.0 else -1.0
+            sy = 1.0 if h[1] >= 0.0 else -1.0
+            arm_dirs0.append(_normalize(np.array([sx, sy, 0.0], dtype=float)))
+
+        return [
+            _make_arm_pose(hinge=h, arm_dir0=d0, phi_deg=float(_phi), psi_deg=float(_psi), theta_deg=float(_theta))
+            for h, d0 in zip(hinges, arm_dirs0, strict=True)
+        ]
+
+    def compute_y_offset(_poses: list[ArmPose], _L: float, _clearance: float) -> float:
+        ymins = []
+        for _pose in _poses:
+            y_center = float(_pose.hinge[1] + _L * _pose.arm_dir[1])
+            ny = float(_pose.rotor_normal[1])
+            extent = rotor_radius_m * float(np.sqrt(max(0.0, 1.0 - ny * ny)))
+            ymins.append(y_center - extent)
+        if not ymins:
+            return 0.0
+        return float(_clearance) - float(min(ymins))
+
+    poses = compute_poses(phi_deg, psi_deg, theta_deg)
+
+    # Color configuration
+    if drone_color == "multi":
+        colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    else:
+        colors = [drone_color] * 4  # 全ロータを同じ色で描画
+
+    # Collect all geometry (with drone_offset applied)
+    # drone_offset はドローンボディ中心（ヒンジ中心）の絶対位置を指定
+    all_points = []
+    arm_segments = []  # list of (p0, arm_tip, color)
+    rotor_circles = []  # list of (rotor_center, normal, arm_tip, color)
+
+    for i, pose in enumerate(poses):
+        c = colors[i % len(colors)]
+        p0 = pose.hinge + drone_offset  # ドローン中心 = drone_center
+        arm_tip = p0 + arm_length_m * pose.arm_dir  # アーム先端
+        # ロータ中心を流入側（推力方向）にオフセット
+        rotor_center = arm_tip + rotor_inflow_offset * pose.rotor_normal
+        arm_segments.append((p0, arm_tip, c))
+        rotor_circles.append((rotor_center, pose.rotor_normal, arm_tip, c))
+        
+        all_points.append(p0)
+        all_points.append(arm_tip)
+        circ = _circle_points(center=rotor_center, normal=pose.rotor_normal, radius=rotor_radius_m, n=100)
+        all_points.extend(circ)
+
+    all_points = np.array(all_points)
+    pad = rotor_radius_m * 0.3
+
+    # Compute minimum distance from rotor edge to wall (y=0)
+    min_rotor_to_wall_distance = float("inf")
+    for (rotor_center, rotor_normal, _, _) in rotor_circles:
+        # ロータ円周上の点を計算
+        circ = _circle_points(center=rotor_center, normal=rotor_normal, radius=rotor_radius_m, n=360)
+        # Y座標の最小値（壁に最も近い点）
+        min_y = circ[:, 1].min()
+        # 壁（y=0）からの距離
+        distance_to_wall = min_y  # y=0 からの距離（負なら壁に食い込んでいる）
+        min_rotor_to_wall_distance = min(min_rotor_to_wall_distance, distance_to_wall)
+
+    # Compute limits for each projection
+    x_min, x_max = all_points[:, 0].min() - pad, all_points[:, 0].max() + pad
+    y_min, y_max = all_points[:, 1].min() - pad, all_points[:, 1].max() + pad
+    z_min, z_max = all_points[:, 2].min() - pad, all_points[:, 2].max() + pad
+
+    # Ensure y=0 is always included in the range (for wall visibility)
+    if draw_y0_plane:
+        y_min = min(y_min, -pad)
+        y_max = max(y_max, pad)
+
+    # Make aspect equal
+    def equalize_range(lo, hi):
+        center = (lo + hi) / 2
+        half = (hi - lo) / 2
+        return center, half
+
+    max_half = max(
+        (x_max - x_min) / 2,
+        (y_max - y_min) / 2,
+        (z_max - z_min) / 2,
+    )
+    x_center, _ = equalize_range(x_min, x_max)
+    y_center, _ = equalize_range(y_min, y_max)
+    z_center, _ = equalize_range(z_min, z_max)
+
+    # Create figure
+    # Layout: 3D(左上), Top(右上), Side(左下), Front(右下)
+    if include_3d_view and _HAS_3D:
+        fig = plt.figure(figsize=(14, 10))
+        ax_3d = fig.add_subplot(2, 2, 1, projection="3d")
+        ax_top = fig.add_subplot(2, 2, 2)
+        ax_side = fig.add_subplot(2, 2, 3)
+        ax_front = fig.add_subplot(2, 2, 4)
+    else:
+        fig = plt.figure(figsize=(14, 5))
+        ax_top = fig.add_subplot(1, 3, 1)
+        ax_side = fig.add_subplot(1, 3, 2)
+        ax_front = fig.add_subplot(1, 3, 3)
+        ax_3d = None
+
+    def draw_2d_view(ax, proj_func, depth_func, xlabel, ylabel, title):
+        """
+        proj_func: 3Dポイントを2D座標に変換する関数 (x, y, z) -> (u, v)
+        depth_func: 奥行きを計算する関数 (x, y, z) -> depth (小さいほど手前)
+        """
+        # Body outline (hinge square)
+        hinges_for_outline = [pose.hinge + drone_offset for pose in poses]
+        hs = np.array(hinges_for_outline + [hinges_for_outline[0]])
+        hs_2d = np.array([proj_func(p) for p in hs])
+        ax.plot(hs_2d[:, 0], hs_2d[:, 1], color=body_color, linewidth=1.5, label="body", zorder=1)
+
+        # Sort arms and rotors by depth (draw back to front)
+        arm_rotor_data = list(zip(arm_segments, rotor_circles))
+        # Sort by depth of rotor center (larger depth = farther back = draw first)
+        arm_rotor_data_sorted = sorted(
+            arm_rotor_data,
+            key=lambda x: depth_func(x[1][0]),  # x[1][0] is rotor center
+            reverse=True,  # 奥から描画（奥のものは小さいzorder）
+        )
+
+        # Arms and rotors (sorted by depth, back to front)
+        for idx, ((p0, arm_tip, rotor_c), (rotor_center, normal, _, _)) in enumerate(arm_rotor_data_sorted):
+            base_zorder = 10 + idx * 10  # 手前のものほど大きいzorder
+
+            # Arm (hinge to arm tip) - use body_color
+            p0_2d = proj_func(p0)
+            arm_tip_2d = proj_func(arm_tip)
+            ax.plot([p0_2d[0], arm_tip_2d[0]], [p0_2d[1], arm_tip_2d[1]], color=body_color, linewidth=2.5, zorder=base_zorder)
+            ax.scatter([p0_2d[0]], [p0_2d[1]], color=body_color, s=25, zorder=base_zorder + 1)
+            ax.scatter([arm_tip_2d[0]], [arm_tip_2d[1]], color=body_color, s=35, zorder=base_zorder + 2)
+
+            # Line from arm tip to rotor center - use body_color
+            rotor_center_2d = proj_func(rotor_center)
+            ax.plot([arm_tip_2d[0], rotor_center_2d[0]], [arm_tip_2d[1], rotor_center_2d[1]], 
+                    color=body_color, linewidth=1.5, zorder=base_zorder + 2)
+
+            # Rotor circle - use rotor_c (drone_color)
+            circ = _circle_points(center=rotor_center, normal=normal, radius=rotor_radius_m, n=100)
+            circ_2d = np.array([proj_func(pt) for pt in circ])
+            ax.plot(circ_2d[:, 0], circ_2d[:, 1], color=rotor_c, linewidth=1.2, zorder=base_zorder + 3)
+
+            # Rotor normal arrow - use rotor_c (drone_color)
+            n_scale = rotor_radius_m * 0.6
+            p2 = rotor_center + n_scale * normal
+            p2_2d = proj_func(p2)
+            ax.annotate(
+                "",
+                xy=(p2_2d[0], p2_2d[1]),
+                xytext=(rotor_center_2d[0], rotor_center_2d[1]),
+                arrowprops=dict(arrowstyle="->", color=rotor_c, lw=1.0, zorder=base_zorder + 4),
+                zorder=base_zorder + 4,
+            )
+
+        ax.set_aspect("equal", adjustable="box")
+        if hide_decorations:
+            ax.set_axis_off()
+        else:
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.set_title(title)
+            ax.grid(True, alpha=0.3, zorder=0)
+
+    # Front view: +X方向から見る -> YZ平面 (壁効果の説明用: Y軸で壁との距離を表示)
+    def proj_front(p):
+        return np.array([p[1], p[2]])
+
+    def depth_front(p):
+        return -p[0]  # +X から見る: X が大きいほど手前（depth小）
+
+    draw_2d_view(ax_front, proj_front, depth_front, "Y [m]", "Z [m]", "Front View (from +X)")
+    ax_front.set_xlim(y_center - max_half, y_center + max_half)
+    ax_front.set_ylim(z_center - max_half, z_center + max_half)
+    if draw_y0_plane and not hide_decorations:
+        ax_front.axvline(x=0, color="gray", linestyle="--", alpha=0.5, label="y=0 (wall)")
+
+    # Side view: -Y方向から見る -> XZ平面
+    def proj_side(p):
+        return np.array([p[0], p[2]])
+
+    def depth_side(p):
+        return p[1]  # -Y から見る: Y が小さいほど手前（depth小）
+
+    draw_2d_view(ax_side, proj_side, depth_side, "X [m]", "Z [m]", "Side View (from -Y)")
+    ax_side.set_xlim(x_center - max_half, x_center + max_half)
+    ax_side.set_ylim(z_center - max_half, z_center + max_half)
+    if draw_y0_plane:
+        # Y=0 plane は側面図では見えない（視線方向）
+        pass
+
+    # Top view: +Z方向から見る -> XY平面 (Y横軸、X縦軸反転 - Front viewの横軸Yと整合)
+    def proj_top(p):
+        return np.array([p[1], p[0]])  # (Y, X) -> Y横軸, X縦軸
+
+    def depth_top(p):
+        return -p[2]  # +Z から見る: Z が大きいほど手前（depth小）
+
+    draw_2d_view(ax_top, proj_top, depth_top, "Y [m]", "X [m]", "Top View (from +Z)")
+    ax_top.set_xlim(y_center - max_half, y_center + max_half)
+    ax_top.set_ylim(x_center + max_half, x_center - max_half)  # X軸反転
+    if draw_y0_plane and not hide_decorations:
+        ax_top.axvline(x=0, color="gray", linestyle="--", alpha=0.5, label="y=0")
+
+    # 3D view (if enabled)
+    if ax_3d is not None:
+        # Body outline
+        hinges_for_outline = [pose.hinge + drone_offset for pose in poses]
+        hs = np.array(hinges_for_outline + [hinges_for_outline[0]])
+        ax_3d.plot(hs[:, 0], hs[:, 1], hs[:, 2], color=body_color, linewidth=1.5)
+
+        for (p0, arm_tip, rotor_c), (rotor_center, normal, _, _) in zip(arm_segments, rotor_circles):
+            # Arm (hinge to arm tip) - use body_color
+            ax_3d.plot([p0[0], arm_tip[0]], [p0[1], arm_tip[1]], [p0[2], arm_tip[2]], color=body_color, linewidth=2.5)
+            ax_3d.scatter([p0[0]], [p0[1]], [p0[2]], color=body_color, s=25)
+            ax_3d.scatter([arm_tip[0]], [arm_tip[1]], [arm_tip[2]], color=body_color, s=35)
+
+            # Line from arm tip to rotor center - use body_color
+            ax_3d.plot([arm_tip[0], rotor_center[0]], [arm_tip[1], rotor_center[1]], [arm_tip[2], rotor_center[2]], 
+                       color=body_color, linewidth=1.5)
+
+            # Rotor circle - use rotor_c (drone_color)
+            circ = _circle_points(center=rotor_center, normal=normal, radius=rotor_radius_m, n=100)
+            ax_3d.plot(circ[:, 0], circ[:, 1], circ[:, 2], color=rotor_c, linewidth=1.2)
+
+            # Rotor normal arrow - use rotor_c (drone_color)
+            n_scale = rotor_radius_m * 0.6
+            p2 = rotor_center + n_scale * normal
+            ax_3d.plot([rotor_center[0], p2[0]], [rotor_center[1], p2[1]], [rotor_center[2], p2[2]], color=rotor_c, linewidth=1.0)
+
+        # Set initial camera angle (X軸寄りに傾ける)
+        # elev: 仰角 (Z軸からの角度), azim: 方位角 (XY平面上の回転)
+        ax_3d.view_init(elev=25, azim=-30)
+
+        # Equal aspect
+        ax_3d.set_xlim(x_center - max_half, x_center + max_half)
+        ax_3d.set_ylim(y_center - max_half, y_center + max_half)
+        ax_3d.set_zlim(z_center - max_half, z_center + max_half)
+
+        if hide_decorations:
+            ax_3d.set_axis_off()
+        else:
+            # Axes arrows
+            axis_len = max(arm_length_m + rotor_radius_m, 0.15) * 0.5
+            origin = np.array([0.0, 0.0, 0.0])
+            ax_3d.quiver(origin[0], origin[1], origin[2], 1, 0, 0, length=axis_len, color="r")
+            ax_3d.quiver(origin[0], origin[1], origin[2], 0, 1, 0, length=axis_len, color="g")
+            ax_3d.quiver(origin[0], origin[1], origin[2], 0, 0, 1, length=axis_len, color="b")
+
+            ax_3d.set_xlabel("X [m]")
+            ax_3d.set_ylabel("Y [m]")
+            ax_3d.set_zlabel("Z [m]")
+            ax_3d.set_title("3D View")
+
+            if draw_y0_plane:
+                xs = np.linspace(x_center - max_half, x_center + max_half, 2)
+                zs = np.linspace(z_center - max_half, z_center + max_half, 2)
+                X, Z = np.meshgrid(xs, zs)
+                Y = np.zeros_like(X)
+                ax_3d.plot_surface(X, Y, Z, color="gray", alpha=0.12, shade=False)
+
+    # Title with rotor-to-wall distance
+    if not hide_decorations:
+        wall_dist_str = f"{min_rotor_to_wall_distance * 1000:.1f}mm"
+        if min_rotor_to_wall_distance < 0:
+            wall_dist_str += " (collision!)"
+        fig.suptitle(
+            f"Morphing Drone - Three View\n"
+            f"phi={phi_deg:.1f}°, psi={psi_deg:.1f}°, theta={theta_deg:.1f}°, "
+            f"L={arm_length_m:.3f}m, R={rotor_radius_m:.4f}m\n"
+            f"Rotor inflow offset={rotor_inflow_offset * 1000:.1f}mm, "
+            f"Min rotor-to-wall distance={wall_dist_str}",
+            fontsize=11,
+        )
+
+    plt.tight_layout()
+
+    if save_path:
+        logging.info("Saving three-view figure to %s (dpi=%d)...", save_path, int(dpi))
+        fig.savefig(save_path, dpi=int(dpi), bbox_inches="tight")
+        logging.info("Saved: %s", save_path)
+
+    if show:
+        logging.info("Calling plt.show()...")
+        plt.show()
+    else:
+        logging.info("Skipping plt.show() because show=False")
+
+    plt.close(fig)
+    logging.info("Three-view figure closed; done.")
 
 
 def main():
@@ -641,6 +1051,57 @@ def main():
     parser.add_argument("--dpi", type=int, default=200, help="DPI for --save. Default: 200")
     parser.add_argument("--no-show", action="store_true", help="Do not open a window (useful with --save on WSL/headless).")
     parser.add_argument("--no-sliders", action="store_true", help="Disable slider UI (enabled by default when showing).")
+    parser.add_argument(
+        "--three-view",
+        action="store_true",
+        help="Output three-view diagram (Front/Side/Top) with optional 3D view.",
+    )
+    parser.add_argument(
+        "--three-view-only",
+        action="store_true",
+        help="Output three-view diagram without 3D view subplot.",
+    )
+    parser.add_argument(
+        "--drone-center-x",
+        type=float,
+        default=0.0,
+        help="Drone center X offset [m]. Default: 0.0",
+    )
+    parser.add_argument(
+        "--drone-center-y",
+        type=float,
+        default=0.0,
+        help="Drone center Y offset [m]. Default: 0.0",
+    )
+    parser.add_argument(
+        "--drone-center-z",
+        type=float,
+        default=0.0,
+        help="Drone center Z offset [m]. Default: 0.0",
+    )
+    parser.add_argument(
+        "--rotor-inflow-offset",
+        type=float,
+        default=0.02,
+        help="Rotor center offset toward inflow side (opposite of thrust direction) [m]. Default: 0.02 (20mm)",
+    )
+    parser.add_argument(
+        "--hide-decorations",
+        action="store_true",
+        help="Hide axis labels, grid, titles, and wall lines (show only the drone).",
+    )
+    parser.add_argument(
+        "--drone-color",
+        type=str,
+        default="multi",
+        help="Rotor color. 'multi' for 4 different colors, or specify a single color (e.g. 'black', 'blue', '#FF0000'). Default: multi",
+    )
+    parser.add_argument(
+        "--body-color",
+        type=str,
+        default="gray",
+        help="Body color (hinge square, arms). Default: gray",
+    )
     parser.add_argument(
         "--log-level",
         type=str,
@@ -689,23 +1150,53 @@ def main():
 
     rotor_radius_m = float(args.rotor_radius_in) * 0.0254
 
-    plot_morphing_drone(
-        cx=float(args.cx),
-        cy=float(args.cy),
-        rotor_radius_m=rotor_radius_m,
-        arm_length_m=float(args.arm_length),
-        phi_deg=float(args.phi),
-        psi_deg=float(args.psi),
-        theta_deg=float(args.theta),
-        symmetry=str(args.symmetry),
-        force_2d=bool(args.force_2d),
-        y_clearance=float(args.y_clearance),
-        draw_y0_plane=(not bool(args.no_y0_plane)),
-        save_path=(str(args.save) if args.save else None),
-        dpi=int(args.dpi),
-        show=(not bool(args.no_show)),
-        sliders_enabled=(not bool(args.no_sliders)),
-    )
+    # Check if three-view mode is requested
+    use_three_view = bool(args.three_view) or bool(args.three_view_only)
+
+    if use_three_view:
+        plot_three_view_drone(
+            cx=float(args.cx),
+            cy=float(args.cy),
+            rotor_radius_m=rotor_radius_m,
+            arm_length_m=float(args.arm_length),
+            phi_deg=float(args.phi),
+            psi_deg=float(args.psi),
+            theta_deg=float(args.theta),
+            symmetry=str(args.symmetry),
+            y_clearance=float(args.y_clearance),
+            draw_y0_plane=(not bool(args.no_y0_plane)),
+            save_path=(str(args.save) if args.save else None),
+            dpi=int(args.dpi),
+            show=(not bool(args.no_show)),
+            include_3d_view=(not bool(args.three_view_only)),
+            drone_center=(
+                float(args.drone_center_x),
+                float(args.drone_center_y),
+                float(args.drone_center_z),
+            ),
+            rotor_inflow_offset=float(args.rotor_inflow_offset),
+            hide_decorations=bool(args.hide_decorations),
+            drone_color=str(args.drone_color),
+            body_color=str(args.body_color),
+        )
+    else:
+        plot_morphing_drone(
+            cx=float(args.cx),
+            cy=float(args.cy),
+            rotor_radius_m=rotor_radius_m,
+            arm_length_m=float(args.arm_length),
+            phi_deg=float(args.phi),
+            psi_deg=float(args.psi),
+            theta_deg=float(args.theta),
+            symmetry=str(args.symmetry),
+            force_2d=bool(args.force_2d),
+            y_clearance=float(args.y_clearance),
+            draw_y0_plane=(not bool(args.no_y0_plane)),
+            save_path=(str(args.save) if args.save else None),
+            dpi=int(args.dpi),
+            show=(not bool(args.no_show)),
+            sliders_enabled=(not bool(args.no_sliders)),
+        )
 
 
 if __name__ == "__main__":

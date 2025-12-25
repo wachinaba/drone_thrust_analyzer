@@ -149,8 +149,9 @@ def _compute_poses_mirror_xy(cx: float, cy: float, phi: float, psi: float, theta
 def _thrust_angles_alpha_beta_deg(thrust_vec: np.ndarray) -> tuple[float, float]:
     v = _normalize(np.asarray(thrust_vec, dtype=float).reshape(3))
     vx, vy, vz = float(v[0]), float(v[1]), float(v[2])
-    alpha = float(np.degrees(np.arctan2(vy, vz)))
-    beta = float(np.degrees(np.arctan2(vx, vz)))
+    # NOTE: alpha/beta の符号規約は visualize_morph_drone.py に合わせる（出力のみ反転）。
+    alpha = -float(np.degrees(np.arctan2(vy, vz)))
+    beta = -float(np.degrees(np.arctan2(vx, vz)))
     return alpha, beta
 
 
