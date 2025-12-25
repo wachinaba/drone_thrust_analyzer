@@ -320,6 +320,18 @@ def parse_arguments():
     parser.add_argument('-d', '--directory', nargs='+', type=str, default=['.'], help="CSVファイルを検索するディレクトリ（複数指定可、デフォルト: 現在ディレクトリ）")
     parser.add_argument('-a', '--and_keywords', action='store_true', help="AND条件でファイルを検索する")
     parser.add_argument('--output', type=str, required=True, help="すべてのプレフィックスの処理結果を1つのCSVファイルにまとめてエクスポートするファイル名")
+    parser.add_argument(
+        '--no-aggregate', '--no-agg',
+        dest='no_aggregate',
+        action='store_true',
+        help="集約（target_thrust ごとの groupby/agg）を行わず、生データ行のまま --output に書き出す（デフォルト: 集約する）"
+    )
+    parser.add_argument(
+        '--group-by-file-timestamp',
+        dest='group_by_file_timestamp',
+        action='store_true',
+        help="集約時のグルーピングに file_timestamp を追加する（file_timestamp, target_thrust で集約）"
+    )
     parser.add_argument('-s', '--skip-seconds', type=float, default=0.0, help="各CSVの先頭から指定秒数をスキップして集計（time列を基準）")
     parser.add_argument('--step-warmup', type=float, default=0.5, help="各ステップ立ち上がり時の除外秒数（0で無効）")
     parser.add_argument('--agg', type=str, choices=['median', 'mean'], default='median', help="集計関数を選択（median/mean、デフォルト: median）")
@@ -585,6 +597,16 @@ def main():
                 
                 # 抽出したパラメータ列を付与（ファイルごと）
                 for p_key, p_val in file_params.items():
+                    # biascorr 側で既に file_timestamp 列が入っている場合は上書きしない
+                    if p_key == 'file_timestamp' and ('file_timestamp' in df_processed.columns):
+                        try:
+                            existing = df_processed['file_timestamp']
+                            # 既存の file_timestamp が1つでも有効なら、それを優先して保持する
+                            if existing.notna().any():
+                                continue
+                        except Exception:
+                            # 既存値の判定に失敗したら安全に上書きしない
+                            continue
                     df_processed.loc[:, p_key] = p_val
                 # file_timestamp 列が無い場合も列を確保
                 if 'file_timestamp' not in df_processed.columns:
@@ -648,6 +670,14 @@ def main():
                 mode=getattr(args, 'iqr_mode', 'any')
             )
 
+        # 集約しないモード: 前処理済みの生データをそのまま出力対象に追加
+        if getattr(args, 'no_aggregate', False):
+            if concatenated_group is None or concatenated_group.empty:
+                print(f"  パラメータグループ {group_params} は前処理後にデータが空です。スキップします。")
+                continue
+            combined_data.append(concatenated_group)
+            continue
+
         # target_thrustでグループ化して統計量を計算（agg切替）
         agg_func = getattr(args, 'agg', 'median')
         # 集計対象列も CSVの存在・数値判定により動的に構成（自動検出）
@@ -666,8 +696,10 @@ def main():
         agg_dict = {
             'sample_count': ('target_thrust', 'count'),
             'control': ('control', agg_func),
-            'file_timestamp': ('file_timestamp', 'min')
         }
+        # file_timestamp をグループキーに含めない場合のみ、代表値として出力する
+        if not getattr(args, 'group_by_file_timestamp', False):
+            agg_dict['file_timestamp'] = ('file_timestamp', 'min')
         for c in numeric_meas_cols:
             agg_dict[c] = (c, agg_func)
             var_col = f"{c}_partial_variance"
@@ -677,7 +709,10 @@ def main():
         for pcol in param_cols_for_output:
             if pcol not in agg_dict:
                 agg_dict[pcol] = (pcol, 'first')
-        grouped_stats = concatenated_group.groupby('target_thrust').agg(**agg_dict).reset_index()
+        group_cols = ['target_thrust']
+        if getattr(args, 'group_by_file_timestamp', False):
+            group_cols = ['file_timestamp', 'target_thrust']
+        grouped_stats = concatenated_group.groupby(group_cols).agg(**agg_dict).reset_index()
 
         # パラメータ情報を追加
         for k, v in group_params.items():
@@ -687,8 +722,14 @@ def main():
     # すべてのパラメータのデータを1つのCSVにエクスポート
     if args.output and combined_data:
         combined_df = pd.concat(combined_data, ignore_index=True)
-        sort_columns = group_keys + ['target_thrust']
-        combined_df = combined_df.sort_values(by=sort_columns).reset_index(drop=True)
+        if getattr(args, 'no_aggregate', False):
+            # 生データ出力時は time も含めて安定ソート（存在する列だけ）
+            candidate_sort_columns = group_keys + ['target_thrust', 'file_timestamp', 'time']
+        else:
+            candidate_sort_columns = group_keys + ['target_thrust']
+        sort_columns = [c for c in candidate_sort_columns if c in combined_df.columns]
+        if sort_columns:
+            combined_df = combined_df.sort_values(by=sort_columns).reset_index(drop=True)
         export_data_to_csv(combined_df, args.output)
     else:
         print("結合されたデータがありません。エクスポートをスキップします。")

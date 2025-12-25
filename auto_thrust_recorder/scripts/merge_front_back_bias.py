@@ -386,6 +386,16 @@ def main():
                 print(f"  frontファイル {f} の読み込み/抽出に失敗。スキップ。")
                 failed_data_files.append((f, reason or "EmptyDataFrame"))
                 continue
+            # raw ファイル名由来の file_timestamp を各行に付与（後段でファイル単位の集約に使う）
+            try:
+                raw_ts = None
+                if f in file_params_map:
+                    raw_ts = file_params_map[f].get('file_timestamp', None)
+                if raw_ts is not None:
+                    df.loc[:, 'file_timestamp'] = raw_ts
+            except Exception:
+                # 失敗しても処理は継続（file_timestamp 無し扱い）
+                pass
             # 先頭スキップとウォームアップ除外
             if hasattr(args, 'skip_seconds') and args.skip_seconds > 0:
                 df = df[df['time_elapsed'] >= args.skip_seconds]
@@ -411,6 +421,16 @@ def main():
                 print(f"  backファイル {f} の読み込み/抽出に失敗。スキップ。")
                 failed_data_files.append((f, reason or "EmptyDataFrame"))
                 continue
+            # raw ファイル名由来の file_timestamp を各行に付与（後段でファイル単位の集約に使う）
+            try:
+                raw_ts = None
+                if f in file_params_map:
+                    raw_ts = file_params_map[f].get('file_timestamp', None)
+                if raw_ts is not None:
+                    df.loc[:, 'file_timestamp'] = raw_ts
+            except Exception:
+                # 失敗しても処理は継続（file_timestamp 無し扱い）
+                pass
             if hasattr(args, 'skip_seconds') and args.skip_seconds > 0:
                 df = df[df['time_elapsed'] >= args.skip_seconds]
             if hasattr(args, 'step_warmup') and args.step_warmup > 0:

@@ -27,6 +27,7 @@ import argparse
 import os
 import subprocess
 import sys
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -117,6 +118,7 @@ def _run_one_dir(
     step_warmup: float,
     bias_scope: str,
     do_biascorr: bool,
+    recreate_corrected: bool,
     do_concat: bool,
     do_morph: bool,
     morph_cx: float,
@@ -134,6 +136,17 @@ def _run_one_dir(
     # 1) merge_front_back_bias.py (optional)
     if do_biascorr:
         corrected_dir = dir_path / "corrected"
+        if recreate_corrected and corrected_dir.exists():
+            try:
+                shutil.rmtree(corrected_dir)
+            except Exception as e:
+                return JobResult(
+                    dir_path=dir_path,
+                    ok=False,
+                    returncode=1,
+                    log_path=log_path,
+                    error=f"RemoveFailed: failed to delete {corrected_dir}: {e}",
+                )
         corrected_dir.mkdir(exist_ok=True)
 
         rc, err = _run(
@@ -178,6 +191,7 @@ def _run_one_dir(
                 concat_dir,
                 "--output",
                 "concat.csv",
+                "--group-by-file-timestamp",
                 "--dropna-mode",
                 "none",
                 "--default-column",
@@ -238,6 +252,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--step-warmup", type=float, default=0.3, help="merge_front_back_bias.py --step-warmup (default: 0.3)")
     p.add_argument("--bias-scope", default="per-step", choices=["global", "per-step"], help="merge_front_back_bias.py --bias-scope")
     p.add_argument("--no-biascorr", action="store_true", help="skip merge_front_back_bias.py step (per-dir)")
+    p.add_argument(
+        "--recreate-corrected",
+        action="store_true",
+        help="If set, delete 'corrected/' before running merge_front_back_bias.py (per-dir).",
+    )
     p.add_argument("--no-concat", action="store_true", help="skip csv_concat_4.py step (per-dir)")
 
     # morph/derived-columns step
@@ -318,6 +337,7 @@ def main() -> int:
                         step_warmup=float(args.step_warmup),
                         bias_scope=str(args.bias_scope),
                         do_biascorr=do_biascorr,
+                        recreate_corrected=bool(args.recreate_corrected),
                         do_concat=do_concat,
                         do_morph=do_morph,
                         morph_cx=float(args.morph_cx),
