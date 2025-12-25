@@ -3,15 +3,62 @@ from __future__ import annotations
 from typing import Dict, Sequence, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import pandas as pd
 
 
-def plot_1d(x_name: str, x: np.ndarray, y: np.ndarray, title: str = "", output: str | None = None):
+def get_custom_rdbu_cmap():
+    """
+    カスタムカラーマップ: -100%〜+300% の非対称RdBu
+    - -100% (-1.0 in change rate, or -100 in %) が濃い青
+    - 0% が白
+    - +300% (+3.0 in change rate, or +300 in %) が濃い赤
+    
+    使用時は vmin=-100, vmax=300 (％単位) で指定することを想定
+    """
+    # -100〜+300 の範囲で 0 が 1/4 (0.25) の位置
+    # 青(濃) -> 白 -> 赤(濃)
+    colors = [
+        (0.0, (0.0196, 0.188, 0.380)),    # 濃い青 at -100%
+        (0.25, (1.0, 1.0, 1.0)),           # 白 at 0%
+        (1.0, (0.404, 0.0, 0.122)),        # 濃い赤 at +300%
+    ]
+    cmap = mcolors.LinearSegmentedColormap.from_list("custom_rdbu", colors)
+    return cmap
+
+
+def get_custom_improve_cmap():
+    """
+    改善率[%] 用の発散カラーマップ（悪化=赤 / 0=白 / 改善=緑）。
+    0 がレンジ中央に来る（vmin=-A, vmax=+A のように対称）ことを前提に設計。
+    """
+    colors = [
+        (0.0, (0.404, 0.0, 0.122)),  # red (bad)  at vmin
+        (0.5, (1.0, 1.0, 1.0)),      # white      at 0
+        (1.0, (0.0, 0.39, 0.0)),     # green(good)at vmax
+    ]
+    cmap = mcolors.LinearSegmentedColormap.from_list("custom_improve", colors)
+    return cmap
+
+
+# カスタムカラーマップを登録
+plt.colormaps.register(cmap=get_custom_rdbu_cmap(), name="custom_rdbu")
+plt.colormaps.register(cmap=get_custom_improve_cmap(), name="custom_improve")
+
+
+def plot_1d(
+    x_name: str,
+    x: np.ndarray,
+    y: np.ndarray,
+    title: str = "",
+    output: str | None = None,
+    ylabel: str = "integral",
+):
     plt.figure(figsize=(10, 6))
     plt.rcParams.update({'font.size': 16})
     plt.plot(x, y, color='red', lw=3.0)
     plt.xlabel(x_name)
-    plt.ylabel('integral')
+    plt.ylabel(ylabel)
     if title:
         plt.title(title)
     plt.grid(True, alpha=0.3)
@@ -23,11 +70,40 @@ def plot_1d(x_name: str, x: np.ndarray, y: np.ndarray, title: str = "", output: 
     plt.close()
 
 
-def plot_2d(x_name: str, y_name: str, X: np.ndarray, Y: np.ndarray, Z: np.ndarray, title: str = "", output: str | None = None):
+def plot_2d(
+    x_name: str,
+    y_name: str,
+    X: np.ndarray,
+    Y: np.ndarray,
+    Z: np.ndarray,
+    title: str = "",
+    output: str | None = None,
+    overlay_points: np.ndarray | None = None,
+    overlay_style: dict | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    cmap: str = "viridis",
+    colorbar_label: str = "integral",
+    show_colorbar: bool = True,
+):
     plt.figure(figsize=(10, 8))
     plt.rcParams.update({'font.size': 16})
-    plt.imshow(Z, origin='lower', aspect='auto', extent=[X.min(), X.max(), Y.min(), Y.max()], cmap='viridis')
-    plt.colorbar(label='integral')
+    plt.imshow(Z, origin='lower', aspect='auto', extent=[X.min(), X.max(), Y.min(), Y.max()], cmap=cmap, vmin=vmin, vmax=vmax)
+    if bool(show_colorbar):
+        plt.colorbar(label=colorbar_label)
+    if overlay_points is not None:
+        pts = np.asarray(overlay_points)
+        if pts.ndim == 2 and pts.shape[1] == 2 and pts.shape[0] > 0:
+            style = {
+                "s": 18,
+                "c": "white",
+                "alpha": 0.65,
+                "edgecolors": "black",
+                "linewidths": 0.4,
+            }
+            if overlay_style:
+                style.update(overlay_style)
+            plt.scatter(pts[:, 0], pts[:, 1], **style)
     plt.xlabel(x_name)
     plt.ylabel(y_name)
     if title:

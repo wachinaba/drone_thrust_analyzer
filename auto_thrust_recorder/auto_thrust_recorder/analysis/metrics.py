@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence
 import numpy as np
+from tqdm import tqdm
 
 
 def compute_metric_values(
@@ -39,7 +40,8 @@ def compute_metric_values(
         fd_steps = {}
 
     grads_sq = np.zeros((X.shape[0], len(dim_indices)), dtype=float)
-    for k, j in enumerate(dim_indices):
+    grad_dim_names = [feature_names[j] for j in dim_indices]
+    for k, j in enumerate(tqdm(dim_indices, desc="Computing gradients", leave=False)):
         h = fd_steps.get(feature_names[j], None)
         if h is None:
             # heuristic: relative step 1e-3 of data range or 1e-3 of std

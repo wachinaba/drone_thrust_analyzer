@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 import argparse
 import os
 import japanize_matplotlib
+import matplotlib.lines as mlines
 import ast
 import re
 from sklearn.kernel_ridge import KernelRidge
@@ -334,7 +335,7 @@ def plot_results(y_test, y_pred, output_file=None, target_column: str = 'torque_
     plt.close()
 
 
-def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by, curve_x=None, curve_points=200, ranges=None, output_file=None, target_column: str = 'torque_x'):
+def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by, curve_x=None, curve_points=200, ranges=None, output_file=None, target_column: str = 'torque_x', fixes=None):
     """
     指定した group_by 特徴量でデータをグループ化し、各グループで
     - 生の散布 (curve_x vs target_column)
@@ -351,6 +352,7 @@ def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by,
         curve_points: 曲線の分解能
         ranges: (mins, maxs) を返す parse_ranges の結果タプル or None
         output_file: ファイルパス（None なら表示）
+        fixes: ["col=value", ...]。指定した列のみ固定値で上書き（未指定列は従来通りグループ中央値）。
     """
     if not group_by or len(group_by) == 0:
         print("[plot_grouped_raw_and_fit] group_by が指定されていないためスキップします。")
@@ -375,6 +377,8 @@ def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by,
     else:
         mins = {c: float(df_clean[c].min()) for c in feature_columns}
         maxs = {c: float(df_clean[c].max()) for c in feature_columns}
+
+    fix_overrides = parse_fix_overrides(fixes, feature_columns)
 
     # グループを作成
     group_keys = df_clean[group_by].drop_duplicates()
@@ -435,6 +439,8 @@ def plot_grouped_raw_and_fit(df_clean, feature_columns, model, scaler, group_by,
             elif fcol in group_by:
                 # グループの代表値（同一値のはずだが保険で中央値）
                 X_grid[:, j] = float(df_group[fcol].median())
+            elif fcol in fix_overrides:
+                X_grid[:, j] = float(fix_overrides[fcol])
             else:
                 X_grid[:, j] = float(df_group[fcol].median())
 
@@ -515,10 +521,13 @@ def plot_facet_raw_and_fit_krr(
     curve_points=200,
     ranges=None,
     output_file=None,
+    hue=None,
+    fixes=None,
 ):
     """
     行方向(row_group_byの組) × 列方向(col_group_byの組)のファセットで、
     各セルに Raw 散布と KRR フィット曲線を描画する。
+    hue が指定された場合、同一セル内で hue ごとに raw 散布と KRR フィット曲線を色分けして描画する。
     """
     if not row_group_by and not col_group_by:
         print("[plot_facet_raw_and_fit_krr] row/col が未指定のためスキップします。")
@@ -535,6 +544,51 @@ def plot_facet_raw_and_fit_krr(
         curve_x = candidates[0]
     if curve_x not in feature_columns:
         raise ValueError(f"curve_x '{curve_x}' は学習特徴量に含まれていません。feature_columns={feature_columns}")
+
+    # hue の検証（指定時）
+    if hue is not None:
+        hue = str(hue).strip()
+        if not hue:
+            hue = None
+    if hue:
+        if hue not in df_clean.columns:
+            raise ValueError(f"hue '{hue}' がデータに存在しません。")
+        if hue not in feature_columns:
+            raise ValueError(
+                f"hue '{hue}' は学習特徴量に含まれていないため、hueごとにKRR fit曲線を分けられません。"
+                f" feature_columns={feature_columns}"
+            )
+        if hue == curve_x:
+            raise ValueError("hue と curve_x は同一にできません。別の列を指定してください。")
+        if (row_group_by and hue in row_group_by) or (col_group_by and hue in col_group_by):
+            raise ValueError("hue は row_group_by / col_group_by に含められません（セル内の色分け用の列を指定してください）。")
+
+        # facet 全体で共通の hue 値リストと色割当を作る（全部描画: B）
+        hue_series = df_clean[hue]
+        hue_values = list(pd.unique(hue_series.dropna()))
+        try:
+            hue_values = sorted(hue_values)
+        except Exception:
+            try:
+                hue_values = sorted(hue_values, key=lambda v: str(v))
+            except Exception:
+                pass
+
+        if len(hue_values) == 0:
+            print(f"[plot_facet_raw_and_fit_krr] hue='{hue}' が指定されましたが、有効な値がありません（全てNaN?）。hue無しで描画します。")
+            hue = None
+            hue_values = []
+            hue_to_color = {}
+        else:
+            if len(hue_values) > 30:
+                print(f"[plot_facet_raw_and_fit_krr] 注意: hue='{hue}' のユニーク値が {len(hue_values)} 個あります。指定通り全て描画します（凡例が大きくなる可能性）。")
+            cmap = plt.get_cmap("tab20")
+            hue_to_color = {v: cmap(i % cmap.N) for i, v in enumerate(hue_values)}
+    else:
+        hue_values = []
+        hue_to_color = {}
+
+    fix_overrides = parse_fix_overrides(fixes, feature_columns)
 
     # レンジ（全ファセットで共有するグローバルな範囲）
     if ranges is not None and isinstance(ranges, tuple) and len(ranges) == 2:
@@ -566,6 +620,18 @@ def plot_facet_raw_and_fit_krr(
         if not group_cols:
             return [()]
         uniq = df_clean[group_cols].drop_duplicates()
+        # ファセットの並びが毎回変わらないように、group_cols の順で安定ソートする
+        try:
+            uniq = uniq.sort_values(by=group_cols, kind="mergesort", na_position="last")
+        except Exception:
+            # 型が混在して比較できない場合などは文字列化してソートを試みる（それでもダメなら未ソート）
+            try:
+                uniq2 = uniq.copy()
+                for c in group_cols:
+                    uniq2[c] = uniq2[c].astype(str)
+                uniq = uniq2.sort_values(by=group_cols, kind="mergesort", na_position="last")
+            except Exception:
+                pass
         keys = [tuple(row[c] for c in group_cols) for _, row in uniq.iterrows()]
         return keys
 
@@ -629,44 +695,115 @@ def plot_facet_raw_and_fit_krr(
                 ax.set_xlabel(curve_x)
                 continue
 
-            # 生データ散布
-            x_raw = df_cell[curve_x].values
-            y_raw = df_cell[target_column].values
-            ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
-
             # 予測用グリッド（全ファセット共通の X 範囲）
             x_grid = np.linspace(global_x_min, global_x_max, int(curve_points))
-            X_grid = np.zeros((len(x_grid), len(feature_columns)), dtype=float)
-            for j, fcol in enumerate(feature_columns):
-                if fcol == curve_x:
-                    X_grid[:, j] = x_grid
-                elif (row_group_by and fcol in row_group_by):
-                    val = rkey[row_group_by.index(fcol)] if fcol in row_group_by else float(df_cell[fcol].median())
-                    X_grid[:, j] = float(val)
-                elif (col_group_by and fcol in col_group_by):
-                    val = ckey[col_group_by.index(fcol)] if fcol in col_group_by else float(df_cell[fcol].median())
-                    X_grid[:, j] = float(val)
-                else:
-                    X_grid[:, j] = float(df_cell[fcol].median())
 
-            if scaler is not None:
-                try:
-                    X_infer = scaler.transform(X_grid)
-                except Exception:
-                    X_infer = X_grid
+            if hue:
+                # hue ごとに raw + fit（同色）を描画
+                for hv in hue_values:
+                    df_h = df_cell[df_cell[hue] == hv]
+                    if df_h.empty:
+                        continue
+                    color = hue_to_color.get(hv, "C0")
+
+                    # raw
+                    x_raw = df_h[curve_x].values
+                    y_raw = df_h[target_column].values
+                    ax.scatter(x_raw, y_raw, alpha=0.5, s=25, color=color)
+
+                    # fit: hue 特徴量は hv に固定。他は hueグループの中央値（row/colはキー優先）
+                    try:
+                        hv_f = float(hv)
+                    except Exception as e:
+                        raise ValueError(f"hue '{hue}' の値 '{hv}' を数値化できません。学習特徴量として使うには数値である必要があります。") from e
+
+                    X_grid = np.zeros((len(x_grid), len(feature_columns)), dtype=float)
+                    for j, fcol in enumerate(feature_columns):
+                        if fcol == curve_x:
+                            X_grid[:, j] = x_grid
+                        elif fcol == hue:
+                            X_grid[:, j] = hv_f
+                        elif (row_group_by and fcol in row_group_by):
+                            val = rkey[row_group_by.index(fcol)] if fcol in row_group_by else float(df_h[fcol].median())
+                            X_grid[:, j] = float(val)
+                        elif (col_group_by and fcol in col_group_by):
+                            val = ckey[col_group_by.index(fcol)] if fcol in col_group_by else float(df_h[fcol].median())
+                            X_grid[:, j] = float(val)
+                        elif fcol in fix_overrides:
+                            X_grid[:, j] = float(fix_overrides[fcol])
+                        else:
+                            med = df_h[fcol].median()
+                            if not np.isfinite(med):
+                                med = df_cell[fcol].median()
+                            X_grid[:, j] = float(med)
+
+                    if scaler is not None:
+                        try:
+                            X_infer = scaler.transform(X_grid)
+                        except Exception:
+                            X_infer = X_grid
+                    else:
+                        X_infer = X_grid
+
+                    y_pred = model.predict(X_infer)
+                    ax.plot(x_grid, y_pred, color=color, lw=2.5, alpha=0.9)
             else:
-                X_infer = X_grid
+                # 従来どおり 1色 raw + 1本 fit
+                x_raw = df_cell[curve_x].values
+                y_raw = df_cell[target_column].values
+                ax.scatter(x_raw, y_raw, alpha=0.5, s=25, label='raw')
 
-            y_pred = model.predict(X_infer)
-            ax.plot(x_grid, y_pred, color='red', lw=3.0, label='KRR fit')
+                X_grid = np.zeros((len(x_grid), len(feature_columns)), dtype=float)
+                for j, fcol in enumerate(feature_columns):
+                    if fcol == curve_x:
+                        X_grid[:, j] = x_grid
+                    elif (row_group_by and fcol in row_group_by):
+                        val = rkey[row_group_by.index(fcol)] if fcol in row_group_by else float(df_cell[fcol].median())
+                        X_grid[:, j] = float(val)
+                    elif (col_group_by and fcol in col_group_by):
+                        val = ckey[col_group_by.index(fcol)] if fcol in col_group_by else float(df_cell[fcol].median())
+                        X_grid[:, j] = float(val)
+                    elif fcol in fix_overrides:
+                        X_grid[:, j] = float(fix_overrides[fcol])
+                    else:
+                        X_grid[:, j] = float(df_cell[fcol].median())
+
+                if scaler is not None:
+                    try:
+                        X_infer = scaler.transform(X_grid)
+                    except Exception:
+                        X_infer = X_grid
+                else:
+                    X_infer = X_grid
+
+                y_pred = model.predict(X_infer)
+                ax.plot(x_grid, y_pred, color='red', lw=3.0, label='KRR fit')
 
             ax.set_xlim(global_x_min, global_x_max)
             ax.set_ylim(global_y_min, global_y_max)
             ax.set_xlabel(curve_x)
             ax.grid(True, alpha=0.3)
-            ax.legend(frameon=True, fontsize=10)
+            if not hue:
+                ax.legend(frameon=True, fontsize=10)
 
-    plt.tight_layout()
+    # hue 指定時は、facet 全体で1つの凡例にまとめる
+    if hue and hue_values:
+        handles = []
+        for hv in hue_values:
+            color = hue_to_color.get(hv, "C0")
+            # marker+line を1つの凡例項目にする
+            if isinstance(hv, (float, np.floating)):
+                label = f"{hue}={hv:g}"
+            else:
+                label = f"{hue}={hv}"
+            handles.append(mlines.Line2D([], [], color=color, marker='o', linestyle='-', lw=2.0, markersize=6, label=label))
+        fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.02), ncol=min(6, max(1, len(handles))), frameon=True, fontsize=10)
+
+    # 凡例のスペースを確保
+    if hue and hue_values:
+        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    else:
+        plt.tight_layout()
     if output_file:
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
         print(f"ファセット Raw vs KRR Fit を '{output_file}' に保存しました。")
@@ -713,6 +850,29 @@ def parse_fixed_values(fixes, feature_columns, df_clean):
                 except Exception:
                     pass
     return fixed
+
+
+def parse_fix_overrides(fixes, feature_columns):
+    """
+    `--fix col=value` の「明示指定されたものだけ」を辞書で返す。
+    - feature_columns に存在する列のみ対象
+    - value は float 変換できるもののみ対象（できない場合は無視）
+    """
+    overrides = {}
+    if not fixes:
+        return overrides
+    for item in fixes:
+        if not item or ('=' not in item):
+            continue
+        col, val = item.split('=', 1)
+        col = col.strip()
+        if col not in feature_columns:
+            continue
+        try:
+            overrides[col] = float(val)
+        except Exception:
+            continue
+    return overrides
 
 
 def parse_ranges(ranges, feature_columns, df_clean):
@@ -850,7 +1010,7 @@ def main():
     # ペアワイズヒートマップ
     parser.add_argument('--pairwise-heatmaps', action='store_true', help='全特徴量ペアの予測ヒートマップを一括出力')
     parser.add_argument('--grid', type=int, default=80, help='ヒートマップの格子数（デフォルト: 80）')
-    parser.add_argument('--fix', action='append', default=None, help="非可視化軸の固定値 'col=value' を複数指定可")
+    parser.add_argument('--fix', action='append', default=None, help="非可視化軸の固定値 'col=value' を複数指定可（--pairwise-heatmaps と --plot-raw-fit の両方で使用）")
     parser.add_argument('--range', dest='ranges', action='append', default=None, help="各軸の範囲 'col:min,max' を複数指定可")
     parser.add_argument('--std-heatmaps', action='store_true', help='(KRRでは無効) 標準偏差ヒートマップの要求は無視して警告表示')
     # 生データとフィット曲線の比較
@@ -862,6 +1022,7 @@ def main():
     parser.add_argument('--row-group-by', type=str, default=None, help='行方向のファセットに用いる列（カンマ区切りの複数可）')
     parser.add_argument('--col-group-by', type=str, default=None, help='列方向のファセットに用いる列（カンマ区切りの複数可）')
     parser.add_argument('--facet-filter', action='append', default=None, help="ファセット用の事前フィルタ 'col:min,max' を複数指定可")
+    parser.add_argument('--hue', type=str, default=None, help="同一セル内で色分けする列名（hueごとにraw+KRR fit曲線も分割）。hueは学習特徴量に含まれる必要があります。")
 
     args = parser.parse_args()
 
@@ -1033,6 +1194,8 @@ def main():
                         curve_points=args.curve_points,
                         ranges=(mins, maxs),
                         output_file=groupfit_output,
+                        hue=args.hue,
+                        fixes=args.fix,
                     )
                 elif group_by:
                     plot_grouped_raw_and_fit(
@@ -1046,6 +1209,7 @@ def main():
                         ranges=(mins, maxs),
                         output_file=groupfit_output,
                         target_column=args.target,
+                        fixes=args.fix,
                     )
                 else:
                     print("(注意) --plot-raw-fit は指定されましたが、--group-by も --row-group-by/--col-group-by も未指定です。スキップします。")
