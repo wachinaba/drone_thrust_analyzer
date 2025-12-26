@@ -291,6 +291,7 @@ def plot_single_raw_and_fit(
     hue_raw_range: Optional[Tuple[float, float]],
     hue_fit_cmap: str,
     hue_fit_range: Optional[Tuple[float, float]],
+    x_domain_per_hue_raw: bool,
     show_uncertainty: bool,
     ylim: Optional[Tuple[float, float]],
     raw_alpha: float,
@@ -384,11 +385,14 @@ def plot_single_raw_and_fit(
         "min": {"y": None, "x": None, "hue": None},
     }
 
-    def _update_extrema(y_arr: np.ndarray, *, hue_value: Optional[float]) -> None:
+    def _update_extrema(y_arr: np.ndarray, *, x_arr: np.ndarray, hue_value: Optional[float]) -> None:
         if y_arr is None:
             return
         yy = np.asarray(y_arr).reshape(-1)
+        xx = np.asarray(x_arr).reshape(-1)
         if yy.size == 0:
+            return
+        if xx.size != yy.size:
             return
         m = np.isfinite(yy)
         if not np.any(m):
@@ -402,8 +406,11 @@ def plot_single_raw_and_fit(
             return
         y_max = float(yy2[imax])
         y_min = float(yy2[imin])
-        x_max = float(x_grid[imax])
-        x_min = float(x_grid[imin])
+        try:
+            x_max = float(xx[imax])
+            x_min = float(xx[imin])
+        except Exception:
+            return
 
         if (extrema["max"]["y"] is None) or (y_max > float(extrema["max"]["y"])):
             extrema["max"]["y"] = y_max
@@ -485,12 +492,18 @@ def plot_single_raw_and_fit(
         ax.scatter(x_raw[mxy], y_raw[mxy], s=22, alpha=raw_alpha, color="C0", label="raw", zorder=3)
 
     # fit曲線（1本 or hue-fitごと）
-    def _predict_for(hv: Optional[float] = None, fixed: Optional[Dict[str, float]] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    def _predict_for(
+        hv: Optional[float] = None,
+        fixed: Optional[Dict[str, float]] = None,
+        *,
+        x_arr: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         fixed_local = fixed if fixed is not None else fixed_values
-        X_grid = np.zeros((len(x_grid), len(feature_columns)), dtype=float)
+        x_use = np.asarray(x_arr if x_arr is not None else x_grid).reshape(-1)
+        X_grid = np.zeros((len(x_use), len(feature_columns)), dtype=float)
         for j, fcol in enumerate(feature_columns):
             if fcol == curve_x:
-                X_grid[:, j] = x_grid
+                X_grid[:, j] = x_use
             elif (hue_fit_col is not None) and (fcol == hue_fit_col) and (hv is not None):
                 X_grid[:, j] = float(hv)
             else:
@@ -536,6 +549,20 @@ def plot_single_raw_and_fit(
                 if df_g is None or len(df_g) == 0:
                     continue
 
+                # グループごとに curve_x の定義域を分ける（任意）
+                if bool(x_domain_per_hue_raw):
+                    x_g_series = pd.to_numeric(df_g[curve_x], errors="coerce")
+                    x_g_min = float(np.nanmin(x_g_series.values))
+                    x_g_max = float(np.nanmax(x_g_series.values))
+                    if (not np.isfinite(x_g_min)) or (not np.isfinite(x_g_max)):
+                        continue
+                    if x_g_min == x_g_max:
+                        x_g_min -= 1e-6
+                        x_g_max += 1e-6
+                    x_grid_g = np.linspace(x_g_min, x_g_max, int(curve_points))
+                else:
+                    x_grid_g = x_grid
+
                 # グループ中央値で固定値を作る（学習特徴量のみ）
                 fixed_g = {}
                 for c in feature_columns:
@@ -551,12 +578,12 @@ def plot_single_raw_and_fit(
                         fixed_g[k] = float(v)
 
                 color = hue_raw_color_of(float(hv_raw))
-                y_mean, y_std = _predict_for(float(hv_raw), fixed=fixed_g)
-                ax.plot(x_grid, y_mean, color=color, lw=2.6, alpha=0.95, zorder=4)
-                _update_extrema(np.asarray(y_mean), hue_value=float(hv_raw))
+                y_mean, y_std = _predict_for(float(hv_raw), fixed=fixed_g, x_arr=x_grid_g)
+                ax.plot(x_grid_g, y_mean, color=color, lw=2.6, alpha=0.95, zorder=4)
+                _update_extrema(np.asarray(y_mean), x_arr=np.asarray(x_grid_g), hue_value=float(hv_raw))
                 if show_uncertainty and (y_std is not None):
                     ax.fill_between(
-                        x_grid,
+                        x_grid_g,
                         y_mean - 2.0 * y_std,
                         y_mean + 2.0 * y_std,
                         color=color,
@@ -565,6 +592,8 @@ def plot_single_raw_and_fit(
                     )
             # このモードでは fit_handles は追加しない（凡例肥大化防止）
         else:
+            if bool(x_domain_per_hue_raw):
+                print("[warn] --x-domain-per-hue-raw は hue-raw→hue-fit 上書きモードのときのみ有効です（現在の条件では無視します）。")
             # --- fallback hue-fit mode (original behavior) ---
             # hue-fit は学習特徴量として数値の想定。カテゴリっぽい場合も一応対応する。
             hv_raw_series = df[hue_fit_col]
@@ -594,9 +623,9 @@ def plot_single_raw_and_fit(
                     except Exception:
                         continue
                     color = cmap(norm(hv_f))
-                    y_mean, y_std = _predict_for(hv_f, fixed=None)
+                    y_mean, y_std = _predict_for(hv_f, fixed=None, x_arr=x_grid)
                     ax.plot(x_grid, y_mean, color=color, lw=2.6, alpha=0.95, zorder=4)
-                    _update_extrema(np.asarray(y_mean), hue_value=float(hv_f))
+                    _update_extrema(np.asarray(y_mean), x_arr=np.asarray(x_grid), hue_value=float(hv_f))
                     if show_uncertainty and (y_std is not None):
                         ax.fill_between(
                             x_grid, y_mean - 2.0 * y_std, y_mean + 2.0 * y_std, color=color, alpha=0.18, zorder=2
@@ -619,9 +648,9 @@ def plot_single_raw_and_fit(
                         # カテゴリのまま学習特徴量に入っているケースは想定しないのでスキップ
                         continue
                     color = cmap(0.5 if n == 1 else (i / (n - 1)))
-                    y_mean, y_std = _predict_for(hv_f, fixed=None)
+                    y_mean, y_std = _predict_for(hv_f, fixed=None, x_arr=x_grid)
                     ax.plot(x_grid, y_mean, color=color, lw=2.6, alpha=0.95, zorder=4)
-                    _update_extrema(np.asarray(y_mean), hue_value=float(hv_f))
+                    _update_extrema(np.asarray(y_mean), x_arr=np.asarray(x_grid), hue_value=float(hv_f))
                     if show_uncertainty and (y_std is not None):
                         ax.fill_between(
                             x_grid, y_mean - 2.0 * y_std, y_mean + 2.0 * y_std, color=color, alpha=0.18, zorder=2
@@ -629,9 +658,9 @@ def plot_single_raw_and_fit(
                     fit_handles.append(mlines.Line2D([], [], color=color, linestyle="-", lw=2.6, label=f"fit: {hue_fit_col}={hv}"))
             # end fallback hue-fit mode
     else:
-        y_mean, y_std = _predict_for(None, fixed=None)
+        y_mean, y_std = _predict_for(None, fixed=None, x_arr=x_grid)
         ax.plot(x_grid, y_mean, color="red", lw=3.0, label="GPR fit", zorder=4)
-        _update_extrema(np.asarray(y_mean), hue_value=None)
+        _update_extrema(np.asarray(y_mean), x_arr=np.asarray(x_grid), hue_value=None)
         if show_uncertainty and (y_std is not None):
             ax.fill_between(x_grid, y_mean - 2.0 * y_std, y_mean + 2.0 * y_std, color="red", alpha=0.20, label="±2σ", zorder=2)
 
@@ -829,6 +858,13 @@ def main() -> int:
     parser.add_argument("--hue-raw-range", default=None, help="hue-raw が数値の場合の値域 'min,max'（未指定ならデータから自動）")
     parser.add_argument("--hue-fit-cmap", default="viridis", help="hue-fit（数値）に使うカラーマップ名")
     parser.add_argument("--hue-fit-range", default=None, help="hue-fit が数値の場合の値域 'min,max'（未指定ならデータから自動）")
+    parser.add_argument(
+        "--x-domain-per-hue-raw",
+        type=gpr.parse_tf,
+        default=False,
+        metavar="{t,f}",
+        help="hue-raw グループごとに curve-x の定義域（min/max）を分けて fit 曲線を描画（デフォルト: f、hue-raw→hue-fit 上書きモードで有効）",
+    )
 
     # fit extrema overlay
     parser.add_argument("--fit-extrema", type=gpr.parse_tf, default=False, metavar="{t,f}", help="fitの最大/最小を点線と注釈で表示（デフォルト: f）")
@@ -968,6 +1004,7 @@ def main() -> int:
         hue_raw_range=_parse_float_pair_opt(args.hue_raw_range, name="--hue-raw-range"),
         hue_fit_cmap=str(args.hue_fit_cmap),
         hue_fit_range=_parse_float_pair_opt(args.hue_fit_range, name="--hue-fit-range"),
+        x_domain_per_hue_raw=bool(getattr(args, "x_domain_per_hue_raw", False)),
         show_uncertainty=(not bool(args.no_uncertainty)),
         ylim=_parse_float_pair_opt(args.ylim, name="--ylim"),
         raw_alpha=float(args.raw_alpha),
