@@ -444,6 +444,7 @@ def main():
     group_keys = [k.lower() for k in getattr(args, 'group_keys', [])]
     is_auto_group_keys = (len(group_keys) == 1 and group_keys[0] == 'auto')
     param_keys_union = set()
+    missing_timestamp_files = []  # --group-by-file-timestamp 時に file_timestamp が取れないファイル
     # 第1段階: 全ファイルからパラメータだけ収集（auto の場合はここで union を作る）
     for file in _iter_progress(
         csv_files,
@@ -460,6 +461,24 @@ def main():
         file_params_map[file] = params
         if is_auto_group_keys:
             param_keys_union.update(params.keys())
+        if getattr(args, 'group_by_file_timestamp', False):
+            # file_timestamp は extract_parameters_generic() が末尾キーワード+timestamp から抽出できた場合のみ入る
+            if params.get('file_timestamp', None) is None:
+                missing_timestamp_files.append(file)
+
+    # timestamp 未取得の警告（表示のみ。結合/集約の挙動は変えない）
+    if getattr(args, 'group_by_file_timestamp', False) and missing_timestamp_files:
+        print(
+            f"[WARNING] --group-by-file-timestamp が有効ですが、file_timestamp を取得できないCSVが {len(missing_timestamp_files)} 件あります。",
+            file=sys.stderr,
+        )
+        print(
+            "          これらのファイルは file_timestamp が NaN となり、集約(groupby)結果から落ちる可能性があります。",
+            file=sys.stderr,
+        )
+        print("          対象ファイル一覧:", file=sys.stderr)
+        for f in sorted(missing_timestamp_files):
+            print(f"            - {f}", file=sys.stderr)
     # auto の場合は union をグルーピングキーに採用（file_timestamp は除外）
     if is_auto_group_keys:
         if 'file_timestamp' in param_keys_union:
