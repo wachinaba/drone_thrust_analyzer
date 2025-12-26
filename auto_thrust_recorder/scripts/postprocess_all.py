@@ -120,6 +120,7 @@ def _run_one_dir(
     do_biascorr: bool,
     recreate_corrected: bool,
     do_concat: bool,
+    concat_keyword_override: Optional[str],
     do_morph: bool,
     morph_cx: float,
     morph_cy: float,
@@ -178,7 +179,7 @@ def _run_one_dir(
     if do_concat:
         # If biascorr step is enabled, concat uses corrected/biascorr outputs.
         # Otherwise, concat uses raw CSVs under the directory.
-        concat_keywords = "biascorr" if do_biascorr else "raw"
+        concat_keywords = concat_keyword_override if concat_keyword_override else ("biascorr" if do_biascorr else "raw")
         concat_dir = "corrected/" if do_biascorr else "."
 
         rc, err = _run(
@@ -258,6 +259,11 @@ def parse_args() -> argparse.Namespace:
         help="If set, delete 'corrected/' before running merge_front_back_bias.py (per-dir).",
     )
     p.add_argument("--no-concat", action="store_true", help="skip csv_concat_4.py step (per-dir)")
+    p.add_argument(
+        "--concat-keyword",
+        default=None,
+        help="Override csv_concat_4.py -k KEYWORD (default: auto 'biascorr' if biascorr enabled else 'raw')",
+    )
 
     # morph/derived-columns step
     p.add_argument("--no-morph", action="store_true", help="disable add_calculated_columns_to_csv.py step")
@@ -290,6 +296,7 @@ def main() -> int:
     do_biascorr = not bool(args.no_biascorr)
     do_concat = not bool(args.no_concat)
     do_morph = not bool(args.no_morph)
+    concat_keyword_override = str(args.concat_keyword) if args.concat_keyword else None
 
     do_any_per_dir = do_biascorr or do_concat or do_morph
 
@@ -339,6 +346,7 @@ def main() -> int:
                         do_biascorr=do_biascorr,
                         recreate_corrected=bool(args.recreate_corrected),
                         do_concat=do_concat,
+                        concat_keyword_override=concat_keyword_override,
                         do_morph=do_morph,
                         morph_cx=float(args.morph_cx),
                         morph_cy=float(args.morph_cy),
