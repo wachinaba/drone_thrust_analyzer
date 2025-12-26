@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--krr-features",
-        default="distance,tilt_angle,fold_angle,slant_angle,force_z,wall_spacing",
+        default="distance,force_z,height",
         help="KRR --features (comma-separated)",
     )
     return p.parse_args()
