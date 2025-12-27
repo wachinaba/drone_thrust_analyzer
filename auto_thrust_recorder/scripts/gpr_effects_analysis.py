@@ -24,6 +24,147 @@ from auto_thrust_recorder.analysis.integration import build_grid, integrate_valu
 from auto_thrust_recorder.analysis.plotting import plot_1d, plot_2d, dump_csv
 
 
+def _connected_components_2d(mask: np.ndarray, *, connectivity: int = 8) -> Sequence[np.ndarray]:
+    """
+    2D bool mask の連結成分を抽出する（SciPy不要）。
+    Returns: list of (N,2) int array [iy, ix]
+    """
+    m = np.asarray(mask, dtype=bool)
+    if m.ndim != 2:
+        return []
+    ny, nx = m.shape
+    visited = np.zeros_like(m, dtype=bool)
+    comps: list[np.ndarray] = []
+    if connectivity == 4:
+        neigh = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    else:
+        neigh = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    for iy in range(ny):
+        for ix in range(nx):
+            if (not m[iy, ix]) or visited[iy, ix]:
+                continue
+            stack = [(iy, ix)]
+            visited[iy, ix] = True
+            coords: list[tuple[int, int]] = []
+            while stack:
+                cy, cx = stack.pop()
+                coords.append((cy, cx))
+                for dy, dx in neigh:
+                    nyy = cy + dy
+                    nxx = cx + dx
+                    if (0 <= nyy < ny) and (0 <= nxx < nx) and m[nyy, nxx] and (not visited[nyy, nxx]):
+                        visited[nyy, nxx] = True
+                        stack.append((nyy, nxx))
+            comps.append(np.asarray(coords, dtype=int))
+    return comps
+
+
+def _optima_2d_from_combined(
+    combined_improve_pct: np.ndarray,
+    x_vals: np.ndarray,
+    y_vals: np.ndarray,
+    *,
+    top_pct: float = 5.0,
+    delta: Optional[float] = None,
+    connectivity: int = 8,
+    max_islands: int = 10,
+) -> Dict[str, Any]:
+    """
+    combined_improve_pct(大きいほど良い) の2Dグリッドから、
+    準最適集合(top-pct or vmax-delta)を抽出し、連結成分ごとに代表点を返す。
+    代表点は島内点の (median(x), median(y)) に最も近い点（medoid的）。
+    """
+    V = np.asarray(combined_improve_pct, dtype=float)
+    if V.ndim != 2:
+        raise ValueError("combined_improve_pct must be 2D")
+    finite = np.isfinite(V)
+    if not bool(np.any(finite)):
+        return {"mask": None, "threshold": None, "vmax": None, "islands": [], "rep_points": None, "labels": []}
+
+    vals = V[finite]
+    vmax = float(np.max(vals))
+
+    if delta is not None:
+        thr = vmax - float(delta)
+        method_desc = f"delta={float(delta):g}"
+    else:
+        p = float(top_pct)
+        if not (0.0 < p <= 100.0):
+            raise ValueError("--optima-top-pct は (0, 100] の範囲で指定してください")
+        q = 100.0 - p
+        thr = float(np.percentile(vals, q))
+        method_desc = f"top_pct={p:g}"
+
+    mask = finite & (V >= thr)
+    comps = _connected_components_2d(mask, connectivity=int(connectivity))
+
+    Xv = np.asarray(x_vals, dtype=float).reshape(-1)
+    Yv = np.asarray(y_vals, dtype=float).reshape(-1)
+    if V.shape != (len(Yv), len(Xv)):
+        # (ny,nx) を想定
+        raise ValueError(f"shape mismatch: combined={V.shape}, x={len(Xv)}, y={len(Yv)}")
+
+    # step sizes for rough area estimate
+    dx = float(np.median(np.abs(np.diff(Xv)))) if len(Xv) >= 2 else 0.0
+    dy = float(np.median(np.abs(np.diff(Yv)))) if len(Yv) >= 2 else 0.0
+    cell_area = (dx * dy) if (dx > 0.0 and dy > 0.0) else None
+
+    islands: list[Dict[str, Any]] = []
+    for comp in comps:
+        iys = comp[:, 0]
+        ixs = comp[:, 1]
+        xs = Xv[ixs]
+        ys = Yv[iys]
+        cx = float(np.median(xs))
+        cy = float(np.median(ys))
+        d2 = (xs - cx) ** 2 + (ys - cy) ** 2
+        k = int(np.argmin(d2))
+        rep_ix = int(ixs[k])
+        rep_iy = int(iys[k])
+        rep_x = float(Xv[rep_ix])
+        rep_y = float(Yv[rep_iy])
+        rep_v = float(V[rep_iy, rep_ix])
+        island_max = float(np.nanmax(V[iys, ixs]))
+        island_med = float(np.nanmedian(V[iys, ixs]))
+        n_cells = int(comp.shape[0])
+        area = (float(n_cells) * float(cell_area)) if (cell_area is not None) else float(n_cells)
+        islands.append(
+            dict(
+                center_median_x=cx,
+                center_median_y=cy,
+                rep_x=rep_x,
+                rep_y=rep_y,
+                rep_value=rep_v,
+                island_max=island_max,
+                island_median=island_med,
+                n_cells=n_cells,
+                area=area,
+            )
+        )
+
+    # rank (multi-solution): max value desc, then size desc
+    islands.sort(key=lambda d: (-float(d["island_max"]), -int(d["n_cells"])))
+    if max_islands is not None and int(max_islands) > 0:
+        islands = islands[: int(max_islands)]
+
+    rep_points = None
+    labels: list[str] = []
+    if islands:
+        rep_points = np.asarray([[d["rep_x"], d["rep_y"]] for d in islands], dtype=float)
+        labels = [str(i + 1) for i in range(len(islands))]
+
+    return {
+        "mask": mask,
+        "threshold": float(thr),
+        "vmax": float(vmax),
+        "method": method_desc,
+        "islands": islands,
+        "rep_points": rep_points,
+        "labels": labels,
+    }
+
+
 def parse_normalize_ref(text: str) -> Dict[str, float]:
     """
     Parse normalize reference specification.
@@ -530,6 +671,15 @@ def main():
     p.add_argument('--colorbar-label', type=str, default=None, help='2Dカラーバー表記を上書き（未指定なら自動）')
     p.add_argument('--verbose', action='store_true', help='詳細ログを出力')
 
+    # near-optimal set / multiple optima extraction (combined 2D)
+    p.add_argument('--optima', action='store_true', help='combined(2D)の準最適集合(top-pct)から複数最適条件を抽出し、図に重ね描きする')
+    # argparse の help は '%' を内部でフォーマットするので '%%' にエスケープが必要
+    p.add_argument('--optima-top-pct', type=float, default=5.0, help='準最適集合の上位割合[%%]（default: 5.0）')
+    p.add_argument('--optima-delta', type=float, default=None, help='maxからの許容幅[%%]（指定時は --optima-top-pct より優先）')
+    p.add_argument('--optima-connectivity', type=int, choices=[4, 8], default=8, help='島の連結判定（4 or 8）')
+    p.add_argument('--optima-max-islands', type=int, default=10, help='出力する島（最適条件）の最大数')
+    p.add_argument('--output-optima-csv', type=str, default=None, help='抽出した複数最適条件のCSV出力先（combined 2D時）')
+
     args = p.parse_args()
 
     def vlog(*a, **k):
@@ -700,6 +850,14 @@ def main():
         if not base_path:
             return None
         stem, ext = os.path.splitext(base_path)
+        return f"{stem}_{suffix}{ext}"
+
+    def _optima_csv_path(base_path: Optional[str], suffix: str) -> Optional[str]:
+        if not base_path:
+            return None
+        stem, ext = os.path.splitext(base_path)
+        if not ext:
+            ext = ".csv"
         return f"{stem}_{suffix}{ext}"
 
     def _grid_dataframe(axes_names: Sequence[str], axes_vals: Sequence[np.ndarray]) -> pd.DataFrame:
@@ -967,10 +1125,58 @@ def main():
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else axes_names[1]
                 cbl_eff = args.colorbar_label if args.colorbar_label is not None else str(combined_label)
+
+                # optima extraction (near-optimal set) for combined 2D
+                opt = None
+                if bool(args.optima):
+                    opt = _optima_2d_from_combined(
+                        np.asarray(combined, dtype=float),
+                        np.asarray(Xv, dtype=float),
+                        np.asarray(Yv, dtype=float),
+                        top_pct=float(args.optima_top_pct),
+                        delta=(None if args.optima_delta is None else float(args.optima_delta)),
+                        connectivity=int(args.optima_connectivity),
+                        max_islands=int(args.optima_max_islands),
+                    )
+                    islands = opt.get("islands", []) if isinstance(opt, dict) else []
+                    if islands:
+                        print(f"[optima] combined 2D: method={opt.get('method')} threshold={opt.get('threshold'):.6g} vmax={opt.get('vmax'):.6g} islands={len(islands)}")
+                        for i, d in enumerate(islands, start=1):
+                            print(
+                                f"  #{i}: rep=({float(d['rep_x']):.6g}, {float(d['rep_y']):.6g}) "
+                                f"value={float(d['rep_value']):.6g} island_max={float(d['island_max']):.6g} n_cells={int(d['n_cells'])}"
+                            )
+                        if args.output_optima_csv:
+                            df_opt = pd.DataFrame(
+                                [
+                                    dict(
+                                        rank=i,
+                                        rep_x=float(d["rep_x"]),
+                                        rep_y=float(d["rep_y"]),
+                                        rep_value=float(d["rep_value"]),
+                                        island_max=float(d["island_max"]),
+                                        island_median=float(d["island_median"]),
+                                        n_cells=int(d["n_cells"]),
+                                        area=float(d["area"]),
+                                        center_median_x=float(d["center_median_x"]),
+                                        center_median_y=float(d["center_median_y"]),
+                                        threshold=float(opt.get("threshold")),
+                                        vmax=float(opt.get("vmax")),
+                                        method=str(opt.get("method")),
+                                    )
+                                    for i, d in enumerate(islands, start=1)
+                                ]
+                            )
+                            df_opt.to_csv(args.output_optima_csv, index=False)
+
                 plot_2d(
                     xlab, ylab, Xv, Yv, np.asarray(combined),
                     maybe_title(combined_title), out_path,
-                    overlay_points=overlay, vmin=vmin_c, vmax=vmax_c, cmap="custom_improve",
+                    overlay_points=overlay,
+                    contour_mask=(None if (not opt or opt.get("mask") is None) else opt.get("mask")),
+                    mark_points=(None if (not opt or opt.get("rep_points") is None) else opt.get("rep_points")),
+                    mark_labels=(None if (not opt) else opt.get("labels")),
+                    vmin=vmin_c, vmax=vmax_c, cmap="custom_improve",
                     colorbar_label=cbl_eff,
                     show_colorbar=(not bool(args.no_colorbar)),
                 )
@@ -1311,10 +1517,61 @@ def main():
                     xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                     ylab = args.ylabel if args.ylabel is not None else axes_names[1]
                     cbl_eff = args.colorbar_label if args.colorbar_label is not None else "improve [%] (1 - geom-mean ratio)"
+
+                    # optima extraction per upper (combined 2D cumulative)
+                    opt = None
+                    if bool(args.optima):
+                        opt = _optima_2d_from_combined(
+                            np.asarray(improve_pct, dtype=float),
+                            np.asarray(Xv, dtype=float),
+                            np.asarray(Yv, dtype=float),
+                            top_pct=float(args.optima_top_pct),
+                            delta=(None if args.optima_delta is None else float(args.optima_delta)),
+                            connectivity=int(args.optima_connectivity),
+                            max_islands=int(args.optima_max_islands),
+                        )
+                        islands = opt.get("islands", []) if isinstance(opt, dict) else []
+                        if islands:
+                            print(f"[optima] cumulative combined 2D: upper={up:.6g} method={opt.get('method')} threshold={opt.get('threshold'):.6g} vmax={opt.get('vmax'):.6g} islands={len(islands)}")
+                            for i, d in enumerate(islands, start=1):
+                                print(
+                                    f"  #{i}: rep=({float(d['rep_x']):.6g}, {float(d['rep_y']):.6g}) "
+                                    f"value={float(d['rep_value']):.6g} island_max={float(d['island_max']):.6g} n_cells={int(d['n_cells'])}"
+                                )
+                            if args.output_optima_csv:
+                                csv_path = _optima_csv_path(args.output_optima_csv, f"upper_{up:.6g}")
+                                if csv_path:
+                                    df_opt = pd.DataFrame(
+                                        [
+                                            dict(
+                                                upper=float(up),
+                                                rank=i,
+                                                rep_x=float(d["rep_x"]),
+                                                rep_y=float(d["rep_y"]),
+                                                rep_value=float(d["rep_value"]),
+                                                island_max=float(d["island_max"]),
+                                                island_median=float(d["island_median"]),
+                                                n_cells=int(d["n_cells"]),
+                                                area=float(d["area"]),
+                                                center_median_x=float(d["center_median_x"]),
+                                                center_median_y=float(d["center_median_y"]),
+                                                threshold=float(opt.get("threshold")),
+                                                vmax=float(opt.get("vmax")),
+                                                method=str(opt.get("method")),
+                                            )
+                                            for i, d in enumerate(islands, start=1)
+                                        ]
+                                    )
+                                    df_opt.to_csv(csv_path, index=False)
+
                     plot_2d(
                         xlab, ylab, Xv, Yv, np.asarray(improve_pct),
                         maybe_title(title_2d), out_path,
-                        overlay_points=overlay, vmin=vmin_c, vmax=vmax_c, cmap="custom_improve",
+                        overlay_points=overlay,
+                        contour_mask=(None if (not opt or opt.get("mask") is None) else opt.get("mask")),
+                        mark_points=(None if (not opt or opt.get("rep_points") is None) else opt.get("rep_points")),
+                        mark_labels=(None if (not opt) else opt.get("labels")),
+                        vmin=vmin_c, vmax=vmax_c, cmap="custom_improve",
                         colorbar_label=cbl_eff,
                         show_colorbar=(not bool(args.no_colorbar)),
                     )
