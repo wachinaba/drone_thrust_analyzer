@@ -128,7 +128,9 @@ def _strip_trailing_keyword_timestamp(base_filename, tail_keywords):
             prefix = base_filename[:m.start()]
             # '.csv' を除いた末尾部からタイムスタンプ候補を全抽出し、最後を採用
             suffix_no_ext = base_filename[m.start():-4]
-            ts_candidates = re.findall(r'(\d{{8}}(?:[-_]\d{{6}})?)', suffix_no_ext)
+            # NOTE: regex quantifier braces must be single `{}` in a raw string.
+            #       `\d{8}` matches YYYYMMDD, optionally followed by `[-_]HHMMSS`.
+            ts_candidates = re.findall(r'(\d{8}(?:[-_]\d{6})?)', suffix_no_ext)
             ts = ts_candidates[-1] if ts_candidates else None
             return f"{prefix}.csv", ts
     return base_filename, None
@@ -710,7 +712,11 @@ def main():
         for c in numeric_meas_cols:
             concatenated_group[c] = pd.to_numeric(concatenated_group[c], errors='coerce')
         # 出力に含めるパラメータ列（group_keys や集計済の特別列は除外）
-        exclude_param_cols = set(group_keys) | {'target_thrust', 'control'}
+        # NOTE:
+        # - file_timestamp は `--group-by-file-timestamp` 時に group key になりうるため、
+        #   集約列としても出してしまうと reset_index() で重複して例外になる。
+        # - それ以外のケースでも file_timestamp は特別扱いしているため、ここでは常に除外する。
+        exclude_param_cols = set(group_keys) | {'target_thrust', 'control', 'file_timestamp'}
         param_cols_for_output = [p for p in sorted(param_keys_union) if p not in exclude_param_cols and p in concatenated_group.columns]
         agg_dict = {
             'sample_count': ('target_thrust', 'count'),

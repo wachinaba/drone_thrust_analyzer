@@ -42,6 +42,10 @@ class AutoThrustRecorder(Node):
             "30deg_short": [91.475, 21.633, 0.4504],
             "0deg_short": [126.67, 14.089, 0.6691],
             "linear": [0.0, 1.0, 0.0],
+
+            # slant -30deg
+            "tilt0deg_fold0deg_slant-30deg": [103.71, 16.053, 0.6686], #y = 103.71x2 + 16.053x + 0.6686
+
             # slant -15deg
             ## fold 0deg
             "tilt30deg_fold0deg_slant-15deg": [96.185, 17.625, 0.6216], #y = 96.185x2 + 17.625x + 0.6216
@@ -94,6 +98,9 @@ class AutoThrustRecorder(Node):
             "tilt0deg_fold15deg_slant15deg": [115.3, 19.694, 0.5929], #y = 115.3x2 + 19.694x + 0.5929
             "tilt15deg_fold15deg_slant15deg": [108.23, 20.094, 0.7166], #y = 108.23x2 + 20.094x + 0.7166
             "tilt30deg_fold15deg_slant15deg": [101.4, 17.914, 0.4998], #y = 101.4x2 + 17.914x + 0.4998
+
+            # slant 30deg
+            "tilt0deg_fold0deg_slant30deg": [104.36, 17.939, 0.5291], #y = 104.36x2 + 17.939x + 0.5291 (16.2V)
         }
 
         self.scheduler_params = {
