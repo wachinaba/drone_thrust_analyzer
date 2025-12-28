@@ -298,6 +298,7 @@ def plot_single_raw_and_fit(
     fit_extrema: bool,
     fit_extrema_vline: bool,
     fit_extrema_marker: bool,
+    fit_extrema_reverse_colors: bool,
     xlabel: Optional[str],
     ylabel: Optional[str],
     colorbar_label: Optional[str],
@@ -731,6 +732,8 @@ def plot_single_raw_and_fit(
         # Styling
         c_max = "tab:red"
         c_min = "tab:blue"
+        if bool(fit_extrema_reverse_colors):
+            c_max, c_min = c_min, c_max
         ls = (0, (4, 3))  # dashed
         lw = 1.6
         a = 0.75
@@ -882,6 +885,13 @@ def main() -> int:
         metavar="{t,f}",
         help="fitの最大/最小点にマーカーも表示（--fit-extrema=t のとき有効、デフォルト: f）",
     )
+    parser.add_argument(
+        "--fit-extrema-reverse-colors",
+        type=gpr.parse_tf,
+        default=False,
+        metavar="{t,f}",
+        help="fitの最大/最小表示の色（max=赤/min=青）を入れ替える（--fit-extrema=t のとき有効、デフォルト: f）",
+    )
 
     # ドローン図
     parser.add_argument("--drone", type=gpr.parse_tf, default=True, metavar="{t,f}", help="3Dドローン図を重畳（デフォルト: t）")
@@ -1011,6 +1021,7 @@ def main() -> int:
         fit_extrema=bool(getattr(args, "fit_extrema", False)),
         fit_extrema_vline=bool(getattr(args, "fit_extrema_vline", False)),
         fit_extrema_marker=bool(getattr(args, "fit_extrema_marker", False)),
+        fit_extrema_reverse_colors=bool(getattr(args, "fit_extrema_reverse_colors", False)),
         xlabel=args.xlabel,
         ylabel=args.ylabel,
         colorbar_label=args.colorbar_label,
