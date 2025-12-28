@@ -1,0 +1,94 @@
+\subsection{Near-optimal set に基づく複数最適条件の抽出（2D，島内最大点を代表点とする）}
+本研究では，多峰性および平坦な最適領域（plateau）を想定し，
+最適「点」ではなく最適「領域」を扱うため，目的関数（改善率）場の上位レベル集合
+（near-optimal set）を抽出し，その連結成分（島）を複数の最適候補として列挙する．
+
+\paragraph{入力}
+2次元パラメータ $(x,y)$ の格子点集合
+$\{x_i\}_{i=1}^{N_x}$，$\{y_j\}_{j=1}^{N_y}$ と，
+各格子点で評価した改善率
+$V \in \mathbb{R}^{N_y \times N_x}$（大きいほど良い）を用いる．
+ここで $V_{j,i}$ は格子点 $(x_i,y_j)$ に対応する．
+
+\paragraph{（任意）凸包によるマスク}
+外挿領域の影響を避けるため，観測データ点集合 $\mathcal{D}=\{(x^{(n)},y^{(n)})\}_{n=1}^{N_D}$
+から凸包 $\mathrm{CH}(\mathcal{D})$ を構成し，その外側を無効化する．
+すなわち，
+\[
+V_{j,i} \leftarrow \mathrm{NaN}\quad \text{if } (x_i,y_j)\notin \mathrm{CH}(\mathcal{D}).
+\]
+（$\mathcal{D}$ は全データ点または \texttt{--fix} 適用後の点群から選ぶ．）
+
+\paragraph{near-optimal set（top-pct）}
+有限値（$\mathrm{NaN}$ ではない）成分の集合を
+$\Omega=\{(i,j)\mid V_{j,i}\in\mathbb{R}\}$ とする．
+上位 $p$[\%] を準最適集合とするため，閾値 $t$ を
+\[
+t=\mathrm{Quantile}_{1-p/100}\left(\{V_{j,i}\mid (i,j)\in\Omega\}\right)
+\]
+で定め，二値マスク
+\[
+M_{j,i}=
+\begin{cases}
+1 & (i,j)\in\Omega \ \wedge\ V_{j,i}\ge t,\\
+0 & \text{otherwise}
+\end{cases}
+\]
+を構成する．
+
+\paragraph{島分割}
+マスク $M$ の連結成分（8近傍または4近傍）を $\{C_k\}_{k=1}^{K}$ とする．
+各島 $C_k$ に対し，島内最大値
+\[
+m_k=\max_{(i,j)\in C_k} V_{j,i}
+\]
+を計算する．
+
+\paragraph{代表点（島内最大点）}
+各島 $C_k$ の代表点は，島内で最大改善率を取る点（argmax点）として定義する：
+\[
+(i_k^\ast,j_k^\ast)\in \arg\max_{(i,j)\in C_k} V_{j,i}.
+\]
+ただし最大点が複数存在する場合（plateauなど）には，代表点の一意性と安定性のため，
+島内点の座標ごとの中央値
+\[
+\tilde{x}_k=\mathrm{median}\{x_i\mid (i,j)\in C_k\},\qquad
+\tilde{y}_k=\mathrm{median}\{y_j\mid (i,j)\in C_k\}
+\]
+を計算し，最大点集合のうち $(\tilde{x}_k,\tilde{y}_k)$ に最も近い点を選ぶ：
+\[
+(i_k^\ast,j_k^\ast)=
+\arg\min_{(i,j)\in \arg\max_{(i',j')\in C_k} V_{j',i'}}\left[(x_i-\tilde{x}_k)^2+(y_j-\tilde{y}_k)^2\right].
+\]
+代表改善率は $v_k^\ast=V_{j_k^\ast,i_k^\ast}=m_k$ である．
+
+\paragraph{順位付け}
+島のスコアとして島内最大値 $m_k$ を用い，$m_k$ の降順で順位付けする．
+同点の場合は島サイズ $|C_k|$ の降順でタイブレークする．上位 $K_{\max}$ 個を出力する．
+
+\begin{algorithm}[t]
+\caption{2D改善率場からの複数最適条件抽出（top-pct near-optimal set，島内最大点）}
+\label{alg:optima-top-pct-argmax}
+\begin{algorithmic}[1]
+\Require grid $\{x_i\}_{i=1}^{N_x}$, $\{y_j\}_{j=1}^{N_y}$, improve field $V\in\mathbb{R}^{N_y\times N_x}$
+\Require top percentile $p\in(0,100]$, connectivity $c\in\{4,8\}$, optional hull mask
+\Ensure ranked candidates $\{(x_k^\ast,y_k^\ast,v_k^\ast)\}_{k=1}^{K'}$
+\State \textbf{(Optional)} Mask by convex hull: $V_{j,i}\gets \mathrm{NaN}$ if $(x_i,y_j)\notin \mathrm{CH}(\mathcal{D})$
+\State $\Omega\gets \{(i,j)\mid V_{j,i}\ \text{is finite}\}$
+\State $t \gets \mathrm{Quantile}_{1-p/100}(\{V_{j,i}\mid (i,j)\in\Omega\})$
+\State $M_{j,i}\gets 1$ if $(i,j)\in\Omega$ and $V_{j,i}\ge t$ else $0$
+\State $\{C_k\}_{k=1}^{K} \gets \mathrm{ConnectedComponents}(M;\ c)$
+\For{$k=1$ to $K$}
+  \State $m_k\gets \max_{(i,j)\in C_k} V_{j,i}$;\quad $s_k\gets |C_k|$
+  \State $\tilde{x}_k\gets \mathrm{median}\{x_i\mid (i,j)\in C_k\}$;\quad
+         $\tilde{y}_k\gets \mathrm{median}\{y_j\mid (i,j)\in C_k\}$
+  \State $S_k \gets \{(i,j)\in C_k \mid V_{j,i}=m_k\}$ \Comment{maximizers}
+  \State $(i_k^\ast,j_k^\ast)\gets \arg\min_{(i,j)\in S_k}\left[(x_i-\tilde{x}_k)^2+(y_j-\tilde{y}_k)^2\right]$
+  \State $v_k^\ast\gets V_{j_k^\ast,i_k^\ast}$ \Comment{$=m_k$}
+\EndFor
+\State Sort islands by $(m_k \downarrow,\ s_k \downarrow)$ and keep top $K_{\max}$
+\State \Return $\{(x_{i_k^\ast},y_{j_k^\ast},v_k^\ast)\}_{k=1}^{K'}$
+\end{algorithmic}
+\end{algorithm}
+
+

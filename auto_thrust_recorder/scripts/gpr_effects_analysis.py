@@ -116,17 +116,32 @@ def _optima_2d_from_combined(
         ixs = comp[:, 1]
         xs = Xv[ixs]
         ys = Yv[iys]
+        # island center (for stable tie-break)
         cx = float(np.median(xs))
         cy = float(np.median(ys))
-        d2 = (xs - cx) ** 2 + (ys - cy) ** 2
-        k = int(np.argmin(d2))
+
+        island_vals = np.asarray(V[iys, ixs], dtype=float)
+        island_max = float(np.nanmax(island_vals))
+        island_med = float(np.nanmedian(island_vals))
+
+        # representative point = argmax within island (ties -> nearest to median center)
+        max_mask = np.isfinite(island_vals) & (island_vals == island_max)
+        cand = np.where(max_mask)[0]
+        if cand.size == 0:
+            # fallback: nearest to center among all cells (should be rare)
+            d2 = (xs - cx) ** 2 + (ys - cy) ** 2
+            k = int(np.argmin(d2))
+        elif cand.size == 1:
+            k = int(cand[0])
+        else:
+            d2c = (xs[cand] - cx) ** 2 + (ys[cand] - cy) ** 2
+            k = int(cand[int(np.argmin(d2c))])
+
         rep_ix = int(ixs[k])
         rep_iy = int(iys[k])
         rep_x = float(Xv[rep_ix])
         rep_y = float(Yv[rep_iy])
-        rep_v = float(V[rep_iy, rep_ix])
-        island_max = float(np.nanmax(V[iys, ixs]))
-        island_med = float(np.nanmedian(V[iys, ixs]))
+        rep_v = float(island_max)
         n_cells = int(comp.shape[0])
         area = (float(n_cells) * float(cell_area)) if (cell_area is not None) else float(n_cells)
         islands.append(
@@ -163,6 +178,111 @@ def _optima_2d_from_combined(
         "rep_points": rep_points,
         "labels": labels,
     }
+
+
+def _pretty_axis_symbol(name: str) -> str:
+    s = str(name or "").strip()
+    low = s.lower()
+    if "alpha" in low or low in {"a", "α"}:
+        return "α"
+    if "beta" in low or low in {"b", "β"}:
+        return "β"
+    return s if s else "x"
+
+
+def _format_peak_list_text(
+    islands: Sequence[Dict[str, Any]],
+    *,
+    x_label: str,
+    y_label: str,
+    max_items: int = 10,
+) -> str:
+    """
+    例:
+      Top Improve
+      1: 12.3 % (at α=0.0, β=5.0)
+      ...
+    """
+    if not islands:
+        return ""
+    xl = _pretty_axis_symbol(x_label)
+    yl = _pretty_axis_symbol(y_label)
+    lines = ["Top Improve"]
+    n = min(int(max_items) if max_items else len(islands), len(islands))
+    for i in range(n):
+        d = islands[i]
+        v = float(d.get("rep_value", float("nan")))
+        x = float(d.get("rep_x", float("nan")))
+        y = float(d.get("rep_y", float("nan")))
+        lines.append(f"{i+1}: {v:.3g} % (at {xl}={x:.3g}, {yl}={y:.3g})")
+    return "\n".join(lines)
+
+def _convex_hull_2d(points_xy: np.ndarray) -> Optional[np.ndarray]:
+    """
+    2D点群 (N,2) の凸包を monotone chain で計算する（SciPy不要）。
+    Returns: hull vertices (M,2) in CCW order, without repeating the first point.
+             点が足りない場合は None。
+    """
+    pts = np.asarray(points_xy, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        return None
+    # drop non-finite
+    m = np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1])
+    pts = pts[m]
+    if pts.shape[0] < 3:
+        return None
+    # unique points
+    pts = np.unique(pts, axis=0)
+    if pts.shape[0] < 3:
+        return None
+    # sort by x then y
+    pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
+
+    def cross(o, a, b) -> float:
+        return float((a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]))
+
+    lower: list[np.ndarray] = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0.0:
+            lower.pop()
+        lower.append(p)
+
+    upper: list[np.ndarray] = []
+    for p in pts[::-1]:
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0.0:
+            upper.pop()
+        upper.append(p)
+
+    hull = np.vstack([np.asarray(lower), np.asarray(upper[1:-1])])
+    if hull.shape[0] < 3:
+        return None
+    return hull
+
+
+def _mask_by_polygon_2d(Z: np.ndarray, x_vals: np.ndarray, y_vals: np.ndarray, poly_xy: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Z (ny,nx) を polygon 外で NaN にする。
+    Returns: (Z_masked, inside_mask[ny,nx])
+    """
+    from matplotlib.path import Path  # matplotlib は依存済みなのでここでimport
+
+    Z0 = np.asarray(Z, dtype=float)
+    Xv = np.asarray(x_vals, dtype=float).reshape(-1)
+    Yv = np.asarray(y_vals, dtype=float).reshape(-1)
+    if Z0.shape != (len(Yv), len(Xv)):
+        raise ValueError(f"shape mismatch: Z={Z0.shape}, x={len(Xv)}, y={len(Yv)}")
+    poly = np.asarray(poly_xy, dtype=float)
+    if poly.ndim != 2 or poly.shape[1] != 2 or poly.shape[0] < 3:
+        return Z0, np.ones_like(Z0, dtype=bool)
+
+    # build grid points (N,2)
+    Xg, Yg = np.meshgrid(Xv, Yv)
+    pts = np.stack([Xg.reshape(-1), Yg.reshape(-1)], axis=1)
+    inside = Path(poly, closed=True).contains_points(pts)
+    inside_mask = inside.reshape(Z0.shape)
+    Zm = Z0.copy()
+    Zm[~inside_mask] = np.nan
+    return Zm, inside_mask
 
 
 def parse_normalize_ref(text: str) -> Dict[str, float]:
@@ -651,6 +771,14 @@ def main():
     p.add_argument('--fix', action='append', default=None, help="固定値 'col=value' 複数可")
     p.add_argument('--overlay-raw', action='store_true', help='2Dヒートマップに raw data 点（--fixで絞り込み）を重ね描きする')
     p.add_argument('--overlay-raw-all', action='store_true', help='2Dヒートマップに raw data 点（--fix無視で全点）を重ね描きする')
+    p.add_argument(
+        '--mask-by-convex-hull',
+        nargs='?',
+        const='all',
+        default=None,
+        choices=['all', 'fix'],
+        help="2Dヒートマップをrawデータ点の凸包でマスクする。'all'は全点、'fix'は--fix適用後の点。凸包外はNaN。",
+    )
     p.add_argument('--fix-tol', type=float, default=1e-3, help='--fix の一致判定許容誤差（abs(x - value) <= tol）')
     p.add_argument('--viz-range', action='append', default=None, help="可視化軸の範囲 'col:min,max[:N]' 複数可（min/maxに 'auto' 可）")
     p.add_argument('--viz-points', type=int, default=100, help='可視化軸デフォルト分解能')
@@ -979,6 +1107,30 @@ def main():
             elif args.overlay_raw:
                 overlay = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=False)
 
+        # convex-hull mask (2D only): outside hull -> NaN
+        hull_inside_mask = None
+        hull_desc = None
+        if len(axes_names) == 2 and args.mask_by_convex_hull:
+            src = str(args.mask_by_convex_hull).strip().lower()
+            ignore_fix = (src == "all")
+            pts_hull = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=ignore_fix)
+            hull = _convex_hull_2d(pts_hull) if pts_hull is not None else None
+            if hull is not None:
+                # build inside-mask for the current grid
+                Xv0 = np.asarray(axes_vals[0], dtype=float)
+                Yv0 = np.asarray(axes_vals[1], dtype=float)
+                _dummy = np.zeros((len(Yv0), len(Xv0)), dtype=float)
+                _, hull_inside_mask = _mask_by_polygon_2d(_dummy, Xv0, Yv0, hull)
+                hull_desc = f"convex_hull(src={src}, n_pts={int(pts_hull.shape[0])})"
+
+        def apply_hull_nan(arr: Any) -> np.ndarray:
+            a = np.asarray(arr, dtype=float)
+            if hull_inside_mask is None:
+                return a
+            out = a.copy()
+            out[~hull_inside_mask] = np.nan
+            return out
+
         # heatmap range (shared)
         hm_vmin, hm_vmax = None, None
         if args.heatmap_range:
@@ -1010,15 +1162,17 @@ def main():
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else axes_names[1]
                 cbl = args.colorbar_label if args.colorbar_label is not None else str(ylab_or_cbl)
+                disp_plot = apply_hull_nan(disp)
+                title_eff = title if not hull_desc else f"{title}\n(mask: {hull_desc})"
                 plot_2d(
-                    xlab, ylab, Xv, Yv, np.asarray(disp),
-                    maybe_title(title), args.output_eval,
+                    xlab, ylab, Xv, Yv, disp_plot,
+                    maybe_title(title_eff), args.output_eval,
                     overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
                     colorbar_label=cbl,
                     show_colorbar=(not bool(args.no_colorbar)),
                 )
                 if args.output_csv:
-                    dump_csv(axes_names, axes_vals, np.asarray(disp), args.output_csv)
+                    dump_csv(axes_names, axes_vals, disp_plot, args.output_csv)
             else:
                 print(f"可視化軸が3以上のため図は出力しません。CSVで出力します。axes={axes_names}")
                 if args.output_csv:
@@ -1103,9 +1257,11 @@ def main():
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else axes_names[1]
                 cbl_eff = args.colorbar_label if args.colorbar_label is not None else str(cbl)
+                disp_plot = apply_hull_nan(disp)
+                title_eff = title if not hull_desc else f"{title}\n(mask: {hull_desc})"
                 plot_2d(
-                    xlab, ylab, Xv, Yv, np.asarray(disp),
-                    maybe_title(title), out_path,
+                    xlab, ylab, Xv, Yv, disp_plot,
+                    maybe_title(title_eff), out_path,
                     overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
                     colorbar_label=cbl_eff,
                     show_colorbar=(not bool(args.no_colorbar)),
@@ -1130,7 +1286,7 @@ def main():
                 opt = None
                 if bool(args.optima):
                     opt = _optima_2d_from_combined(
-                        np.asarray(combined, dtype=float),
+                        apply_hull_nan(combined),
                         np.asarray(Xv, dtype=float),
                         np.asarray(Yv, dtype=float),
                         top_pct=float(args.optima_top_pct),
@@ -1169,14 +1325,27 @@ def main():
                             )
                             df_opt.to_csv(args.output_optima_csv, index=False)
 
+                combined_plot = apply_hull_nan(combined)
+                title_eff = combined_title if not hull_desc else f"{combined_title}\n(mask: {hull_desc})"
+                corner_text = ""
+                if opt and isinstance(opt, dict) and opt.get("islands"):
+                    corner_text = _format_peak_list_text(
+                        opt.get("islands", []),
+                        x_label=xlab,
+                        y_label=ylab,
+                        max_items=int(args.optima_max_islands),
+                    )
+                # combined は従来 custom_improve 固定だったが、--colormap が明示された場合はそれを優先する
+                cmap_combined = args.colormap if str(args.colormap) != "viridis" else "custom_improve"
                 plot_2d(
-                    xlab, ylab, Xv, Yv, np.asarray(combined),
-                    maybe_title(combined_title), out_path,
+                    xlab, ylab, Xv, Yv, combined_plot,
+                    maybe_title(title_eff), out_path,
                     overlay_points=overlay,
                     contour_mask=(None if (not opt or opt.get("mask") is None) else opt.get("mask")),
                     mark_points=(None if (not opt or opt.get("rep_points") is None) else opt.get("rep_points")),
                     mark_labels=(None if (not opt) else opt.get("labels")),
-                    vmin=vmin_c, vmax=vmax_c, cmap="custom_improve",
+                    corner_text=corner_text,
+                    vmin=vmin_c, vmax=vmax_c, cmap=cmap_combined,
                     colorbar_label=cbl_eff,
                     show_colorbar=(not bool(args.no_colorbar)),
                 )
@@ -1184,10 +1353,11 @@ def main():
                 df = df_base
                 for m in metrics:
                     disp, _title, _cbl, _xy = displays[m]
+                    disp_out = apply_hull_nan(disp)
                     col = f"{m}_{'change_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
-                    df = _append_value_column(df, col, np.asarray(disp))
+                    df = _append_value_column(df, col, disp_out)
                 if combined is not None:
-                    df = _append_value_column(df, "combined_improve_pct", np.asarray(combined))
+                    df = _append_value_column(df, "combined_improve_pct", apply_hull_nan(combined))
                 df.to_csv(args.output_csv, index=False)
             return 0
 
@@ -1440,6 +1610,27 @@ def main():
                 if len(parts) == 2:
                     hm_vmin = float(parts[0].strip()); hm_vmax = float(parts[1].strip())
 
+            # convex-hull mask (2D cumulative): outside hull -> NaN
+            hull_inside_mask = None
+            hull_desc = None
+            if args.mask_by_convex_hull:
+                src = str(args.mask_by_convex_hull).strip().lower()
+                ignore_fix = (src == "all")
+                pts_hull = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=ignore_fix)
+                hull = _convex_hull_2d(pts_hull) if pts_hull is not None else None
+                if hull is not None:
+                    _dummy = np.zeros((len(Yv), len(Xv)), dtype=float)
+                    _, hull_inside_mask = _mask_by_polygon_2d(_dummy, Xv, Yv, hull)
+                    hull_desc = f"convex_hull(src={src}, n_pts={int(pts_hull.shape[0])})"
+
+            def apply_hull_nan(arr: Any) -> np.ndarray:
+                a = np.asarray(arr, dtype=float)
+                if hull_inside_mask is None:
+                    return a
+                out = a.copy()
+                out[~hull_inside_mask] = np.nan
+                return out
+
             for metric_name in metrics:
                 ref_z_common, actual_ref_common = compute_common_ref_2d(metric_name)
                 for i, (up, Zk_map, _, _) in enumerate(results):
@@ -1479,16 +1670,18 @@ def main():
                     xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                     ylab = args.ylabel if args.ylabel is not None else axes_names[1]
                     cbl_eff = args.colorbar_label if args.colorbar_label is not None else cbl
+                    disp_plot = apply_hull_nan(disp)
+                    title_eff = title_2d if not hull_desc else f"{title_2d}\n(mask: {hull_desc})"
                     plot_2d(
-                        xlab, ylab, Xv, Yv, np.asarray(disp),
-                        maybe_title(title_2d), out_path,
+                        xlab, ylab, Xv, Yv, disp_plot,
+                        maybe_title(title_eff), out_path,
                         overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
                         colorbar_label=cbl_eff,
                         show_colorbar=(not bool(args.no_colorbar)),
                     )
                     if args.output_csv:
                         csv_path = f"{stem}_{metric_name}_upper_{up:.6g}.csv"
-                        dump_csv(axes_names, axes_vals, np.asarray(disp), csv_path)
+                        dump_csv(axes_names, axes_vals, disp_plot, csv_path)
 
             if is_multi and args.combine == "logsum":
                 ref_m, _ = compute_common_ref_2d("moment_abs")
@@ -1505,10 +1698,11 @@ def main():
                         r_g, _, _ = normalize_by_ref_2d(Zg, Xv, Yv, axes_names[0], axes_names[1], ref_spec)
                     score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
                     improve_pct = _improve_pct_from_log_ratio(score)
+                    improve_plot = apply_hull_nan(improve_pct)
                     if (hm_vmin is not None) and (hm_vmax is not None):
                         vmin_c, vmax_c = hm_vmin, hm_vmax
                     else:
-                        c = np.asarray(improve_pct, dtype=float)
+                        c = np.asarray(improve_plot, dtype=float)
                         mabs = float(np.nanmax(np.abs(c))) if np.isfinite(c).any() else 0.0
                         vmin_c = -mabs if mabs > 0.0 else None
                         vmax_c = +mabs if mabs > 0.0 else None
@@ -1522,7 +1716,7 @@ def main():
                     opt = None
                     if bool(args.optima):
                         opt = _optima_2d_from_combined(
-                            np.asarray(improve_pct, dtype=float),
+                            improve_plot,
                             np.asarray(Xv, dtype=float),
                             np.asarray(Yv, dtype=float),
                             top_pct=float(args.optima_top_pct),
@@ -1564,14 +1758,26 @@ def main():
                                     )
                                     df_opt.to_csv(csv_path, index=False)
 
+                    corner_text = ""
+                    if opt and isinstance(opt, dict) and opt.get("islands"):
+                        corner_text = _format_peak_list_text(
+                            opt.get("islands", []),
+                            x_label=xlab,
+                            y_label=ylab,
+                            max_items=int(args.optima_max_islands),
+                        )
+                    title_eff = title_2d if not hull_desc else f"{title_2d}\n(mask: {hull_desc})"
+                    # combined は従来 custom_improve 固定だったが、--colormap が明示された場合はそれを優先する
+                    cmap_combined = args.colormap if str(args.colormap) != "viridis" else "custom_improve"
                     plot_2d(
-                        xlab, ylab, Xv, Yv, np.asarray(improve_pct),
-                        maybe_title(title_2d), out_path,
+                        xlab, ylab, Xv, Yv, improve_plot,
+                        maybe_title(title_eff), out_path,
                         overlay_points=overlay,
                         contour_mask=(None if (not opt or opt.get("mask") is None) else opt.get("mask")),
                         mark_points=(None if (not opt or opt.get("rep_points") is None) else opt.get("rep_points")),
                         mark_labels=(None if (not opt) else opt.get("labels")),
-                        vmin=vmin_c, vmax=vmax_c, cmap="custom_improve",
+                        corner_text=corner_text,
+                        vmin=vmin_c, vmax=vmax_c, cmap=cmap_combined,
                         colorbar_label=cbl_eff,
                         show_colorbar=(not bool(args.no_colorbar)),
                     )

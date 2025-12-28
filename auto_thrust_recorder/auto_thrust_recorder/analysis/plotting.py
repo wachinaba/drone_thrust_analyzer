@@ -41,9 +41,24 @@ def get_custom_improve_cmap():
     return cmap
 
 
+def get_custom_rwg_cmap():
+    """
+    -100〜+100 の発散カラーマップ（-100=赤 / 0=白 / +100=緑）。
+    0 がレンジ中央に来る（vmin=-100, vmax=+100 のように対称）ことを前提に設計。
+    """
+    colors = [
+        (0.0, (0.404, 0.0, 0.122)),  # red (at vmin)
+        (0.5, (1.0, 1.0, 1.0)),      # white (at 0)
+        (1.0, (0.0, 0.39, 0.0)),     # green (at vmax)
+    ]
+    cmap = mcolors.LinearSegmentedColormap.from_list("custom_rwg", colors)
+    return cmap
+
+
 # カスタムカラーマップを登録
 plt.colormaps.register(cmap=get_custom_rdbu_cmap(), name="custom_rdbu")
 plt.colormaps.register(cmap=get_custom_improve_cmap(), name="custom_improve")
+plt.colormaps.register(cmap=get_custom_rwg_cmap(), name="custom_rwg")
 
 
 def plot_1d(
@@ -86,6 +101,8 @@ def plot_2d(
     mark_style: dict | None = None,
     mark_labels: Sequence[str] | None = None,
     mark_label_style: dict | None = None,
+    corner_text: str | None = None,
+    corner_text_style: dict | None = None,
     vmin: float | None = None,
     vmax: float | None = None,
     cmap: str = "viridis",
@@ -95,9 +112,54 @@ def plot_2d(
     plt.figure(figsize=(10, 8))
     plt.rcParams.update({'font.size': 16})
     ax = plt.gca()
-    ax.imshow(Z, origin='lower', aspect='auto', extent=[X.min(), X.max(), Y.min(), Y.max()], cmap=cmap, vmin=vmin, vmax=vmax)
+
+    def _edges_from_centers(v: np.ndarray) -> np.ndarray:
+        vv = np.asarray(v, dtype=float).reshape(-1)
+        if vv.size == 1:
+            # arbitrary unit width
+            return np.asarray([vv[0] - 0.5, vv[0] + 0.5], dtype=float)
+        dv = np.diff(vv)
+        edges = np.empty(vv.size + 1, dtype=float)
+        edges[1:-1] = (vv[:-1] + vv[1:]) * 0.5
+        edges[0] = vv[0] - dv[0] * 0.5
+        edges[-1] = vv[-1] + dv[-1] * 0.5
+        return edges
+
+    Xc = np.asarray(X, dtype=float).reshape(-1)
+    Yc = np.asarray(Y, dtype=float).reshape(-1)
+    Xe = _edges_from_centers(Xc)
+    Ye = _edges_from_centers(Yc)
+
+    # If spacing is non-uniform, imshow (equal pixel widths) will look shifted.
+    # Use pcolormesh for correct cell geometry.
+    def _is_uniform_spacing(v: np.ndarray, rtol: float = 1e-2) -> bool:
+        vv = np.asarray(v, dtype=float).reshape(-1)
+        if vv.size <= 2:
+            return True
+        dv = np.diff(vv)
+        m = float(np.mean(np.abs(dv)))
+        if m == 0.0:
+            return True
+        return bool(np.allclose(dv, dv[0], rtol=rtol, atol=1e-12))
+
+    Z0 = np.asarray(Z)
+    if _is_uniform_spacing(Xc) and _is_uniform_spacing(Yc):
+        # Align extent to cell edges (prevents half-pixel visual offsets vs contour).
+        im = ax.imshow(
+            Z0,
+            origin='lower',
+            aspect='auto',
+            extent=[Xe[0], Xe[-1], Ye[0], Ye[-1]],
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+        )
+    else:
+        # Correct rendering for non-uniform grids.
+        im = ax.pcolormesh(Xe, Ye, Z0, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto')
+
     if bool(show_colorbar):
-        plt.colorbar(label=colorbar_label)
+        plt.colorbar(im, ax=ax, label=colorbar_label)
 
     # Optional contour overlay (e.g., near-optimal region boundary)
     if contour_mask is not None:
@@ -158,6 +220,21 @@ def plot_2d(
                     lbl_style.update(mark_label_style)
                 for i in range(min(len(mark_labels), mp.shape[0])):
                     ax.text(float(mp[i, 0]), float(mp[i, 1]), str(mark_labels[i]), **lbl_style)
+
+    # Optional corner text (bottom-left, in axes fraction)
+    if corner_text:
+        style: Dict[str, Any] = {
+            "fontsize": 10,
+            "color": "black",
+            "ha": "left",
+            "va": "bottom",
+            "transform": ax.transAxes,
+            "bbox": dict(boxstyle="round,pad=0.25", fc="white", ec="black", alpha=0.75, lw=0.5),
+            "zorder": 10,
+        }
+        if corner_text_style:
+            style.update(corner_text_style)
+        ax.text(0.02, 0.02, str(corner_text), **style)
     plt.xlabel(x_name)
     plt.ylabel(y_name)
     if title:
