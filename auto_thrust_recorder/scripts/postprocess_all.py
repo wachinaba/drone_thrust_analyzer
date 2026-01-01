@@ -121,6 +121,12 @@ def _run_one_dir(
     recreate_corrected: bool,
     do_concat: bool,
     concat_keyword_override: Optional[str],
+    # csv_concat_4.py options (optional passthrough)
+    concat_iqr_filter: bool,
+    concat_iqr_multiplier: Optional[float],
+    concat_iqr_columns: Optional[List[str]],
+    concat_iqr_mode: Optional[str],
+    concat_drop_zero_columns: Optional[List[str]],
     do_morph: bool,
     morph_cx: float,
     morph_cy: float,
@@ -182,24 +188,40 @@ def _run_one_dir(
         concat_keywords = concat_keyword_override if concat_keyword_override else ("biascorr" if do_biascorr else "raw")
         concat_dir = "corrected/" if do_biascorr else "."
 
+        concat_cmd: List[str] = [
+            python_bin,
+            str(scripts_dir / "csv_concat_4.py"),
+            "-k",
+            concat_keywords,
+            "-d",
+            concat_dir,
+            "--output",
+            "concat.csv",
+            "--group-by-file-timestamp",
+            "--dropna-mode",
+            "none",
+            "--default-column",
+            "slant_angle=0",
+            "--default-column-mode",
+            "missing",
+        ]
+
+        # IQR outlier filtering options
+        if concat_iqr_filter:
+            concat_cmd.append("--iqr-filter")
+            if concat_iqr_multiplier is not None:
+                concat_cmd.extend(["--iqr-multiplier", str(concat_iqr_multiplier)])
+            if concat_iqr_columns:
+                concat_cmd.extend(["--iqr-columns", *concat_iqr_columns])
+            if concat_iqr_mode:
+                concat_cmd.extend(["--iqr-mode", str(concat_iqr_mode)])
+
+        # Drop-zero options (affects aggregation and IQR if enabled)
+        if concat_drop_zero_columns:
+            concat_cmd.extend(["--drop-zero-columns", *concat_drop_zero_columns])
+
         rc, err = _run(
-            [
-                python_bin,
-                str(scripts_dir / "csv_concat_4.py"),
-                "-k",
-                concat_keywords,
-                "-d",
-                concat_dir,
-                "--output",
-                "concat.csv",
-                "--group-by-file-timestamp",
-                "--dropna-mode",
-                "none",
-                "--default-column",
-                "slant_angle=0",
-                "--default-column-mode",
-                "missing",
-            ],
+            concat_cmd,
             cwd=dir_path,
             log_path=log_path,
         )
@@ -265,6 +287,39 @@ def parse_args() -> argparse.Namespace:
         help="Override csv_concat_4.py -k KEYWORD (default: auto 'biascorr' if biascorr enabled else 'raw')",
     )
 
+    # csv_concat_4.py iqr/drop-zero passthrough options
+    p.add_argument(
+        "--concat-iqr-filter",
+        action="store_true",
+        help="Enable IQR outlier filtering in csv_concat_4.py (--iqr-filter).",
+    )
+    p.add_argument(
+        "--concat-iqr-multiplier",
+        type=float,
+        default=None,
+        help="IQR whisker multiplier for csv_concat_4.py (--iqr-multiplier). Only used if --concat-iqr-filter is set.",
+    )
+    p.add_argument(
+        "--concat-iqr-columns",
+        nargs="+",
+        type=str,
+        default=None,
+        help="Columns used for IQR outlier detection in csv_concat_4.py (--iqr-columns). Only used if --concat-iqr-filter is set.",
+    )
+    p.add_argument(
+        "--concat-iqr-mode",
+        choices=["any", "all"],
+        default=None,
+        help="Outlier combination rule in csv_concat_4.py (--iqr-mode). Only used if --concat-iqr-filter is set.",
+    )
+    p.add_argument(
+        "--concat-drop-zero-columns",
+        nargs="+",
+        type=str,
+        default=None,
+        help="Treat zeros as NaN for specified columns in csv_concat_4.py (--drop-zero-columns).",
+    )
+
     # morph/derived-columns step
     p.add_argument("--no-morph", action="store_true", help="disable add_calculated_columns_to_csv.py step")
     p.add_argument("--morph-cx", type=float, default=0.035, help="add_calculated_columns_to_csv.py --cx (default: 0.035)")
@@ -297,6 +352,12 @@ def main() -> int:
     do_concat = not bool(args.no_concat)
     do_morph = not bool(args.no_morph)
     concat_keyword_override = str(args.concat_keyword) if args.concat_keyword else None
+
+    concat_iqr_filter = bool(getattr(args, "concat_iqr_filter", False))
+    concat_iqr_multiplier = getattr(args, "concat_iqr_multiplier", None)
+    concat_iqr_columns = getattr(args, "concat_iqr_columns", None)
+    concat_iqr_mode = getattr(args, "concat_iqr_mode", None)
+    concat_drop_zero_columns = getattr(args, "concat_drop_zero_columns", None)
 
     do_any_per_dir = do_biascorr or do_concat or do_morph
 
@@ -347,6 +408,11 @@ def main() -> int:
                         recreate_corrected=bool(args.recreate_corrected),
                         do_concat=do_concat,
                         concat_keyword_override=concat_keyword_override,
+                        concat_iqr_filter=concat_iqr_filter,
+                        concat_iqr_multiplier=concat_iqr_multiplier,
+                        concat_iqr_columns=concat_iqr_columns,
+                        concat_iqr_mode=concat_iqr_mode,
+                        concat_drop_zero_columns=concat_drop_zero_columns,
                         do_morph=do_morph,
                         morph_cx=float(args.morph_cx),
                         morph_cy=float(args.morph_cy),
