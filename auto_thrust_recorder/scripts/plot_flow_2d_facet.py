@@ -7,6 +7,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from criteria_metrics import CRITERIA_FIELDS, compute_criteria_table
+
 
 # 角度フィッティングに最低限必要とみなす flow_direction のスパン [deg]
 ANGLE_SPAN_MIN_DEG = 20.0
@@ -122,7 +124,7 @@ def parse_args():
             "vector_unsigned = |u| colormap with (signed) direction segments (default), "
             "diff_fold = |u_front| - |u_rear| with rear folded to front (|x|), "
             "diff_ratio = (front-rear)/mean(front,rear) per point, "
-            "diff_ratio_norm = (front/robust_max - rear/robust_max) in %, "
+            "diff_ratio_norm = (front/robust_max - rear/robust_max) in %%, "
             "diff_ratio_y = diff_ratio_norm with robust max taken per (io,y)."
         ),
     )
@@ -153,6 +155,47 @@ def parse_args():
             "If specified, exports reconstructed velocity components in long format (one row per "
             "point and sensor) to the given CSV path."
         ),
+    )
+    parser.add_argument(
+        "--export-criteria",
+        type=str,
+        default=None,
+        help="criteria.tex に基づく定量評価（facet×io×side 集計）を CSV として出力するパス",
+    )
+    parser.add_argument(
+        "--print-criteria",
+        action="store_true",
+        help="criteria.tex に基づく定量評価（facet×io×side 集計）を標準出力に表示する",
+    )
+    parser.add_argument(
+        "--annotate-criteria",
+        action="store_true",
+        help="プロットの各ファセットに定量評価（facet×io×side）を注記表示する",
+    )
+    parser.add_argument(
+        "--criteria-field",
+        type=str,
+        choices=CRITERIA_FIELDS,
+        default="uy",
+        help=(
+            "非対称指数(I_asym)と流束重心(X_center)に用いる各点の値。"
+            "ux/uy/u と、その正規化（norm/norm_y）を選択できます。"
+        ),
+    )
+    parser.add_argument(
+        "--plot-xcenter",
+        action="store_true",
+        help="criteria の X_center を図中にマーカー（縦線）として重ね描きする",
+    )
+    parser.add_argument(
+        "--plot-theta-def",
+        action="store_true",
+        help="criteria の theta_def を図中に矢印として重ね描きする",
+    )
+    parser.add_argument(
+        "--criteria-by-y",
+        action="store_true",
+        help="X_center 等の criteria を y ごと（facet×io×side×y）に算出する（行数が増えます）",
     )
     return parser.parse_args()
 
@@ -450,7 +493,12 @@ def build_long_with_coordinates(components_df: pd.DataFrame) -> pd.DataFrame:
     return df_long
 
 
-def export_components_long(components_df: pd.DataFrame, export_path: str) -> None:
+def export_components_long(
+    components_df: pd.DataFrame,
+    export_path: str,
+    row_keys=None,
+    col_keys=None,
+) -> None:
     """reconstruct_components の出力をロング形式に変換して CSV にエクスポートする。
 
     1行 = 1つの (distance, flow_distance, flow_height, ..., sensor) に対応し、主な列は:
@@ -459,6 +507,9 @@ def export_components_long(components_df: pd.DataFrame, export_path: str) -> Non
       - u_mag: 推定された |u|
       - ux_abs, uy_abs: 推定された |u_x|, |u_y|
       - ux, uy: front を +x、rear を -x とし、流れが上→下（-y）と仮定して付与した符号付き成分
+      - diff_ratio_y_pct: diff_ratio_y と同じ定義の front/rear 差分[%]
+          (row_facet, col_facet, io, y) ごとに front/rear をロバスト最大で正規化し、
+          (front_norm_y - rear_norm_y) * 100 を各点に付与したもの。
       - phi_deg: 推定された角度（向きなし, [0, 180)）
       - n_samples: この点・センサでフィットに使われたデータ数（ゼロ除外後）
       - n_unique_angles: flow_direction のユニークな個数（ゼロ除外後）
@@ -506,6 +557,59 @@ def export_components_long(components_df: pd.DataFrame, export_path: str) -> Non
         raise ValueError("export_components_long: no valid rows to export.")
 
     df_export = pd.DataFrame(long_rows)
+
+    # diff_ratio_y と同じ % を、通常エクスポートに追加する
+    # - plot_facet_diff_ratio_y() と同じ定義で計算する（ファセット内の (io, y) ごとに正規化）
+    # - 計算に必要な列が不足している場合は NaN を出力し、警告を出す
+    df_export["diff_ratio_y_pct"] = np.nan
+    try:
+        tmp = add_facet_labels(df_export.copy(), row_keys, col_keys)
+
+        # merge 後の suffix 衝突を避ける（df_export 側に diff_ratio_y_pct が既にあるため）
+        tmp = tmp.drop(columns=["diff_ratio_y_pct"], errors="ignore")
+
+        # センサ名から side/io を付与
+        tmp["side"] = np.where(tmp["sensor"].astype(str).str.startswith("front"), "front", "rear")
+        tmp["io"] = np.where(tmp["sensor"].astype(str).str.endswith("in"), "in", "out")
+
+        if "flow_distance" not in tmp.columns or "flow_height" not in tmp.columns:
+            raise ValueError("flow_distance/flow_height 列がありません。")
+
+        # plot と同じ座標変換（x は mm）
+        tmp["flow_distance_mm"] = pd.to_numeric(tmp["flow_distance"], errors="coerce") * 1000.0
+        tmp["x"] = np.where(tmp["side"] == "rear", -tmp["flow_distance_mm"], tmp["flow_distance_mm"])
+        fh = pd.to_numeric(tmp["flow_height"], errors="coerce")
+        tmp["y"] = np.where(tmp["io"] == "in", 180.0 - fh, -fh)
+
+        # front/rear を |x| で折り返してペアリングし、diff_ratio_y を計算
+        diff_df = compute_front_rear_diff_fold(tmp)
+        group_keys = ["row_facet", "col_facet", "io", "y"]
+        front_max = diff_df.groupby(group_keys)["front"].transform(_robust_group_max)
+        rear_max = diff_df.groupby(group_keys)["rear"].transform(_robust_group_max)
+
+        diff_df = diff_df.copy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            diff_df["front_norm_y"] = np.where(
+                np.isfinite(front_max) & (front_max > 0),
+                diff_df["front"] / front_max,
+                np.nan,
+            )
+            diff_df["rear_norm_y"] = np.where(
+                np.isfinite(rear_max) & (rear_max > 0),
+                diff_df["rear"] / rear_max,
+                np.nan,
+            )
+        diff_df["diff_ratio_y_pct"] = (diff_df["front_norm_y"] - diff_df["rear_norm_y"]) * 100.0
+
+        # 各センサ行へ付与（内部キーとして row/col facet を使用。出力列には追加しない）
+        tmp["x_abs"] = tmp["x"].abs()
+        key_cols = ["row_facet", "col_facet", "io", "x_abs", "y"]
+        diff_key = diff_df[key_cols + ["diff_ratio_y_pct"]].copy()
+        tmp2 = tmp.merge(diff_key, on=key_cols, how="left")
+        df_export["diff_ratio_y_pct"] = tmp2["diff_ratio_y_pct"].to_numpy()
+    except Exception as e:
+        print(f"Warning: diff_ratio_y_pct の計算に失敗したため NaN を出力します: {e}")
+
     out_path = Path(export_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df_export.to_csv(out_path, index=False)
@@ -568,6 +672,213 @@ def add_facet_labels(df_long: pd.DataFrame, row_keys, col_keys) -> pd.DataFrame:
     return df_long
 
 
+def _format_num(v: float | int | None, fmt: str) -> str:
+    if v is None:
+        return "nan"
+    try:
+        fv = float(v)
+    except Exception:
+        return "nan"
+    if not np.isfinite(fv):
+        return "nan"
+    return format(fv, fmt)
+
+
+def _annotate_criteria_on_facet_axes(
+    axes: np.ndarray,
+    row_levels: list[str],
+    col_levels: list[str],
+    criteria_df: pd.DataFrame,
+) -> None:
+    """各ファセットに criteria 集計結果（facet×io×side）を注記する。"""
+    need_cols = [
+        "row_facet",
+        "col_facet",
+        "io",
+        "side",
+        "criteria_field",
+        "I_asym",
+        "X_center_mm",
+        "theta_def_deg",
+    ]
+    miss = [c for c in need_cols if c not in criteria_df.columns]
+    if miss:
+        raise ValueError(f"criteria_df に必要な列が不足しています: {', '.join(miss)}")
+
+    # 1 facet = (row_facet, col_facet) 内に、io×side の4行をまとめて書く
+    for i, rlab in enumerate(row_levels):
+        for j, clab in enumerate(col_levels):
+            ax = axes[i, j]
+            if not ax.get_visible():
+                continue
+
+            sub = criteria_df[
+                (criteria_df["row_facet"] == rlab) & (criteria_df["col_facet"] == clab)
+            ]
+            if sub.empty:
+                continue
+
+            # criteria_field は facet 内で同一のはず
+            cf = str(sub["criteria_field"].iloc[0])
+            lines = [f"criteria={cf}"]
+            for io in ["in", "out"]:
+                for side in ["front", "rear"]:
+                    one = sub[(sub["io"] == io) & (sub["side"] == side)]
+                    if one.empty:
+                        lines.append(f"{io}/{side}: -")
+                        continue
+                    # criteria_by_y の場合は y 方向に平均した代表値を表示
+                    r = one.agg(
+                        {
+                            "I_asym": "mean",
+                            "X_center_mm": "mean",
+                            "theta_def_deg": "mean",
+                        }
+                    )
+                    I = _format_num(r.get("I_asym", np.nan), ".3g")
+                    X = _format_num(r.get("X_center_mm", np.nan), ".3g")
+                    th = _format_num(r.get("theta_def_deg", np.nan), ".3g")
+                    lines.append(f"{io}/{side}: I={I}, X={X}mm, θ={th}°")
+
+            txt = "\n".join(lines)
+            ax.text(
+                0.02,
+                0.98,
+                txt,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8.5,
+                color="white",
+                bbox=dict(facecolor="black", alpha=0.35, edgecolor="none", pad=2.0),
+                zorder=10,
+            )
+
+
+def _overlay_criteria_marks_on_facet_axes(
+    axes: np.ndarray,
+    row_levels: list[str],
+    col_levels: list[str],
+    criteria_df: pd.DataFrame,
+    *,
+    plot_xcenter: bool,
+    plot_theta_def: bool,
+    x_is_abs: bool,
+) -> None:
+    """各ファセットに X_center / theta_def の図示（マーカー/矢印）を重ね描きする。"""
+    if (not plot_xcenter) and (not plot_theta_def):
+        return
+
+    need_cols = ["row_facet", "col_facet", "io", "side", "X_center_mm", "theta_def_deg"]
+    miss = [c for c in need_cols if c not in criteria_df.columns]
+    if miss:
+        raise ValueError(f"criteria_df に必要な列が不足しています: {', '.join(miss)}")
+
+    # 表示スタイル（ioで色、sideで線種/マーカー）
+    io_color = {"in": "#2ca02c", "out": "#9467bd"}  # green / purple
+    side_ls = {"front": "-", "rear": "--"}
+
+    for i, rlab in enumerate(row_levels):
+        for j, clab in enumerate(col_levels):
+            ax = axes[i, j]
+            if not ax.get_visible():
+                continue
+
+            sub = criteria_df[
+                (criteria_df["row_facet"] == rlab) & (criteria_df["col_facet"] == clab)
+            ]
+            if sub.empty:
+                continue
+
+            x0, x1 = ax.get_xlim()
+            y0, y1 = ax.get_ylim()
+            x_span = x1 - x0 if np.isfinite(x1 - x0) and x1 != x0 else 1.0
+            y_span = y1 - y0 if np.isfinite(y1 - y0) and y1 != y0 else 1.0
+
+            # in/out で上下に分けて表示（データ座標）
+            y_anchor = {"in": y1 - 0.08 * y_span, "out": y0 + 0.08 * y_span}
+
+            # 矢印の長さ（データ座標でスケール）
+            L = 0.12 * min(abs(x_span), abs(y_span))
+
+            for io in ["in", "out"]:
+                for side in ["front", "rear"]:
+                    one = sub[(sub["io"] == io) & (sub["side"] == side)]
+                    if one.empty:
+                        continue
+                    col = io_color.get(io, "white")
+                    ls = side_ls.get(side, "-")
+
+                    # criteria_by_y: y 列がある場合は、y ごとの X_center を線/点列で表示
+                    has_y = "y" in one.columns
+                    if plot_xcenter and has_y and len(one) > 1:
+                        xs = pd.to_numeric(one["X_center_mm"], errors="coerce").to_numpy(dtype=float)
+                        ys = pd.to_numeric(one["y"], errors="coerce").to_numpy(dtype=float)
+                        m = np.isfinite(xs) & np.isfinite(ys)
+                        if np.any(m):
+                            xs = xs[m]
+                            ys = ys[m]
+                            order = np.argsort(ys)
+                            xs = xs[order]
+                            ys = ys[order]
+                            xplot = np.abs(xs) if x_is_abs else xs
+                            ax.plot(
+                                xplot,
+                                ys,
+                                color=col,
+                                linestyle=ls,
+                                linewidth=1.6,
+                                marker="o",
+                                markersize=3.0,
+                                alpha=0.9,
+                                zorder=9,
+                            )
+                    else:
+                        # 従来: 代表値で 1 点だけ
+                        r = one.agg({"X_center_mm": "mean", "theta_def_deg": "mean"})
+                        xc_mm = r.get("X_center_mm", np.nan)
+                        th_deg = r.get("theta_def_deg", np.nan)
+                        if not np.isfinite(xc_mm):
+                            continue
+                        x_plot = abs(float(xc_mm)) if x_is_abs else float(xc_mm)
+                        if not (min(x0, x1) - 0.05 * x_span <= x_plot <= max(x0, x1) + 0.05 * x_span):
+                            continue
+                        yy = y_anchor[io]
+                        if plot_xcenter:
+                            ax.plot(
+                                [x_plot, x_plot],
+                                [yy - 0.03 * y_span, yy + 0.03 * y_span],
+                                color=col,
+                                linestyle=ls,
+                                linewidth=2.0,
+                                alpha=0.95,
+                                zorder=9,
+                            )
+                        if plot_theta_def and np.isfinite(th_deg):
+                            th = np.deg2rad(float(th_deg))
+                            dx_out = L * np.sin(th)
+                            dy = -L * np.cos(th)
+                            sign_x = 1.0 if side == "front" else -1.0
+                            dx = dx_out * sign_x
+                            if x_is_abs:
+                                dx = abs(dx)
+                            ax.annotate(
+                                "",
+                                xy=(x_plot + dx, yy + dy),
+                                xytext=(x_plot, yy),
+                                arrowprops=dict(
+                                    arrowstyle="-|>",
+                                    color=col,
+                                    linewidth=1.6,
+                                    linestyle=ls,
+                                    alpha=0.95,
+                                    shrinkA=0,
+                                    shrinkB=0,
+                                ),
+                                zorder=9,
+                            )
+
+
 def plot_facet_2d(
     df_long: pd.DataFrame,
     mode: str,
@@ -576,6 +887,10 @@ def plot_facet_2d(
     cmap_in: str = "viridis",
     cmap_out: str = "plasma",
     colorbar_mode: str = "by_io",
+    criteria_df: pd.DataFrame | None = None,
+    annotate_criteria: bool = False,
+    plot_xcenter: bool = False,
+    plot_theta_def: bool = False,
 ):
     """(x,y,|u|) をファセットプロットする。mode='vector_unsigned' の場合は無向きベクトルも重ねる。"""
     if df_long.empty:
@@ -738,6 +1053,19 @@ def plot_facet_2d(
             ax.set_xlim(x_min - 0.05 * x_span, x_max + 0.05 * x_span)
             ax.set_ylim(y_min - 0.05 * y_span, y_max + 0.05 * y_span)
             ax.set_aspect("equal", adjustable="box")
+
+    if annotate_criteria and criteria_df is not None and not criteria_df.empty:
+        _annotate_criteria_on_facet_axes(axes, row_levels, col_levels, criteria_df)
+    if criteria_df is not None and not criteria_df.empty:
+        _overlay_criteria_marks_on_facet_axes(
+            axes,
+            row_levels,
+            col_levels,
+            criteria_df,
+            plot_xcenter=plot_xcenter,
+            plot_theta_def=plot_theta_def,
+            x_is_abs=False,
+        )
 
     # adjust margins so that row/column labelsとカラーバーが収まるようにする
     # 左に十分な余白を確保（行ラベル用）、右はカラーバー用
@@ -949,7 +1277,15 @@ def plot_facet_scalar_norm(df_long: pd.DataFrame, dpi: int, output: str | None):
         plt.show()
 
 
-def plot_facet_scalar_norm_y(df_long: pd.DataFrame, dpi: int, output: str | None):
+def plot_facet_scalar_norm_y(
+    df_long: pd.DataFrame,
+    dpi: int,
+    output: str | None,
+    criteria_df: pd.DataFrame | None = None,
+    annotate_criteria: bool = False,
+    plot_xcenter: bool = False,
+    plot_theta_def: bool = False,
+):
     """|u| を (io, y) ごとのロバスト最大値で正規化し、0〜100% として表示するモード。"""
     if df_long.empty:
         raise ValueError("プロット対象データが空です。")
@@ -1047,6 +1383,19 @@ def plot_facet_scalar_norm_y(df_long: pd.DataFrame, dpi: int, output: str | None
             ax.set_ylim(y_min - 0.05 * y_span, y_max + 0.05 * y_span)
             ax.set_aspect("equal", adjustable="box")
 
+    if annotate_criteria and criteria_df is not None and not criteria_df.empty:
+        _annotate_criteria_on_facet_axes(axes, row_levels, col_levels, criteria_df)
+    if criteria_df is not None and not criteria_df.empty:
+        _overlay_criteria_marks_on_facet_axes(
+            axes,
+            row_levels,
+            col_levels,
+            criteria_df,
+            plot_xcenter=plot_xcenter,
+            plot_theta_def=plot_theta_def,
+            x_is_abs=False,
+        )
+
     fig.subplots_adjust(left=0.35, right=0.82, top=0.9, bottom=0.12)
     fig.canvas.draw()
 
@@ -1122,7 +1471,15 @@ def compute_front_rear_diff_fold(df_long: pd.DataFrame) -> pd.DataFrame:
     return pivot
 
 
-def plot_facet_diff_fold(df_long: pd.DataFrame, dpi: int, output: str | None):
+def plot_facet_diff_fold(
+    df_long: pd.DataFrame,
+    dpi: int,
+    output: str | None,
+    criteria_df: pd.DataFrame | None = None,
+    annotate_criteria: bool = False,
+    plot_xcenter: bool = False,
+    plot_theta_def: bool = False,
+):
     """rear を front 側に折り返し、|u_front| - |u_rear| を色で表示するファセットプロット。"""
     diff_df = compute_front_rear_diff_fold(df_long)
 
@@ -1213,6 +1570,19 @@ def plot_facet_diff_fold(df_long: pd.DataFrame, dpi: int, output: str | None):
             ax.set_xlim(x_min - 0.05 * x_span, x_max + 0.05 * x_span)
             ax.set_ylim(y_min - 0.05 * y_span, y_max + 0.05 * y_span)
             ax.set_aspect("equal", adjustable="box")
+
+    if annotate_criteria and criteria_df is not None and not criteria_df.empty:
+        _annotate_criteria_on_facet_axes(axes, row_levels, col_levels, criteria_df)
+    if criteria_df is not None and not criteria_df.empty:
+        _overlay_criteria_marks_on_facet_axes(
+            axes,
+            row_levels,
+            col_levels,
+            criteria_df,
+            plot_xcenter=plot_xcenter,
+            plot_theta_def=plot_theta_def,
+            x_is_abs=True,
+        )
 
     # layout and facet labels (row/column) – 同じスタイルを再利用
     fig.subplots_adjust(left=0.35, right=0.82, top=0.9, bottom=0.12)
@@ -1441,7 +1811,15 @@ def plot_facet_scalar_norm_y(df_long: pd.DataFrame, dpi: int, output: str | None
         plt.show()
 
 
-def plot_facet_diff_ratio(df_long: pd.DataFrame, dpi: int, output: str | None):
+def plot_facet_diff_ratio(
+    df_long: pd.DataFrame,
+    dpi: int,
+    output: str | None,
+    criteria_df: pd.DataFrame | None = None,
+    annotate_criteria: bool = False,
+    plot_xcenter: bool = False,
+    plot_theta_def: bool = False,
+):
     """rear を front 側に折り返し、(front - rear) / mean(front, rear) を割合で表示するファセットプロット。"""
     diff_df = compute_front_rear_diff_fold(df_long)
 
@@ -1561,6 +1939,19 @@ def plot_facet_diff_ratio(df_long: pd.DataFrame, dpi: int, output: str | None):
             ax.set_ylim(y_min - 0.05 * y_span, y_max + 0.05 * y_span)
             ax.set_aspect("equal", adjustable="box")
 
+    if annotate_criteria and criteria_df is not None and not criteria_df.empty:
+        _annotate_criteria_on_facet_axes(axes, row_levels, col_levels, criteria_df)
+    if criteria_df is not None and not criteria_df.empty:
+        _overlay_criteria_marks_on_facet_axes(
+            axes,
+            row_levels,
+            col_levels,
+            criteria_df,
+            plot_xcenter=plot_xcenter,
+            plot_theta_def=plot_theta_def,
+            x_is_abs=True,
+        )
+
     fig.subplots_adjust(left=0.35, right=0.82, top=0.9, bottom=0.12)
     fig.canvas.draw()
 
@@ -1602,7 +1993,15 @@ def plot_facet_diff_ratio(df_long: pd.DataFrame, dpi: int, output: str | None):
         plt.show()
 
 
-def plot_facet_diff_ratio_norm(df_long: pd.DataFrame, dpi: int, output: str | None):
+def plot_facet_diff_ratio_norm(
+    df_long: pd.DataFrame,
+    dpi: int,
+    output: str | None,
+    criteria_df: pd.DataFrame | None = None,
+    annotate_criteria: bool = False,
+    plot_xcenter: bool = False,
+    plot_theta_def: bool = False,
+):
     """front/rear を |x| で折り返し、各点ごとに
        r = (front/front_max_robust - rear/rear_max_robust) * 100 [%]
        をプロットするモード。
@@ -1763,6 +2162,19 @@ def plot_facet_diff_ratio_norm(df_long: pd.DataFrame, dpi: int, output: str | No
             ax.set_ylim(y_min - 0.05 * y_span, y_max + 0.05 * y_span)
             ax.set_aspect("equal", adjustable="box")
 
+    if annotate_criteria and criteria_df is not None and not criteria_df.empty:
+        _annotate_criteria_on_facet_axes(axes, row_levels, col_levels, criteria_df)
+    if criteria_df is not None and not criteria_df.empty:
+        _overlay_criteria_marks_on_facet_axes(
+            axes,
+            row_levels,
+            col_levels,
+            criteria_df,
+            plot_xcenter=plot_xcenter,
+            plot_theta_def=plot_theta_def,
+            x_is_abs=True,
+        )
+
     fig.subplots_adjust(left=0.35, right=0.82, top=0.9, bottom=0.12)
     fig.canvas.draw()
 
@@ -1804,7 +2216,15 @@ def plot_facet_diff_ratio_norm(df_long: pd.DataFrame, dpi: int, output: str | No
         plt.show()
 
 
-def plot_facet_diff_ratio_y(df_long: pd.DataFrame, dpi: int, output: str | None):
+def plot_facet_diff_ratio_y(
+    df_long: pd.DataFrame,
+    dpi: int,
+    output: str | None,
+    criteria_df: pd.DataFrame | None = None,
+    annotate_criteria: bool = False,
+    plot_xcenter: bool = False,
+    plot_theta_def: bool = False,
+):
     """(io, y) ごとに front/rear をロバスト最大で正規化し、その差分[%]を表示するモード。"""
     diff_df = compute_front_rear_diff_fold(df_long)
 
@@ -1935,6 +2355,19 @@ def plot_facet_diff_ratio_y(df_long: pd.DataFrame, dpi: int, output: str | None)
             ax.set_ylim(y_min - 0.05 * y_span, y_max + 0.05 * y_span)
             ax.set_aspect("equal", adjustable="box")
 
+    if annotate_criteria and criteria_df is not None and not criteria_df.empty:
+        _annotate_criteria_on_facet_axes(axes, row_levels, col_levels, criteria_df)
+    if criteria_df is not None and not criteria_df.empty:
+        _overlay_criteria_marks_on_facet_axes(
+            axes,
+            row_levels,
+            col_levels,
+            criteria_df,
+            plot_xcenter=plot_xcenter,
+            plot_theta_def=plot_theta_def,
+            x_is_abs=True,
+        )
+
     fig.subplots_adjust(left=0.35, right=0.82, top=0.9, bottom=0.12)
     fig.canvas.draw()
 
@@ -1989,22 +2422,101 @@ def main():
         comp_df = reconstruct_components(df, args.single_angle_mode)
         # 必要なら推定結果をロング形式でエクスポート
         if args.export_components:
-            export_components_long(comp_df, args.export_components)
+            export_components_long(comp_df, args.export_components, args.row_keys, args.col_keys)
         df_long = build_long_with_coordinates(comp_df)
         # ファセット用ラベルを付与
         df_long = add_facet_labels(df_long, args.row_keys, args.col_keys)
+
+        criteria_df = None
+        if (
+            args.export_criteria
+            or args.print_criteria
+            or args.annotate_criteria
+            or args.plot_xcenter
+            or args.plot_theta_def
+        ):
+            criteria_df = compute_criteria_table(
+                df_long,
+                args.criteria_field,
+                by_y=args.criteria_by_y,
+            )
+            if args.print_criteria:
+                cols = [
+                    "row_facet",
+                    "col_facet",
+                    "y",
+                    "io",
+                    "side",
+                    "criteria_field",
+                    "I_asym",
+                    "X_center_mm",
+                    "theta_def_deg",
+                    "n_total",
+                ]
+                show = [c for c in cols if c in criteria_df.columns]
+                df_show = criteria_df[show]
+                if args.criteria_by_y and len(df_show) > 200:
+                    print(df_show.head(200).to_string(index=False))
+                    print(f"... (total rows={len(df_show)})")
+                else:
+                    print(df_show.to_string(index=False))
+            if args.export_criteria:
+                out_path = Path(args.export_criteria)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                criteria_df.to_csv(out_path, index=False)
+                print(f"Exported criteria table to: {out_path}")
         if args.mode == "diff_fold":
-            plot_facet_diff_fold(df_long, args.dpi, args.output)
+            plot_facet_diff_fold(
+                df_long,
+                args.dpi,
+                args.output,
+                criteria_df=criteria_df,
+                annotate_criteria=args.annotate_criteria,
+                plot_xcenter=args.plot_xcenter,
+                plot_theta_def=args.plot_theta_def,
+            )
         elif args.mode == "diff_ratio":
-            plot_facet_diff_ratio(df_long, args.dpi, args.output)
+            plot_facet_diff_ratio(
+                df_long,
+                args.dpi,
+                args.output,
+                criteria_df=criteria_df,
+                annotate_criteria=args.annotate_criteria,
+                plot_xcenter=args.plot_xcenter,
+                plot_theta_def=args.plot_theta_def,
+            )
         elif args.mode == "diff_ratio_norm":
-            plot_facet_diff_ratio_norm(df_long, args.dpi, args.output)
+            plot_facet_diff_ratio_norm(
+                df_long,
+                args.dpi,
+                args.output,
+                criteria_df=criteria_df,
+                annotate_criteria=args.annotate_criteria,
+                plot_xcenter=args.plot_xcenter,
+                plot_theta_def=args.plot_theta_def,
+            )
         elif args.mode == "scalar_norm":
             plot_facet_scalar_norm(df_long, args.dpi, args.output)
         elif args.mode == "scalar_norm_y":
-            plot_facet_scalar_norm_y(df_long, args.dpi, args.output)
+            plot_facet_scalar_norm_y(
+                df_long,
+                args.dpi,
+                args.output,
+                criteria_df=criteria_df,
+                annotate_criteria=args.annotate_criteria,
+                plot_xcenter=args.plot_xcenter,
+                plot_theta_def=args.plot_theta_def,
+            )
         elif args.mode == "diff_ratio_y":
-            plot_facet_diff_ratio_y(df_long, args.dpi, args.output)
+            plot_facet_diff_ratio_y(
+                df_long,
+                args.dpi,
+                args.output,
+                criteria_df=criteria_df,
+                annotate_criteria=args.annotate_criteria,
+                plot_xcenter=args.plot_xcenter,
+                plot_theta_def=args.plot_theta_def,
+            )
         else:
             plot_facet_2d(
                 df_long,
@@ -2014,6 +2526,10 @@ def main():
                 cmap_in=args.cmap_in,
                 cmap_out=args.cmap_out,
                 colorbar_mode=args.colorbar_mode,
+                criteria_df=criteria_df,
+                annotate_criteria=args.annotate_criteria,
+                plot_xcenter=args.plot_xcenter,
+                plot_theta_def=args.plot_theta_def,
             )
     except Exception as e:
         print(f"エラー: {e}", file=sys.stderr)
