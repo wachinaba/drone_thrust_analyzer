@@ -197,6 +197,23 @@ def read_and_extract_data(file_path, dropna_mode='any', dropna_subset=None):
         return None, f"ProcessError: {e}"
 
 
+def _ensure_raw_direction_column(df: pd.DataFrame) -> pd.DataFrame:
+    """入力CSVにもともと存在した direction 列を raw_direction として退避する。
+
+    - direction 列が無い場合は raw_direction を NaN で作成
+    - 既に raw_direction が存在する場合は何もしない（上書きしない）
+    """
+    if df is None or not hasattr(df, "columns"):
+        return df
+    if "raw_direction" in df.columns:
+        return df
+    if "direction" in df.columns:
+        df.loc[:, "raw_direction"] = df["direction"]
+    else:
+        df.loc[:, "raw_direction"] = np.nan
+    return df
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="front/back_reversed を結合してバイアス補正列を追加するツール")
     parser.add_argument('-k', '--keywords', nargs='+', type=str, default=['front', 'back_reversed'], help="検索するファイル名に含まれるキーワード（デフォルト: front/back_reversed）")
@@ -386,6 +403,8 @@ def main():
                 print(f"  frontファイル {f} の読み込み/抽出に失敗。スキップ。")
                 failed_data_files.append((f, reason or "EmptyDataFrame"))
                 continue
+            # 入力CSVに元々存在した direction を raw_direction として退避（direction 自体は変更しない）
+            df = _ensure_raw_direction_column(df)
             # raw ファイル名由来の file_timestamp を各行に付与（後段でファイル単位の集約に使う）
             try:
                 raw_ts = None
@@ -421,6 +440,8 @@ def main():
                 print(f"  backファイル {f} の読み込み/抽出に失敗。スキップ。")
                 failed_data_files.append((f, reason or "EmptyDataFrame"))
                 continue
+            # 入力CSVに元々存在した direction を raw_direction として退避（direction 自体は変更しない）
+            df = _ensure_raw_direction_column(df)
             # raw ファイル名由来の file_timestamp を各行に付与（後段でファイル単位の集約に使う）
             try:
                 raw_ts = None
