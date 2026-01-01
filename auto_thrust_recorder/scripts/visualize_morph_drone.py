@@ -347,6 +347,101 @@ def _circle_points(center: np.ndarray, normal: np.ndarray, radius: float, n: int
     return pts
 
 
+def get_drone_yz_polylines(
+    *,
+    phi_deg: float,
+    psi_deg: float = 0.0,
+    theta_deg: float = 0.0,
+    cx: float = 0.035,
+    cy: float = 0.035,
+    arm_length_m: float = 0.18,
+    rotor_radius_in: float = 3.5,
+    rotor_inflow_offset_m: float = 0.0,
+    symmetry: str = "mirror_xy",
+    circle_n: int = 100,
+) -> dict[str, list[np.ndarray]]:
+    """Morphing drone の YZ 投影(= front view)用の2Dポリラインを返す。
+
+    Returns dict of polylines in meters:
+      - body:  (N,2) arrays of (y,z)
+      - arms:  list of (M,2) arrays of (y,z) line segments
+      - rotors:list of (K,2) arrays of (y,z) circles
+      - rotor_centers: list of (2,) arrays of (y,z) rotor centers
+    """
+    rotor_radius_m = float(rotor_radius_in) * 0.0254
+
+    if symmetry not in {"mirror_xy", "none"}:
+        raise ValueError(f"Unknown symmetry: {symmetry}")
+
+    def _compute_poses(_phi: float, _psi: float, _theta: float):
+        base_hinge = np.array([+float(cx), +float(cy), 0.0], dtype=float)
+        base_arm_dir0 = _normalize(np.array([+1.0, +1.0, 0.0], dtype=float))
+        base_pose = _make_arm_pose(
+            hinge=base_hinge,
+            arm_dir0=base_arm_dir0,
+            phi_deg=float(_phi),
+            psi_deg=float(_psi),
+            theta_deg=float(_theta),
+        )
+
+        if symmetry == "mirror_xy":
+            M_id = np.diag([1.0, 1.0, 1.0])
+            M_x = np.diag([-1.0, 1.0, 1.0])
+            M_y = np.diag([1.0, -1.0, 1.0])
+            M_xy = np.diag([-1.0, -1.0, 1.0])
+            Ms = [M_id, M_x, M_xy, M_y]
+            poses_local = []
+            for M in Ms:
+                poses_local.append(
+                    ArmPose(
+                        hinge=(M @ base_pose.hinge),
+                        arm_dir=_normalize(M @ base_pose.arm_dir),
+                        rotor_normal=_normalize(M @ base_pose.rotor_normal),
+                    )
+                )
+            return poses_local
+
+        hinges = [
+            np.array([+float(cx), +float(cy), 0.0], dtype=float),
+            np.array([-float(cx), +float(cy), 0.0], dtype=float),
+            np.array([-float(cx), -float(cy), 0.0], dtype=float),
+            np.array([+float(cx), -float(cy), 0.0], dtype=float),
+        ]
+        arm_dirs0 = []
+        for h in hinges:
+            sx = 1.0 if float(h[0]) >= 0.0 else -1.0
+            sy = 1.0 if float(h[1]) >= 0.0 else -1.0
+            arm_dirs0.append(_normalize(np.array([sx, sy, 0.0], dtype=float)))
+        return [
+            _make_arm_pose(hinge=h, arm_dir0=d0, phi_deg=float(_phi), psi_deg=float(_psi), theta_deg=float(_theta))
+            for h, d0 in zip(hinges, arm_dirs0, strict=True)
+        ]
+
+    poses = _compute_poses(float(phi_deg), float(psi_deg), float(theta_deg))
+
+    # body outline: hinge square (YZ projection -> (y,z))
+    hinges_for_outline = [p.hinge for p in poses]
+    hs = np.array(hinges_for_outline + [hinges_for_outline[0]], dtype=float)
+    body = np.stack([hs[:, 1], hs[:, 2]], axis=1)
+
+    arms: list[np.ndarray] = []
+    rotors: list[np.ndarray] = []
+    rotor_centers_yz: list[np.ndarray] = []
+    for p in poses:
+        hinge = p.hinge
+        arm_tip = hinge + float(arm_length_m) * p.arm_dir
+        rotor_center = arm_tip + float(rotor_inflow_offset_m) * p.rotor_normal
+        rotor_centers_yz.append(np.array([rotor_center[1], rotor_center[2]], dtype=float))
+        # hinge -> arm_tip
+        arms.append(np.array([[hinge[1], hinge[2]], [arm_tip[1], arm_tip[2]]], dtype=float))
+        # arm_tip -> rotor_center
+        arms.append(np.array([[arm_tip[1], arm_tip[2]], [rotor_center[1], rotor_center[2]]], dtype=float))
+        circ = _circle_points(center=rotor_center, normal=p.rotor_normal, radius=float(rotor_radius_m), n=int(circle_n))
+        rotors.append(np.stack([circ[:, 1], circ[:, 2]], axis=1))
+
+    return {"body": [body], "arms": arms, "rotors": rotors, "rotor_centers": rotor_centers_yz}
+
+
 def plot_morphing_drone(
     cx: float,
     cy: float,
@@ -389,11 +484,24 @@ def plot_morphing_drone(
         beta = -float(np.degrees(np.arctan2(vx, vz)))   # zx-plane
         return alpha, beta
 
-    def format_alpha_beta(poses_list: list[ArmPose]) -> str:
+    def format_status_text(poses_list: list[ArmPose], *, arm_length_m: float, dy: float) -> str:
+        """
+        図中に表示するステータス文字列:
+        - 各ロータの alpha/beta
+        - 各ロータ中心位置 (x,y,z) [m]（小数3桁）
+        """
         lines = ["alpha/beta (deg) from thrust vec (rotor_normal):"]
         for i, p in enumerate(poses_list):
             a, b = thrust_angles_alpha_beta_deg(p.rotor_normal)
             lines.append(f"  rotor{i}: alpha={a:+6.1f}, beta={b:+6.1f}")
+
+        lines.append("rotor center position (x,y,z) [m]:")
+        for i, p in enumerate(poses_list):
+            # rotor center is at arm tip (hinge + y-shift + L * arm_dir)
+            rotor_center = p.hinge + np.array([0.0, float(dy), 0.0], dtype=float) + float(arm_length_m) * p.arm_dir
+            lines.append(
+                f"  rotor{i}: ({rotor_center[0]:+.3f}, {rotor_center[1]:+.3f}, {rotor_center[2]:+.3f})"
+            )
         return "\n".join(lines)
 
     """
@@ -550,7 +658,7 @@ def plot_morphing_drone(
         angle_text = ax.text2D(
             0.02,
             0.98,
-            format_alpha_beta(poses),
+            format_status_text(poses, arm_length_m=arm_length_m, dy=dy),
             transform=ax.transAxes,
             va="top",
             ha="left",
@@ -771,7 +879,7 @@ def plot_morphing_drone(
 
                 new_poses = compute_poses(new_phi, new_psi, new_theta)
                 new_dy = compute_y_offset(new_poses, new_L, new_clear)
-                angle_text.set_text(format_alpha_beta(new_poses))
+                angle_text.set_text(format_status_text(new_poses, arm_length_m=new_L, dy=new_dy))
                 new_hs = np.array([p.hinge for p in new_poses] + [new_poses[0].hinge])
                 new_hs[:, 1] += new_dy
                 _set_3d_line(body_line, new_hs[:, 0], new_hs[:, 1], new_hs[:, 2])
@@ -1134,6 +1242,34 @@ def plot_three_view_drone(
         ax_side = fig.add_subplot(1, 3, 2)
         ax_front = fig.add_subplot(1, 3, 3)
         ax_3d = None
+
+    def _format_status_text_three_view() -> str:
+        """
+        三面図用の図中テキスト:
+        - rotor0 の alpha/beta
+        - 各ロータ中心位置 (x,y,z) [m]（小数3桁）
+        """
+        lines = [
+            "alpha/beta (deg) from thrust vec (rotor_normal):",
+            f"  rotor0: alpha={alpha0_deg:+6.1f}, beta={beta0_deg:+6.1f}",
+            "rotor center position (x,y,z) [m]:",
+        ]
+        for i, (rotor_center, _normal, _arm_tip, _c) in enumerate(rotor_circles):
+            lines.append(f"  rotor{i}: ({rotor_center[0]:+.3f}, {rotor_center[1]:+.3f}, {rotor_center[2]:+.3f})")
+        return "\n".join(lines)
+
+    status_text_artist = None
+    if not bool(hide_decorations):
+        # Place at top-left of the figure (avoid putting long text into the title).
+        status_text_artist = fig.text(
+            0.01,
+            0.99,
+            _format_status_text_three_view(),
+            ha="left",
+            va="top",
+            fontsize=9,
+            family="monospace",
+        )
 
     def draw_2d_view(ax, proj_func, depth_func, xlabel, ylabel, title):
         """
