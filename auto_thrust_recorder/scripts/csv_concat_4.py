@@ -315,6 +315,24 @@ def read_and_extract_data(file_path, dropna_mode='any', dropna_subset=None, sens
     except Exception as e:
         return None, f"ProcessError: {e}"
 
+
+def _ensure_raw_direction_column(df: pd.DataFrame) -> pd.DataFrame:
+    """入力CSVにもともと存在した direction 列を raw_direction として退避する。
+
+    - direction 列が無い場合は raw_direction を NaN で作成
+    - 既に raw_direction が存在する場合は何もしない（上書きしない）
+    - direction 列自体は変更しない（後段での付与/上書きを妨げない）
+    """
+    if df is None or not hasattr(df, 'columns'):
+        return df
+    if 'raw_direction' in df.columns:
+        return df
+    if 'direction' in df.columns:
+        df.loc[:, 'raw_direction'] = df['direction']
+    else:
+        df.loc[:, 'raw_direction'] = np.nan
+    return df
+
 def parse_arguments():
     """コマンドライン引数の解析。"""
     parser = argparse.ArgumentParser(description="CSVデータを処理し、結合するアプリケーション")
@@ -571,6 +589,9 @@ def main():
                 df_processed = df.copy()
                 file_params = file_params_map.get(file, {})
 
+                # 入力CSVに元々存在した direction を raw_direction として退避（direction 自体は変更しない）
+                df_processed = _ensure_raw_direction_column(df_processed)
+
                 # 風速の新形式のみを扱う（旧列からの自動変換は行わない）
                 for col in ['front_in', 'front_out', 'rear_out', 'rear_in']:
                     if col not in df_processed.columns:
@@ -725,6 +746,9 @@ def main():
         # file_timestamp をグループキーに含めない場合のみ、代表値として出力する
         if not getattr(args, 'group_by_file_timestamp', False):
             agg_dict['file_timestamp'] = ('file_timestamp', 'min')
+        # raw_direction は集約モードでも落とさず保持（存在する場合のみ）
+        if 'raw_direction' in concatenated_group.columns and 'raw_direction' not in agg_dict:
+            agg_dict['raw_direction'] = ('raw_direction', 'first')
         for c in numeric_meas_cols:
             agg_dict[c] = (c, agg_func)
             var_col = f"{c}_partial_variance"
