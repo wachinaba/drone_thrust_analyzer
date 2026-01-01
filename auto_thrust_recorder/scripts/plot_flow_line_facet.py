@@ -8,6 +8,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+try:
+    # scripts 配下のスクリプトを同一ディレクトリからimportする想定
+    from visualize_morph_drone import get_drone_yz_polylines
+except Exception:
+    get_drone_yz_polylines = None
+
 
 # 角度フィッティングに最低限必要とみなす flow_direction のスパン [deg]
 ANGLE_SPAN_MIN_DEG = 20.0
@@ -28,7 +34,13 @@ FEATURE_CHOICES = [
     "uy_norm_o",
 ]
 
-PLOT_KIND_CHOICES = ["line", "mean_dots", "mean_fold"]
+PLOT_KIND_CHOICES = [
+    "line",
+    "mean_dots",
+    "mean_fold",
+    "line_with_map",
+    "mean_fold_with_map",
+]
 COLORBAR_MODE_CHOICES = ["by_io", "shared", "none"]
 X_OFFSET_SCOPE_CHOICES = ["io", "io_y", "io_facet", "io_y_facet"]
 
@@ -72,6 +84,14 @@ def parse_args():
         help="保存時の DPI（デフォルト: 180）",
     )
     parser.add_argument(
+        "--figsize",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("W", "H"),
+        help="Figure size override in inches (例: --figsize 12 8)。未指定なら自動。",
+    )
+    parser.add_argument(
         "--style",
         type=str,
         default="whitegrid",
@@ -107,7 +127,7 @@ def parse_args():
         default="normal",
         help=(
             "Plot mode. "
-            "normal: signed x (front=+, rear=-). "
+            "normal: signed x (front=-, rear=+). "
             "diff: |x| で front/rear をペアリングし、(front - rear) の差分を表示する."
         ),
     )
@@ -127,7 +147,9 @@ def parse_args():
             "Plot kind: "
             "line (default), "
             "mean_dots (mean line -> sampled dots in x-y w/ colormap), "
-            "mean_fold (mean lines only, plus rear mean folded onto +x)."
+            "mean_fold (mean lines only, plus rear mean folded onto front side), "
+            "line_with_map (top: 2D scatter map, bottom: line facets), "
+            "mean_fold_with_map (top: 2D scatter map, bottom: mean_fold facets)."
         ),
     )
     parser.add_argument(
@@ -143,11 +165,107 @@ def parse_args():
         help="mean_dots 用: カラーマップ名（デフォルト: viridis）",
     )
     parser.add_argument(
+        "--cmap-in",
+        type=str,
+        default=None,
+        help="colorbar-mode=by_io のとき io=in 側のカラーマップ名（未指定なら --cmap）",
+    )
+    parser.add_argument(
+        "--cmap-out",
+        type=str,
+        default=None,
+        help="colorbar-mode=by_io のとき io=out 側のカラーマップ名（未指定なら --cmap）",
+    )
+    parser.add_argument(
         "--colorbar-mode",
         type=str,
         choices=COLORBAR_MODE_CHOICES,
         default="by_io",
         help="mean_dots 用: colorbar の配置（by_io/shared/none、デフォルト: by_io）",
+    )
+    parser.add_argument(
+        "--cbar-label",
+        type=str,
+        default=None,
+        help="カラーバーのタイトルを上書き（shared時の共通/mean_dots共有など。未指定なら自動）",
+    )
+    parser.add_argument(
+        "--cbar-label-in",
+        type=str,
+        default=None,
+        help="colorbar-mode=by_io のとき io=in 側のカラーバータイトルを上書き（未指定なら自動）",
+    )
+    parser.add_argument(
+        "--cbar-label-out",
+        type=str,
+        default=None,
+        help="colorbar-mode=by_io のとき io=out 側のカラーバータイトルを上書き（未指定なら自動）",
+    )
+    parser.add_argument(
+        "--overlay-drone",
+        action="store_true",
+        help="*_with_map の上段2D散布図に、YZ投影のドローン外形を重ね描きする",
+    )
+    parser.add_argument(
+        "--drone-overlay-y-mm",
+        type=float,
+        default=0.0,
+        help="上段ドローン外形の高さオフセット（mapのy方向, mm）",
+    )
+    parser.add_argument(
+        "--drone-cx-m",
+        type=float,
+        default=0.035,
+        help="ドローン幾何: hinge x-offset [m]（default: 0.035）",
+    )
+    parser.add_argument(
+        "--drone-cy-m",
+        type=float,
+        default=0.035,
+        help="ドローン幾何: hinge y-offset [m]（default: 0.035）",
+    )
+    parser.add_argument(
+        "--drone-arm-length-m",
+        type=float,
+        default=0.18,
+        help="ドローン幾何: arm length [m]（default: 0.18）",
+    )
+    parser.add_argument(
+        "--drone-rotor-radius-in",
+        type=float,
+        default=3.5,
+        help="ドローン幾何: rotor radius [inch]（default: 3.5）",
+    )
+    parser.add_argument(
+        "--drone-psi-deg",
+        type=float,
+        default=0.0,
+        help="ドローン幾何: psi[deg]（default: 0）",
+    )
+    parser.add_argument(
+        "--drone-rotor-inflow-offset-mm",
+        type=float,
+        default=0.0,
+        help="ドローン幾何: rotor center inflow offset [mm]（default: 0）",
+    )
+    parser.add_argument(
+        "--drone-prop-anchor",
+        type=str,
+        choices=["rotor_mean", "rotor0"],
+        default="rotor_mean",
+        help="ドローンoverlayの配置基準にするロータ中心（default: rotor_mean）",
+    )
+    parser.add_argument(
+        "--drone-prop-center-x-mm",
+        type=float,
+        default=None,
+        help="指定した場合、アンカーロータ中心(Y)をこのmap_x[mm]に合わせて配置する（未指定ならx=0へ中心化）。",
+    )
+    parser.add_argument(
+        "--drone-prop-center-y-mm",
+        type=float,
+        default=None,
+        help="指定した場合、アンカーロータ中心(Z)をこのmap_y[mm]に合わせて配置する（未指定なら --drone-overlay-y-mm を使用）。",
     )
     parser.add_argument(
         "--y-in-origin",
@@ -228,6 +346,45 @@ def parse_args():
         help="Line width (default: 2.0).",
     )
     parser.add_argument(
+        "--hide-in-line",
+        action="store_true",
+        help="line/mean_fold（および *_with_map の下段）で io=in 側を非表示にする（mapは両io表示）",
+    )
+    parser.add_argument(
+        "--hide-xc",
+        action="store_true",
+        help="line/mean_fold（および *_with_map の下段）で Xc/ΔXc の縦線・注記を非表示にする",
+    )
+    parser.add_argument(
+        "--plot-xc-on-map",
+        action="store_true",
+        help="*_with_map の上段mapに、yごとのXc（front/rear）を点/線で重ね描きする",
+    )
+    parser.add_argument(
+        "--xlabel",
+        type=str,
+        default=None,
+        help="下段 line/mean_fold の x軸ラベルを上書き（未指定なら自動）",
+    )
+    parser.add_argument(
+        "--ylabel",
+        type=str,
+        default=None,
+        help="下段 line/mean_fold の y軸ラベルを上書き（未指定なら自動）",
+    )
+    parser.add_argument(
+        "--xlabel-map",
+        type=str,
+        default=None,
+        help="上段map / mean_dots の x軸ラベルを上書き（未指定なら自動）",
+    )
+    parser.add_argument(
+        "--ylabel-map",
+        type=str,
+        default=None,
+        help="上段map / mean_dots の y軸ラベルを上書き（未指定なら自動）",
+    )
+    parser.add_argument(
         "--ylim-in",
         nargs=2,
         type=float,
@@ -286,6 +443,7 @@ def load_and_filter(input_path: Path, target_thrust: float | None) -> pd.DataFra
         "target_thrust",
         "distance",
         "fold_angle",
+        "slant_angle",
         "height",
         "prop_spacing",
         "tilt_angle",
@@ -332,6 +490,7 @@ def reconstruct_components(df: pd.DataFrame, single_angle_mode: str = "nan") -> 
         "flow_distance",
         "flow_height",
         "fold_angle",
+        "slant_angle",
         "height",
         "prop_spacing",
         "tilt_angle",
@@ -485,7 +644,8 @@ def build_long_with_coordinates(components_df: pd.DataFrame, *, y_in_origin: flo
     df_long["io"] = np.where(df_long["sensor"].astype(str).str.endswith("in"), "in", "out")
 
     # x 座標: front=+flow_distance, rear=-flow_distance
-    df_long["x"] = np.where(df_long["side"] == "rear", -df_long["flow_distance_mm"], df_long["flow_distance_mm"])
+    # 座標系を反転: front=-flow_distance, rear=+flow_distance
+    df_long["x"] = np.where(df_long["side"] == "front", -df_long["flow_distance_mm"], df_long["flow_distance_mm"])
     df_long["x_abs"] = df_long["x"].abs()
 
     # y 座標: in=y_in_origin-flow_height, out=-flow_height
@@ -1446,7 +1606,7 @@ def _resample_line_uniform(x: np.ndarray, y: np.ndarray, *, step: float) -> tupl
     return xs, ys
 
 
-def plot_mean_dots_facet(
+def compute_mean_dots_points(
     df_long: pd.DataFrame,
     *,
     col_levels: list[str],
@@ -1454,36 +1614,19 @@ def plot_mean_dots_facet(
     feature: str,
     mode: str,
     dot_step_mm: float,
-    cmap: str,
-    colorbar_mode: str,
-    dpi: int,
-    output: str | None,
-):
-    """平均線（front/back_reversed の平均）を一定間隔でサンプリングし、x-y 空間に点を置いて色で feature を表す。"""
-    if df_long.empty:
-        raise ValueError("プロット対象データが空です。")
-    if feature not in df_long.columns:
-        raise ValueError(f"feature '{feature}' 列がありません。")
-    if colorbar_mode not in COLORBAR_MODE_CHOICES:
-        raise ValueError(f"colorbar-mode が不正です: {colorbar_mode}")
+) -> tuple[pd.DataFrame, dict[tuple[str, float, str], dict[str, int]]]:
+    """mean_dots 用の点列を生成する（x-y配置、色は feature）。
+
+    返り値:
+      - dots: cols=[col_facet, y_plot, io, side, x_plot, val]
+      - debug_counts: 欠損/不成立の状況（rows空のときの調査用）
+    """
+    if df_long.empty or feature not in df_long.columns:
+        return pd.DataFrame(), {}
 
     xcol = "x_abs" if mode == "diff" else "x"
-    xlab = "x [mm] (|x|)" if mode == "diff" else "x [mm] (front=+, rear=-)"
-    ylab = "y [mm]"
 
-    # colorbar ラベル（線グラフと同じ表記）
-    cbar_lab_map = {
-        "u_mag": "|u| [m/s]",
-        "ux_abs": "|u_x| [m/s]",
-        "uy_abs": "|u_y| [m/s]",
-        "norm": "norm [%] (per io)",
-        "norm_y": "norm_y [%] (per io,y)",
-    }
-    cbar_lab = cbar_lab_map.get(feature, feature)
-
-    # まず平均線から点列を生成（col_facet×y×io×side）
     rows: list[dict] = []
-    # 欠損/不成立の状況を集計（rows が空のときに表示する）
     debug_counts: dict[tuple[str, float, str], dict[str, int]] = {}
 
     def _dbg_inc(col_facet: str, yv: float, io: str, reason: str) -> None:
@@ -1508,7 +1651,6 @@ def plot_mean_dots_facet(
                     _dbg_inc(clab, yv, io, "missing_direction(front/back_reversed)")
                     continue
 
-                # (direction, side, x) ごとに feature を平均化してから平均線を作る
                 g = (
                     g0.groupby(["direction", "side", xcol], dropna=False)[feature]
                     .mean()
@@ -1521,9 +1663,7 @@ def plot_mean_dots_facet(
                         continue
 
                 if mode == "diff":
-                    # diff の mean_dots は、差分を先に取らず
-                    # (front の direction 平均線) - (rear の direction 平均線) を作る。
-                    # これにより「方向ごとに front/rear が揃わず差分系列が片方だけ残る」問題を回避する。
+                    # diff の mean_dots は (frontのdirection平均線) - (rearのdirection平均線)
                     xu_f, yf, reason_f = _mean_line_diag_two_dirs(g, xcol=xcol, feature=feature, side="front")
                     if xu_f is None or yf is None:
                         _dbg_inc(clab, yv, io, f"mean_line_fail:front:{reason_f}")
@@ -1533,7 +1673,6 @@ def plot_mean_dots_facet(
                         _dbg_inc(clab, yv, io, f"mean_line_fail:rear:{reason_r}")
                         continue
 
-                    # front/rear 平均線の重なり領域で差分線を作る（x は union）
                     lo = max(float(np.min(xu_f)), float(np.min(xu_r)))
                     hi = min(float(np.max(xu_f)), float(np.max(xu_r)))
                     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
@@ -1588,7 +1727,65 @@ def plot_mean_dots_facet(
                                 }
                             )
 
-    if not rows:
+    return pd.DataFrame(rows), debug_counts
+
+
+def plot_mean_dots_facet(
+    df_long: pd.DataFrame,
+    *,
+    col_levels: list[str],
+    y_levels: list[float],
+    feature: str,
+    mode: str,
+    dot_step_mm: float,
+    cmap: str,
+    cmap_in: str | None = None,
+    cmap_out: str | None = None,
+    colorbar_mode: str,
+    cbar_label: str | None = None,
+    cbar_label_in: str | None = None,
+    cbar_label_out: str | None = None,
+    xlabel_map_override: str | None = None,
+    ylabel_map_override: str | None = None,
+    figsize_override: tuple[float, float] | None = None,
+    dpi: int,
+    output: str | None,
+):
+    """平均線（front/back_reversed の平均）を一定間隔でサンプリングし、x-y 空間に点を置いて色で feature を表す。"""
+    if df_long.empty:
+        raise ValueError("プロット対象データが空です。")
+    if feature not in df_long.columns:
+        raise ValueError(f"feature '{feature}' 列がありません。")
+    if colorbar_mode not in COLORBAR_MODE_CHOICES:
+        raise ValueError(f"colorbar-mode が不正です: {colorbar_mode}")
+
+    xcol = "x_abs" if mode == "diff" else "x"
+    xlab_auto = "x [mm] (|x|)" if mode == "diff" else "x [mm] (front=-, rear=+)"
+    ylab_auto = "y [mm]"
+    xlab = xlab_auto if xlabel_map_override is None else str(xlabel_map_override)
+    ylab = ylab_auto if ylabel_map_override is None else str(ylabel_map_override)
+
+    # colorbar ラベル（線グラフと同じ表記）
+    cbar_lab_map = {
+        "u_mag": "|u| [m/s]",
+        "ux_abs": "|u_x| [m/s]",
+        "uy_abs": "|u_y| [m/s]",
+        "norm": "norm [%] (per io)",
+        "norm_y": "norm_y [%] (per io,y)",
+    }
+    cbar_lab_auto = cbar_lab_map.get(feature, feature)
+    cbar_lab = cbar_lab_auto if cbar_label is None else str(cbar_label)
+
+    dots, debug_counts = compute_mean_dots_points(
+        df_long,
+        col_levels=col_levels,
+        y_levels=y_levels,
+        feature=feature,
+        mode=mode,
+        dot_step_mm=dot_step_mm,
+    )
+
+    if dots.empty:
         # 欠損状況を標準出力に出す（上位のみ）
         print("mean_dots debug: no points were generated. Summary per (col_facet, y, io):")
         shown = 0
@@ -1602,8 +1799,6 @@ def plot_mean_dots_facet(
                 print("  ... (truncated)")
                 break
         raise ValueError("mean_dots: 平均線からプロットできる点が生成できません（direction=front/back_reversed が揃っているか確認してください）。")
-
-    dots = pd.DataFrame(rows)
 
     # colorbar 用の vmin/vmax
     def _minmax(s: pd.Series) -> tuple[float, float] | tuple[None, None]:
@@ -1624,10 +1819,11 @@ def plot_mean_dots_facet(
             raise ValueError("mean_dots: colorbar 用の値がありません。")
 
     ncols = len(col_levels)
+    fig_size = figsize_override if figsize_override is not None else (4.3 * ncols, 4.0)
     fig, axes = plt.subplots(
         nrows=1,
         ncols=ncols,
-        figsize=(4.3 * ncols, 4.0),
+        figsize=fig_size,
         sharex=True,
         sharey=True,
     )
@@ -1655,7 +1851,7 @@ def plot_mean_dots_facet(
                     sub_in["x_plot"],
                     sub_in["y_plot"],
                     c=sub_in["val"],
-                    cmap=cmap,
+                    cmap=(cmap if cmap_in is None else str(cmap_in)),
                     vmin=vmin_in,
                     vmax=vmax_in,
                     s=36,
@@ -1670,7 +1866,7 @@ def plot_mean_dots_facet(
                     sub_out["x_plot"],
                     sub_out["y_plot"],
                     c=sub_out["val"],
-                    cmap=cmap,
+                    cmap=(cmap if cmap_out is None else str(cmap_out)),
                     vmin=vmin_out,
                     vmax=vmax_out,
                     s=36,
@@ -1715,22 +1911,563 @@ def plot_mean_dots_facet(
         if last_scatter_in is not None:
             cax_in = fig.add_axes([0.86, 0.55, 0.02, 0.27])
             cbar_in = fig.colorbar(last_scatter_in, cax=cax_in, orientation="vertical")
-            cbar_in.set_label(f"{cbar_lab} (in)")
+            if cbar_label_in is not None:
+                cbar_in.set_label(str(cbar_label_in))
+            else:
+                cbar_in.set_label(f"{cbar_lab_auto if cbar_label is None else str(cbar_label)} (in)")
         if last_scatter_out is not None:
             cax_out = fig.add_axes([0.86, 0.18, 0.02, 0.27])
             cbar_out = fig.colorbar(last_scatter_out, cax=cax_out, orientation="vertical")
-            cbar_out.set_label(f"{cbar_lab} (out)")
+            if cbar_label_out is not None:
+                cbar_out.set_label(str(cbar_label_out))
+            else:
+                cbar_out.set_label(f"{cbar_lab_auto if cbar_label is None else str(cbar_label)} (out)")
         right = 0.82
     elif colorbar_mode == "shared":
         if last_scatter_shared is not None:
             cax = fig.add_axes([0.86, 0.18, 0.02, 0.64])
             cbar = fig.colorbar(last_scatter_shared, cax=cax, orientation="vertical")
-            cbar.set_label(f"{cbar_lab} (mean dots)")
+            if cbar_label is not None:
+                cbar.set_label(str(cbar_label))
+            else:
+                cbar.set_label(f"{cbar_lab_auto} (mean dots)")
         right = 0.82
     else:
         right = 0.95
 
     fig.subplots_adjust(left=0.18, right=right, top=0.92, bottom=0.14)
+
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(out_path), dpi=dpi, bbox_inches="tight")
+        print(f"保存しました: {out_path}")
+    else:
+        plt.show()
+
+
+def plot_facets_with_map(
+    df_long: pd.DataFrame,
+    *,
+    col_levels: list[str],
+    y_levels: list[float],
+    y_levels_bottom: list[float],
+    feature: str,
+    mode: str,
+    dot_step_mm: float,
+    cmap: str,
+    cmap_in: str | None = None,
+    cmap_out: str | None = None,
+    colorbar_mode: str,
+    cbar_label: str | None = None,
+    cbar_label_in: str | None = None,
+    cbar_label_out: str | None = None,
+    ylim_by_io: dict[str, tuple[float, float]] | None,
+    bottom_kind: str,
+    linewidth: float,
+    overlay_drone: bool,
+    drone_overlay_y_mm: float,
+    drone_geom: dict,
+    plot_xc_on_map: bool = False,
+    show_xc_bottom: bool = True,
+    xlabel_map_override: str | None = None,
+    ylabel_map_override: str | None = None,
+    xlabel_override: str | None = None,
+    ylabel_override: str | None = None,
+    figsize_override: tuple[float, float] | None = None,
+    dpi: int,
+    output: str | None,
+):
+    """上段に2D散布図(map)、下段に facet(line/mean_fold) を並べた複合プロット。"""
+    if bottom_kind not in ["line", "mean_fold"]:
+        raise ValueError(f"bottom_kind must be line or mean_fold: {bottom_kind}")
+    if df_long.empty:
+        raise ValueError("プロット対象データが空です。")
+
+    dots, debug_counts = compute_mean_dots_points(
+        df_long,
+        col_levels=col_levels,
+        y_levels=y_levels,
+        feature=feature,
+        mode=mode,
+        dot_step_mm=dot_step_mm,
+    )
+    if dots.empty:
+        print("mean_dots debug: no points were generated. Summary per (col_facet, y, io):")
+        shown = 0
+        for (clab, yv, io), reasons in sorted(debug_counts.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
+            total = sum(reasons.values())
+            items = sorted(reasons.items(), key=lambda kv: -kv[1])
+            msg = ", ".join([f"{k}={v}" for k, v in items[:8]])
+            print(f"  - col_facet={clab}, y={yv:g}, io={io}: total={total}, {msg}")
+            shown += 1
+            if shown >= 40:
+                print("  ... (truncated)")
+                break
+        raise ValueError("with_map: 上段map用の点が生成できません（mean_dots と同条件）。")
+
+    def _minmax(s: pd.Series) -> tuple[float, float] | tuple[None, None]:
+        v = pd.to_numeric(s, errors="coerce")
+        v = v[np.isfinite(v)]
+        if v.empty:
+            return None, None
+        return float(v.min()), float(v.max())
+
+    if colorbar_mode == "by_io":
+        vmin_in, vmax_in = _minmax(dots.loc[dots["io"] == "in", "val"])
+        vmin_out, vmax_out = _minmax(dots.loc[dots["io"] == "out", "val"])
+    else:
+        vmin, vmax = _minmax(dots["val"])
+
+    import matplotlib.gridspec as gridspec
+
+    ncols = len(col_levels)
+    nrows_bottom = len(y_levels_bottom)
+    fig_size = figsize_override if figsize_override is not None else (4.3 * ncols, 2.2 + 2.6 * nrows_bottom)
+    fig = plt.figure(figsize=fig_size)
+    right = 0.82 if colorbar_mode != "none" else 0.95
+    gs = gridspec.GridSpec(
+        nrows=1 + nrows_bottom,
+        ncols=ncols,
+        height_ratios=[1.2] + [1.0] * nrows_bottom,
+        left=0.18,
+        right=right,
+        top=0.92,
+        bottom=0.12,
+        wspace=0.25,
+        hspace=0.45,
+    )
+
+    axes_top = []
+    axes_bottom = np.empty((nrows_bottom, ncols), dtype=object)
+    for j in range(ncols):
+        ax_t = fig.add_subplot(gs[0, j])
+        axes_top.append(ax_t)
+        for i in range(nrows_bottom):
+            axes_bottom[i, j] = fig.add_subplot(gs[1 + i, j], sharex=ax_t)
+
+    # 上段mapの描画
+    xlab_map_auto = "x [mm] (|x|)" if mode == "diff" else "x [mm] (front=-, rear=+)"
+    ylab_map_auto = "y [mm]"
+    xlab_map = xlab_map_auto if xlabel_map_override is None else str(xlabel_map_override)
+    ylab_map = ylab_map_auto if ylabel_map_override is None else str(ylabel_map_override)
+    cbar_lab_map = {
+        "u_mag": "|u| [m/s]",
+        "ux_abs": "|u_x| [m/s]",
+        "uy_abs": "|u_y| [m/s]",
+        "norm": "norm [%] (per io)",
+        "norm_y": "norm_y [%] (per io,y)",
+        "u_norm_o": "u_norm_o [%] (per facet, out ref)",
+        "ux_norm_o": "ux_norm_o [%] (per facet, out ref)",
+        "uy_norm_o": "uy_norm_o [%] (per facet, out ref)",
+    }
+    cbar_lab_auto = cbar_lab_map.get(feature, feature)
+    cbar_lab = cbar_lab_auto if cbar_label is None else str(cbar_label)
+
+    last_scatter_shared = None
+    last_scatter_in = None
+    last_scatter_out = None
+
+    io_color = {"in": "#2ca02c", "out": "#9467bd"}  # green/purple
+    side_marker = {"front": "o", "rear": "s"}
+    side_ls = {"front": "-", "rear": "--"}
+
+    for j, clab in enumerate(col_levels):
+        ax = axes_top[j]
+        sub = dots[dots["col_facet"] == clab]
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+        if colorbar_mode == "by_io":
+            sub_in = sub[sub["io"] == "in"]
+            if (vmin_in is not None) and (not sub_in.empty):
+                sc_in = ax.scatter(
+                    sub_in["x_plot"],
+                    sub_in["y_plot"],
+                    c=sub_in["val"],
+                    cmap=(cmap if cmap_in is None else str(cmap_in)),
+                    vmin=vmin_in,
+                    vmax=vmax_in,
+                    s=26,
+                    edgecolors="none",
+                    alpha=0.95,
+                )
+                last_scatter_in = sc_in
+            sub_out = sub[sub["io"] == "out"]
+            if (vmin_out is not None) and (not sub_out.empty):
+                sc_out = ax.scatter(
+                    sub_out["x_plot"],
+                    sub_out["y_plot"],
+                    c=sub_out["val"],
+                    cmap=(cmap if cmap_out is None else str(cmap_out)),
+                    vmin=vmin_out,
+                    vmax=vmax_out,
+                    s=26,
+                    edgecolors="none",
+                    alpha=0.95,
+                )
+                last_scatter_out = sc_out
+        else:
+            sc = ax.scatter(
+                sub["x_plot"],
+                sub["y_plot"],
+                c=sub["val"],
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                s=26,
+                edgecolors="none",
+                alpha=0.95,
+            )
+            last_scatter_shared = sc
+
+        ax.set_xlabel(xlab_map)
+        if j == 0:
+            ax.set_ylabel(ylab_map)
+        ax.set_title("")
+
+        if overlay_drone:
+            if get_drone_yz_polylines is None:
+                raise RuntimeError("overlay-drone requested but get_drone_yz_polylines import failed.")
+
+            # facet内データから代表角度を取得（slant_angleがあればpsiに使う）
+            phi = 0.0
+            theta = 0.0
+            psi = float(drone_geom.get("psi_deg", 0.0))
+            psi_src = "fallback(--drone-psi-deg)"
+            slant_med = np.nan
+            try:
+                one = df_long[df_long["col_facet"] == clab]
+                if "fold_angle" in one.columns:
+                    phi = float(pd.to_numeric(one["fold_angle"], errors="coerce").median())
+                if "slant_angle" in one.columns:
+                    slant_med = float(pd.to_numeric(one["slant_angle"], errors="coerce").median())
+                    psi2 = float(slant_med)
+                    if np.isfinite(psi2):
+                        psi = psi2
+                        psi_src = "slant_angle(median)"
+                if "tilt_angle" in one.columns:
+                    theta = float(pd.to_numeric(one["tilt_angle"], errors="coerce").median())
+                if not np.isfinite(phi):
+                    phi = 0.0
+                if not np.isfinite(psi):
+                    psi = float(drone_geom.get("psi_deg", 0.0))
+                if not np.isfinite(theta):
+                    theta = 0.0
+            except Exception:
+                phi = 0.0
+                psi = float(drone_geom.get("psi_deg", 0.0))
+                psi_src = "fallback(--drone-psi-deg)"
+                theta = 0.0
+
+            geo = get_drone_yz_polylines(
+                phi_deg=float(phi),
+                psi_deg=float(psi),
+                theta_deg=float(theta),
+                cx=float(drone_geom.get("cx", 0.035)),
+                cy=float(drone_geom.get("cy", 0.035)),
+                arm_length_m=float(drone_geom.get("arm_length_m", 0.18)),
+                rotor_radius_in=float(drone_geom.get("rotor_radius_in", 3.5)),
+                rotor_inflow_offset_m=float(drone_geom.get("rotor_inflow_offset_m", 0.0)),
+                symmetry=str(drone_geom.get("symmetry", "mirror_xy")),
+                circle_n=120,
+            )
+
+            # アンカー（ロータ中心）を決める
+            rotor_centers = geo.get("rotor_centers", [])
+            anchor_y_m = 0.0
+            anchor_z_m = 0.0
+            if rotor_centers:
+                pts = np.array([p for p in rotor_centers if isinstance(p, np.ndarray) and p.shape == (2,)], dtype=float)
+                if pts.size > 0:
+                    if str(drone_geom.get("prop_anchor", "rotor_mean")) == "rotor0":
+                        anchor = pts[0]
+                    else:
+                        anchor = np.nanmean(pts, axis=0)
+                    if anchor.shape == (2,) and np.all(np.isfinite(anchor)):
+                        anchor_y_m = float(anchor[0])
+                        anchor_z_m = float(anchor[1])
+
+            # ログ（代表角 + アンカー）
+            print(
+                "drone-overlay:"
+                f" col_facet={clab},"
+                f" phi(fold_angle)={phi:g}deg,"
+                f" slant_angle_med={slant_med:g}deg,"
+                f" psi={psi:g}deg({psi_src}),"
+                f" theta(tilt_angle)={theta:g}deg,"
+                f" prop_anchor={str(drone_geom.get('prop_anchor','rotor_mean'))},"
+                f" prop_center_yz_m=({anchor_y_m:+.4f},{anchor_z_m:+.4f}),"
+                f" y_offset={float(drone_overlay_y_mm):g}mm"
+            )
+
+            # (Y,Z)[m] -> (x,y)[mm] として配置: x=Y*1000, y=Z*1000+offset
+            # - x: 未指定ならレンジ中心を0に。指定があればアンカーロータ中心を指定座標へ合わせる
+            # - y: 指定があればアンカーロータ中心を指定座標へ合わせる
+            all_y = []
+            for lst in geo.values():
+                for p in lst:
+                    if isinstance(p, np.ndarray) and p.ndim == 2 and p.shape[1] == 2 and p.size > 0:
+                        all_y.append(p[:, 0])
+            if all_y:
+                all_y = np.concatenate(all_y)
+                y_center_m = 0.5 * (float(np.nanmin(all_y)) + float(np.nanmax(all_y)))
+                if not np.isfinite(y_center_m):
+                    y_center_m = 0.0
+            else:
+                y_center_m = 0.0
+
+            def _plot_poly(arr: np.ndarray, *, color: str, lw: float, alpha: float):
+                yy = arr[:, 0]
+                zz = arr[:, 1]
+                # x平行移動
+                if drone_geom.get("prop_center_x_mm") is None:
+                    x_shift_m = y_center_m
+                    x0_mm = 0.0
+                else:
+                    x_shift_m = anchor_y_m
+                    x0_mm = float(drone_geom.get("prop_center_x_mm"))
+                # y平行移動（鉛直）
+                if drone_geom.get("prop_center_y_mm") is None:
+                    z_shift_m = 0.0
+                    y0_mm = float(drone_overlay_y_mm)
+                else:
+                    z_shift_m = anchor_z_m
+                    y0_mm = float(drone_geom.get("prop_center_y_mm"))
+
+                xx_mm = (yy - x_shift_m) * 1000.0 + x0_mm
+                yy_mm = (zz - z_shift_m) * 1000.0 + y0_mm
+                ax.plot(xx_mm, yy_mm, color=color, linewidth=lw, alpha=alpha, zorder=10)
+
+            for p in geo.get("body", []):
+                _plot_poly(p, color="black", lw=1.2, alpha=0.55)
+            for p in geo.get("arms", []):
+                _plot_poly(p, color="black", lw=1.2, alpha=0.55)
+            for p in geo.get("rotors", []):
+                _plot_poly(p, color="#333333", lw=1.0, alpha=0.45)
+
+        # Xc を上段mapに重ね描き（yごと）
+        if plot_xc_on_map:
+            xcol = "x_abs" if mode == "diff" else "x"
+            base = df_long[df_long["col_facet"] == clab]
+            if not base.empty:
+                for io in ["in", "out"]:
+                    b0 = base[base["io"].astype(str) == io]
+                    if b0.empty:
+                        continue
+                    col = io_color.get(io, "black")
+
+                    # それぞれ y に対する Xc を集めて線でつなぐ
+                    xs_front: list[float] = []
+                    ys_front: list[float] = []
+                    xs_rear: list[float] = []
+                    ys_rear: list[float] = []
+
+                    for yv in y_levels:
+                        b1 = b0[pd.to_numeric(b0["y"], errors="coerce") == float(yv)]
+                        if b1.empty:
+                            continue
+                        g = (
+                            b1.groupby(["direction", "side", xcol], dropna=False)[feature]
+                            .mean()
+                            .reset_index()
+                        )
+
+                        if mode == "diff":
+                            piv = (
+                                g.pivot_table(
+                                    index=["direction", xcol],
+                                    columns="side",
+                                    values=feature,
+                                    aggfunc="mean",
+                                )
+                                .reset_index()
+                            )
+                            if ("front" not in piv.columns) or ("rear" not in piv.columns):
+                                continue
+                            piv = piv.dropna(subset=["front", "rear"]).copy()
+                            if piv.empty:
+                                continue
+                            piv["diff_val"] = pd.to_numeric(piv["front"], errors="coerce") - pd.to_numeric(
+                                piv["rear"], errors="coerce"
+                            )
+                            dd = piv[["direction", xcol, "diff_val"]].rename(columns={"diff_val": feature})
+                            xu, ym = _mean_line_from_two_directions_no_side(dd, xcol=xcol, feature=feature)
+                            if xu is None or ym is None:
+                                continue
+                            xc = _centroid_x_trapz(xu, ym, weight_mode="abs")
+                            if np.isfinite(xc):
+                                ax.scatter(
+                                    [float(xc)],
+                                    [float(yv)],
+                                    c=[col],
+                                    s=18,
+                                    marker="x",
+                                    linewidths=1.2,
+                                    alpha=0.85,
+                                    zorder=11,
+                                )
+                        else:
+                            for side in ["front", "rear"]:
+                                xu, ym = _mean_line_from_two_directions(g, xcol=xcol, feature=feature, side=side)
+                                if xu is None or ym is None:
+                                    continue
+                                xc = _centroid_x_trapz(xu, ym, weight_mode="positive")
+                                if not np.isfinite(xc):
+                                    continue
+                                if side == "front":
+                                    xs_front.append(float(xc))
+                                    ys_front.append(float(yv))
+                                else:
+                                    xs_rear.append(float(xc))
+                                    ys_rear.append(float(yv))
+
+                    if mode != "diff":
+                        if xs_front:
+                            order = np.argsort(np.array(ys_front))
+                            ax.plot(
+                                np.array(xs_front)[order],
+                                np.array(ys_front)[order],
+                                color=col,
+                                linestyle=side_ls["front"],
+                                linewidth=1.3,
+                                alpha=0.85,
+                                zorder=11,
+                            )
+                            ax.scatter(
+                                np.array(xs_front)[order],
+                                np.array(ys_front)[order],
+                                c=col,
+                                s=22,
+                                marker=side_marker["front"],
+                                edgecolors="none",
+                                alpha=0.9,
+                                zorder=12,
+                            )
+                        if xs_rear:
+                            order = np.argsort(np.array(ys_rear))
+                            ax.plot(
+                                np.array(xs_rear)[order],
+                                np.array(ys_rear)[order],
+                                color=col,
+                                linestyle=side_ls["rear"],
+                                linewidth=1.3,
+                                alpha=0.85,
+                                zorder=11,
+                            )
+                            ax.scatter(
+                                np.array(xs_rear)[order],
+                                np.array(ys_rear)[order],
+                                c=col,
+                                s=22,
+                                marker=side_marker["rear"],
+                                edgecolors="none",
+                                alpha=0.9,
+                                zorder=12,
+                            )
+                            # rear のXcを front 側へ折り返し表示（x -> -|x|）
+                            xs_rear_fold = -np.abs(np.array(xs_rear, dtype=float))
+                            ax.plot(
+                                xs_rear_fold[order],
+                                np.array(ys_rear)[order],
+                                color=col,
+                                linestyle=side_ls["rear"],  # rear と揃える
+                                linewidth=1.3,
+                                alpha=0.5,
+                                zorder=11,
+                            )
+                            ax.scatter(
+                                xs_rear_fold[order],
+                                np.array(ys_rear)[order],
+                                c=col,
+                                s=22,
+                                marker=side_marker["rear"],  # rear と揃える
+                                edgecolors="none",
+                                alpha=0.55,
+                                zorder=12,
+                            )
+
+    # カラーバー（上段）
+    if colorbar_mode == "by_io":
+        if last_scatter_in is not None:
+            cax_in = fig.add_axes([0.86, 0.62, 0.02, 0.22])
+            cbar_in = fig.colorbar(last_scatter_in, cax=cax_in, orientation="vertical")
+            if cbar_label_in is not None:
+                cbar_in.set_label(str(cbar_label_in))
+            else:
+                cbar_in.set_label(f"{cbar_lab_auto if cbar_label is None else str(cbar_label)} (in)")
+        if last_scatter_out is not None:
+            cax_out = fig.add_axes([0.86, 0.36, 0.02, 0.22])
+            cbar_out = fig.colorbar(last_scatter_out, cax=cax_out, orientation="vertical")
+            if cbar_label_out is not None:
+                cbar_out.set_label(str(cbar_label_out))
+            else:
+                cbar_out.set_label(f"{cbar_lab_auto if cbar_label is None else str(cbar_label)} (out)")
+    elif colorbar_mode == "shared":
+        if last_scatter_shared is not None:
+            cax = fig.add_axes([0.86, 0.36, 0.02, 0.48])
+            cbar = fig.colorbar(last_scatter_shared, cax=cax, orientation="vertical")
+            if cbar_label is not None:
+                cbar.set_label(str(cbar_label))
+            else:
+                cbar.set_label(f"{cbar_lab_auto}")
+
+    # 列ラベルは上段で一度だけ
+    fig.canvas.draw()
+    for j, clab in enumerate(col_levels):
+        ax = axes_top[j]
+        if not ax.get_visible():
+            continue
+        pos = ax.get_position()
+        x_center = 0.5 * (pos.x0 + pos.x1)
+        y_top = pos.y1 + 0.01
+        fig.text(x_center, y_top, clab, ha="center", va="bottom", fontsize=11)
+
+    # 下段（facet）
+    if bottom_kind == "line":
+        plot_line_facet(
+            df_long,
+            col_levels=col_levels,
+            y_levels=y_levels_bottom,
+            feature=feature,
+            mode=mode,
+            plot_direction_mean=True,
+            linewidth=linewidth,
+            ylim_by_io=ylim_by_io,
+            axes_override=axes_bottom,
+            fig_override=fig,
+            embedded=True,
+            legend="none",
+            show_xc=show_xc_bottom,
+            xlabel_override=xlabel_override,
+            ylabel_override=ylabel_override,
+            dpi=dpi,
+            output=None,
+        )
+    else:
+        plot_mean_fold_line_facet(
+            df_long,
+            col_levels=col_levels,
+            y_levels=y_levels_bottom,
+            feature=feature,
+            mode=mode,
+            linewidth=linewidth,
+            ylim_by_io=ylim_by_io,
+            axes_override=axes_bottom,
+            fig_override=fig,
+            embedded=True,
+            show_xc=show_xc_bottom,
+            xlabel_override=xlabel_override,
+            ylabel_override=ylabel_override,
+            dpi=dpi,
+            output=None,
+        )
+
+    # 行ラベル（y）は下段左に付ける
+    for i, yv in enumerate(y_levels_bottom):
+        ax = axes_bottom[i, 0]
+        if ax.get_visible():
+            ax.text(-0.55, 0.5, f"y={yv:g}", transform=ax.transAxes, ha="right", va="center", fontsize=11)
 
     if output:
         out_path = Path(output)
@@ -1750,12 +2487,19 @@ def plot_mean_fold_line_facet(
     mode: str,
     linewidth: float,
     ylim_by_io: dict[str, tuple[float, float]] | None,
+    axes_override: np.ndarray | None = None,
+    fig_override: plt.Figure | None = None,
+    embedded: bool = False,
+    show_xc: bool = True,
+    xlabel_override: str | None = None,
+    ylabel_override: str | None = None,
+    figsize_override: tuple[float, float] | None = None,
     dpi: int,
     output: str | None,
 ):
     """平均線（direction=front/back_reversed の平均）だけを描く。
 
-    さらに rear の平均線を x->|x| で折り返して front 側（+x）へ重ね描きする。
+    さらに rear の平均線を x->-|x| で折り返して front 側（負側）へ重ね描きする。
     Xc 縦線も front/rear それぞれに描き、front 側には rear の Xc を |Xc| として追加表示する。
     """
     if mode == "diff":
@@ -1767,22 +2511,28 @@ def plot_mean_fold_line_facet(
 
     nrows = len(y_levels)
     ncols = len(col_levels)
-    fig, axes = plt.subplots(
-        nrows=nrows,
-        ncols=ncols,
-        figsize=(4.3 * ncols, 2.6 * nrows),
-        sharex=True,
-        sharey=False,
-    )
-    if nrows == 1 and ncols == 1:
-        axes = np.array([[axes]])
-    elif nrows == 1:
-        axes = np.array([axes])
-    elif ncols == 1:
-        axes = axes[:, np.newaxis]
+    if axes_override is None:
+        fig_size = figsize_override if figsize_override is not None else (4.3 * ncols, 2.6 * nrows)
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=ncols,
+            figsize=fig_size,
+            sharex=True,
+            sharey=False,
+        )
+        if nrows == 1 and ncols == 1:
+            axes = np.array([[axes]])
+        elif nrows == 1:
+            axes = np.array([axes])
+        elif ncols == 1:
+            axes = axes[:, np.newaxis]
+    else:
+        axes = axes_override
+        fig = fig_override
 
     xcol = "x"
-    xlab = "x [mm] (front=+, rear=-)"
+    xlab_auto = "x [mm] (front=-, rear=+)"
+    xlab = xlab_auto if xlabel_override is None else str(xlabel_override)
 
     ylab_map = {
         "u_mag": "|u| [m/s]",
@@ -1794,7 +2544,8 @@ def plot_mean_fold_line_facet(
         "ux_norm_o": "ux_norm_o [%] (per facet, out ref)",
         "uy_norm_o": "uy_norm_o [%] (per facet, out ref)",
     }
-    ylab = ylab_map.get(feature, feature)
+    ylab_auto = ylab_map.get(feature, feature)
+    ylab = ylab_auto if ylabel_override is None else str(ylabel_override)
 
     # 平均線スタイル
     front_ls = "-"
@@ -1840,16 +2591,17 @@ def plot_mean_fold_line_facet(
                     alpha=0.85,
                     zorder=5,
                 )
-                xcF = _centroid_x_trapz(xu_f, ym_f, weight_mode="positive")
-                if np.isfinite(xcF):
-                    ax.axvline(
-                        xcF,
-                        color=front_col,
-                        linestyle=front_ls,
-                        linewidth=1.6,
-                        alpha=0.65,
-                        zorder=6,
-                    )
+                if show_xc:
+                    xcF = _centroid_x_trapz(xu_f, ym_f, weight_mode="positive")
+                    if np.isfinite(xcF):
+                        ax.axvline(
+                            xcF,
+                            color=front_col,
+                            linestyle=front_ls,
+                            linewidth=1.6,
+                            alpha=0.65,
+                            zorder=6,
+                        )
 
             if xu_r is not None and ym_r is not None:
                 ax.plot(
@@ -1861,8 +2613,8 @@ def plot_mean_fold_line_facet(
                     alpha=0.85,
                     zorder=5,
                 )
-                # rear を front 側へ折り返して重ね描き（|x|）
-                x_fold = np.abs(np.asarray(xu_r, dtype=float))
+                # rear を front 側へ折り返して重ね描き（x->-|x|）
+                x_fold = -np.abs(np.asarray(xu_r, dtype=float))
                 o = np.argsort(x_fold)
                 x_fold = x_fold[o]
                 y_fold = np.asarray(ym_r, dtype=float)[o]
@@ -1876,48 +2628,50 @@ def plot_mean_fold_line_facet(
                     zorder=5,
                 )
 
-                xcR = _centroid_x_trapz(xu_r, ym_r, weight_mode="positive")
-                if np.isfinite(xcR):
-                    ax.axvline(
-                        xcR,
-                        color=rear_col,
-                        linestyle=rear_ls,
-                        linewidth=1.6,
-                        alpha=0.65,
-                        zorder=6,
-                    )
-                    # rear のXcを front 側へ折り返し表示
-                    ax.axvline(
-                        abs(float(xcR)),
-                        color=fold_col,
-                        linestyle=rear_fold_ls,
-                        linewidth=1.6,
-                        alpha=0.65,
-                        zorder=6,
-                    )
+                if show_xc:
+                    xcR = _centroid_x_trapz(xu_r, ym_r, weight_mode="positive")
+                    if np.isfinite(xcR):
+                        ax.axvline(
+                            xcR,
+                            color=rear_col,
+                            linestyle=rear_ls,
+                            linewidth=1.6,
+                            alpha=0.65,
+                            zorder=6,
+                        )
+                        # rear のXcを front 側へ折り返し表示
+                        ax.axvline(
+                            -abs(float(xcR)),
+                            color=fold_col,
+                            linestyle=rear_fold_ls,
+                            linewidth=1.6,
+                            alpha=0.65,
+                            zorder=6,
+                        )
 
-            # 注記（XcF/XcR と ΔXc）
-            dxc = (xcF - xcR) if (np.isfinite(xcF) and np.isfinite(xcR)) else np.nan
-            ann = [f"io={io_label}"]
-            if np.isfinite(xcF):
-                ann.append(f"XcF={xcF:g}mm")
-            if np.isfinite(xcR):
-                ann.append(f"XcR={xcR:g}mm")
-            if np.isfinite(dxc):
-                ann.append(f"ΔXc={dxc:+g}mm")
-            if len(ann) > 1:
-                ax.text(
-                    0.02,
-                    0.98,
-                    "\n".join(ann),
-                    transform=ax.transAxes,
-                    ha="left",
-                    va="top",
-                    fontsize=8.5,
-                    color="black",
-                    bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.8),
-                    zorder=7,
-                )
+            if show_xc:
+                # 注記（XcF/XcR と ΔXc）
+                dxc = (xcF - xcR) if (np.isfinite(xcF) and np.isfinite(xcR)) else np.nan
+                ann = [f"io={io_label}"]
+                if np.isfinite(xcF):
+                    ann.append(f"XcF={xcF:g}mm")
+                if np.isfinite(xcR):
+                    ann.append(f"XcR={xcR:g}mm")
+                if np.isfinite(dxc):
+                    ann.append(f"ΔXc={dxc:+g}mm")
+                if len(ann) > 1:
+                    ax.text(
+                        0.02,
+                        0.98,
+                        "\n".join(ann),
+                        transform=ax.transAxes,
+                        ha="left",
+                        va="top",
+                        fontsize=8.5,
+                        color="black",
+                        bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.8),
+                        zorder=7,
+                    )
 
             if i == nrows - 1:
                 ax.set_xlabel(xlab)
@@ -1930,39 +2684,40 @@ def plot_mean_fold_line_facet(
                 lo, hi = ylim_by_io[io_label]
                 ax.set_ylim(lo, hi)
 
-    # facet labels（列: 上、行: 左に y）
-    fig.canvas.draw()
-    for j, clab in enumerate(col_levels):
-        ax = axes[0, j]
-        if not ax.get_visible():
-            continue
-        pos = ax.get_position()
-        x_center = 0.5 * (pos.x0 + pos.x1)
-        y_top = pos.y1 + 0.01
-        fig.text(x_center, y_top, clab, ha="center", va="bottom", fontsize=11)
-    for i, yv in enumerate(y_levels):
-        ax = axes[i, 0]
-        if not ax.get_visible():
-            continue
-        ax.text(
-            -0.55,
-            0.5,
-            f"y={yv:g}",
-            transform=ax.transAxes,
-            ha="right",
-            va="center",
-            fontsize=11,
-        )
+    if not embedded:
+        # facet labels（列: 上、行: 左に y）
+        fig.canvas.draw()
+        for j, clab in enumerate(col_levels):
+            ax = axes[0, j]
+            if not ax.get_visible():
+                continue
+            pos = ax.get_position()
+            x_center = 0.5 * (pos.x0 + pos.x1)
+            y_top = pos.y1 + 0.01
+            fig.text(x_center, y_top, clab, ha="center", va="bottom", fontsize=11)
+        for i, yv in enumerate(y_levels):
+            ax = axes[i, 0]
+            if not ax.get_visible():
+                continue
+            ax.text(
+                -0.55,
+                0.5,
+                f"y={yv:g}",
+                transform=ax.transAxes,
+                ha="right",
+                va="center",
+                fontsize=11,
+            )
 
-    fig.subplots_adjust(left=0.18, right=0.95, top=0.92, bottom=0.12, hspace=0.35)
+        fig.subplots_adjust(left=0.18, right=0.95, top=0.92, bottom=0.12, hspace=0.35)
 
-    if output:
-        out_path = Path(output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(str(out_path), dpi=dpi, bbox_inches="tight")
-        print(f"保存しました: {out_path}")
-    else:
-        plt.show()
+        if output:
+            out_path = Path(output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(str(out_path), dpi=dpi, bbox_inches="tight")
+            print(f"保存しました: {out_path}")
+        else:
+            plt.show()
 
 
 def plot_line_facet(
@@ -1975,7 +2730,14 @@ def plot_line_facet(
     plot_direction_mean: bool,
     linewidth: float,
     ylim_by_io: dict[str, tuple[float, float]] | None,
+    axes_override: np.ndarray | None = None,
+    fig_override: plt.Figure | None = None,
+    embedded: bool = False,
     legend: str,
+    show_xc: bool = True,
+    xlabel_override: str | None = None,
+    ylabel_override: str | None = None,
+    figsize_override: tuple[float, float] | None = None,
     dpi: int,
     output: str | None,
 ):
@@ -1989,19 +2751,24 @@ def plot_line_facet(
     if nrows == 0 or ncols == 0:
         raise ValueError("facet の行・列が空です。")
 
-    fig, axes = plt.subplots(
-        nrows=nrows,
-        ncols=ncols,
-        figsize=(4.3 * ncols, 2.6 * nrows),
-        sharex=True,
-        sharey=False,
-    )
-    if nrows == 1 and ncols == 1:
-        axes = np.array([[axes]])
-    elif nrows == 1:
-        axes = np.array([axes])
-    elif ncols == 1:
-        axes = axes[:, np.newaxis]
+    if axes_override is None:
+        fig_size = figsize_override if figsize_override is not None else (4.3 * ncols, 2.6 * nrows)
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=ncols,
+            figsize=fig_size,
+            sharex=True,
+            sharey=False,
+        )
+        if nrows == 1 and ncols == 1:
+            axes = np.array([[axes]])
+        elif nrows == 1:
+            axes = np.array([axes])
+        elif ncols == 1:
+            axes = axes[:, np.newaxis]
+    else:
+        axes = axes_override
+        fig = fig_override
 
     # direction の色
     directions = sorted(df_long["direction"].dropna().astype(str).unique().tolist())
@@ -2013,7 +2780,8 @@ def plot_line_facet(
     ls_rear = "--"
 
     xcol = "x_abs" if mode == "diff" else "x"
-    xlab = "x [mm] (|x|, front-rear diff)" if mode == "diff" else "x [mm] (front=+, rear=-)"
+    xlab_auto = "x [mm] (|x|, front-rear diff)" if mode == "diff" else "x [mm] (front=-, rear=+)"
+    xlab = xlab_auto if xlabel_override is None else str(xlabel_override)
 
     # 代表的な y 軸ラベル
     ylab_map = {
@@ -2026,7 +2794,8 @@ def plot_line_facet(
         "ux_norm_o": "ux_norm_o [%] (per facet, out ref)",
         "uy_norm_o": "uy_norm_o [%] (per facet, out ref)",
     }
-    ylab = ylab_map.get(feature, feature)
+    ylab_auto = ylab_map.get(feature, feature)
+    ylab = ylab_auto if ylabel_override is None else str(ylabel_override)
 
     for i, yv in enumerate(y_levels):
         for j, clab in enumerate(col_levels):
@@ -2103,7 +2872,7 @@ def plot_line_facet(
                                 zorder=5,
                             )
                             xc = _centroid_x_trapz(xu, ym, weight_mode="abs")
-                            if np.isfinite(xc):
+                            if show_xc and np.isfinite(xc):
                                 ax.axvline(
                                     xc,
                                     color="black",
@@ -2128,20 +2897,21 @@ def plot_line_facet(
                             if np.isfinite(dxc):
                                 lines.append(f"ΔXc={dxc:+g}mm")
                             if len(lines) > 1:
-                                ax.text(
-                                    0.02,
-                                    0.98,
-                                    "\n".join(lines),
-                                    transform=ax.transAxes,
-                                    ha="left",
-                                    va="top",
-                                    fontsize=8.5,
-                                    color="black",
-                                    bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.8),
-                                    zorder=7,
-                                )
-                                msg = ", ".join(lines[1:])
-                                print(f"centroid: col_facet={clab}, y={yv:g}, io={io_label}, {msg}")
+                                if show_xc:
+                                    ax.text(
+                                        0.02,
+                                        0.98,
+                                        "\n".join(lines),
+                                        transform=ax.transAxes,
+                                        ha="left",
+                                        va="top",
+                                        fontsize=8.5,
+                                        color="black",
+                                        bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.8),
+                                        zorder=7,
+                                    )
+                                    msg = ", ".join(lines[1:])
+                                    print(f"centroid: col_facet={clab}, y={yv:g}, io={io_label}, {msg}")
             else:
                 # normal: side(front/rear) を別線で表示
                 for d in directions:
@@ -2184,7 +2954,7 @@ def plot_line_facet(
                         )
 
                         xc = _centroid_x_trapz(xu, ym, weight_mode="positive")
-                        if np.isfinite(xc):
+                        if show_xc and np.isfinite(xc):
                             ax.axvline(
                                 xc,
                                 color="black",
@@ -2202,22 +2972,23 @@ def plot_line_facet(
 
                     if xc_parts:
                         dxc = (xcF_val - xcR_val) if (np.isfinite(xcF_val) and np.isfinite(xcR_val)) else np.nan
-                        ax.text(
-                            0.02,
-                            0.98,
-                            f"io={io_label}\n"
-                            + ", ".join(xc_parts)
-                            + (f"\nΔXc={dxc:+g}mm" if np.isfinite(dxc) else ""),
-                            transform=ax.transAxes,
-                            ha="left",
-                            va="top",
-                            fontsize=8.5,
-                            color="black",
-                            bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.8),
-                            zorder=7,
-                        )
-                        msg = ", ".join(xc_parts) + (f", ΔXc={dxc:+g}mm" if np.isfinite(dxc) else "")
-                        print(f"centroid: col_facet={clab}, y={yv:g}, io={io_label}, {msg}")
+                        if show_xc:
+                            ax.text(
+                                0.02,
+                                0.98,
+                                f"io={io_label}\n"
+                                + ", ".join(xc_parts)
+                                + (f"\nΔXc={dxc:+g}mm" if np.isfinite(dxc) else ""),
+                                transform=ax.transAxes,
+                                ha="left",
+                                va="top",
+                                fontsize=8.5,
+                                color="black",
+                                bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.8),
+                                zorder=7,
+                            )
+                            msg = ", ".join(xc_parts) + (f", ΔXc={dxc:+g}mm" if np.isfinite(dxc) else "")
+                            print(f"centroid: col_facet={clab}, y={yv:g}, io={io_label}, {msg}")
 
             if i == nrows - 1:
                 ax.set_xlabel(xlab)
@@ -2258,40 +3029,41 @@ def plot_line_facet(
             fontsize=11,
         )
 
-    # legend
-    if legend != "none":
-        handles = []
-        labels = []
-        # direction: 色
-        if legend in ["direction", "all"]:
-            from matplotlib.lines import Line2D
+    if not embedded:
+        # legend
+        if legend != "none":
+            handles = []
+            labels = []
+            # direction: 色
+            if legend in ["direction", "all"]:
+                from matplotlib.lines import Line2D
 
-            for d in directions:
-                handles.append(Line2D([0], [0], color=dir_color.get(d, "C0"), lw=linewidth, ls="-"))
-                labels.append(f"direction={d}")
+                for d in directions:
+                    handles.append(Line2D([0], [0], color=dir_color.get(d, "C0"), lw=linewidth, ls="-"))
+                    labels.append(f"direction={d}")
 
-        # side: 線種（黒）
-        if legend == "all":
-            from matplotlib.lines import Line2D
+            # side: 線種（黒）
+            if legend == "all":
+                from matplotlib.lines import Line2D
 
-            handles.append(Line2D([0], [0], color="black", lw=linewidth, ls=ls_front))
-            labels.append("front")
-            handles.append(Line2D([0], [0], color="black", lw=linewidth, ls=ls_rear))
-            labels.append("rear")
+                handles.append(Line2D([0], [0], color="black", lw=linewidth, ls=ls_front))
+                labels.append("front")
+                handles.append(Line2D([0], [0], color="black", lw=linewidth, ls=ls_rear))
+                labels.append("rear")
 
-        if handles:
-            fig.legend(handles, labels, loc="center right", bbox_to_anchor=(0.995, 0.5), frameon=True)
+            if handles:
+                fig.legend(handles, labels, loc="center right", bbox_to_anchor=(0.995, 0.5), frameon=True)
 
-    # 余白（右に凡例スペース）
-    fig.subplots_adjust(left=0.18, right=0.83 if legend != "none" else 0.95, top=0.92, bottom=0.12, hspace=0.35)
+        # 余白（右に凡例スペース）
+        fig.subplots_adjust(left=0.18, right=0.83 if legend != "none" else 0.95, top=0.92, bottom=0.12, hspace=0.35)
 
-    if output:
-        out_path = Path(output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(str(out_path), dpi=dpi, bbox_inches="tight")
-        print(f"保存しました: {out_path}")
-    else:
-        plt.show()
+        if output:
+            out_path = Path(output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(str(out_path), dpi=dpi, bbox_inches="tight")
+            print(f"保存しました: {out_path}")
+        else:
+            plt.show()
 
 
 def main():
@@ -2386,6 +3158,29 @@ def main():
         y_vals = pd.to_numeric(df_long["y"], errors="coerce")
         # y が大きい方から上に並べたいので降順
         y_levels = sorted(y_vals[np.isfinite(y_vals)].unique().tolist(), reverse=True)
+        # line/mean_fold下段用: io=in を落とす（mapは両ioを表示するのでここでは別リストを作る）
+        if args.hide_in_line:
+            y_in = set(
+                pd.to_numeric(
+                    df_long.loc[df_long["io"].astype(str) == "in", "y"],
+                    errors="coerce",
+                )
+                .dropna()
+                .unique()
+                .tolist()
+            )
+            y_levels_bottom = [yv for yv in y_levels if yv not in y_in]
+        else:
+            y_levels_bottom = list(y_levels)
+
+        figsize_override = None
+        if getattr(args, "figsize", None) is not None:
+            try:
+                w, h = args.figsize
+                if w is not None and h is not None:
+                    figsize_override = (float(w), float(h))
+            except Exception:
+                figsize_override = None
 
         if args.plot_kind == "mean_dots":
             plot_mean_dots_facet(
@@ -2396,7 +3191,101 @@ def main():
                 mode=args.mode,
                 dot_step_mm=float(args.dot_step_mm),
                 cmap=str(args.cmap),
+                cmap_in=args.cmap_in,
+                cmap_out=args.cmap_out,
                 colorbar_mode=str(args.colorbar_mode),
+                cbar_label=args.cbar_label,
+                cbar_label_in=args.cbar_label_in,
+                cbar_label_out=args.cbar_label_out,
+                xlabel_map_override=args.xlabel_map,
+                ylabel_map_override=args.ylabel_map,
+                figsize_override=figsize_override,
+                dpi=args.dpi,
+                output=args.output,
+            )
+        elif args.plot_kind == "line_with_map":
+            plot_facets_with_map(
+                df_long,
+                col_levels=col_levels,
+                y_levels=y_levels,
+                y_levels_bottom=y_levels_bottom,
+                feature=args.feature,
+                mode=args.mode,
+                dot_step_mm=float(args.dot_step_mm),
+                cmap=str(args.cmap),
+                cmap_in=args.cmap_in,
+                cmap_out=args.cmap_out,
+                colorbar_mode=str(args.colorbar_mode),
+                cbar_label=args.cbar_label,
+                cbar_label_in=args.cbar_label_in,
+                cbar_label_out=args.cbar_label_out,
+                ylim_by_io=ylim_by_io,
+                bottom_kind="line",
+                linewidth=args.linewidth,
+                overlay_drone=bool(args.overlay_drone),
+                drone_overlay_y_mm=float(args.drone_overlay_y_mm),
+                drone_geom={
+                    "cx": float(args.drone_cx_m),
+                    "cy": float(args.drone_cy_m),
+                    "arm_length_m": float(args.drone_arm_length_m),
+                    "rotor_radius_in": float(args.drone_rotor_radius_in),
+                    "psi_deg": float(args.drone_psi_deg),
+                    "rotor_inflow_offset_m": float(args.drone_rotor_inflow_offset_mm) / 1000.0,
+                    "symmetry": "mirror_xy",
+                    "prop_anchor": str(args.drone_prop_anchor),
+                    "prop_center_x_mm": args.drone_prop_center_x_mm,
+                    "prop_center_y_mm": args.drone_prop_center_y_mm,
+                },
+                plot_xc_on_map=bool(args.plot_xc_on_map),
+                show_xc_bottom=(not bool(args.hide_xc)),
+                xlabel_map_override=args.xlabel_map,
+                ylabel_map_override=args.ylabel_map,
+                xlabel_override=args.xlabel,
+                ylabel_override=args.ylabel,
+                figsize_override=figsize_override,
+                dpi=args.dpi,
+                output=args.output,
+            )
+        elif args.plot_kind == "mean_fold_with_map":
+            plot_facets_with_map(
+                df_long,
+                col_levels=col_levels,
+                y_levels=y_levels,
+                y_levels_bottom=y_levels_bottom,
+                feature=args.feature,
+                mode=args.mode,
+                dot_step_mm=float(args.dot_step_mm),
+                cmap=str(args.cmap),
+                cmap_in=args.cmap_in,
+                cmap_out=args.cmap_out,
+                colorbar_mode=str(args.colorbar_mode),
+                cbar_label=args.cbar_label,
+                cbar_label_in=args.cbar_label_in,
+                cbar_label_out=args.cbar_label_out,
+                ylim_by_io=ylim_by_io,
+                bottom_kind="mean_fold",
+                linewidth=args.linewidth,
+                overlay_drone=bool(args.overlay_drone),
+                drone_overlay_y_mm=float(args.drone_overlay_y_mm),
+                drone_geom={
+                    "cx": float(args.drone_cx_m),
+                    "cy": float(args.drone_cy_m),
+                    "arm_length_m": float(args.drone_arm_length_m),
+                    "rotor_radius_in": float(args.drone_rotor_radius_in),
+                    "psi_deg": float(args.drone_psi_deg),
+                    "rotor_inflow_offset_m": float(args.drone_rotor_inflow_offset_mm) / 1000.0,
+                    "symmetry": "mirror_xy",
+                    "prop_anchor": str(args.drone_prop_anchor),
+                    "prop_center_x_mm": args.drone_prop_center_x_mm,
+                    "prop_center_y_mm": args.drone_prop_center_y_mm,
+                },
+                plot_xc_on_map=bool(args.plot_xc_on_map),
+                show_xc_bottom=(not bool(args.hide_xc)),
+                xlabel_map_override=args.xlabel_map,
+                ylabel_map_override=args.ylabel_map,
+                xlabel_override=args.xlabel,
+                ylabel_override=args.ylabel,
+                figsize_override=figsize_override,
                 dpi=args.dpi,
                 output=args.output,
             )
@@ -2404,11 +3293,15 @@ def main():
             plot_mean_fold_line_facet(
                 df_long,
                 col_levels=col_levels,
-                y_levels=y_levels,
+                y_levels=y_levels_bottom,
                 feature=args.feature,
                 mode=args.mode,
                 linewidth=args.linewidth,
                 ylim_by_io=ylim_by_io,
+                show_xc=(not bool(args.hide_xc)),
+                xlabel_override=args.xlabel,
+                ylabel_override=args.ylabel,
+                figsize_override=figsize_override,
                 dpi=args.dpi,
                 output=args.output,
             )
@@ -2416,7 +3309,7 @@ def main():
             plot_line_facet(
                 df_long,
                 col_levels=col_levels,
-                y_levels=y_levels,
+                y_levels=y_levels_bottom,
                 feature=args.feature,
                 mode=args.mode,
                 # diff は比較用途なので、fit無しでも平均線/重心/ΔXcを出せるようにする
@@ -2424,6 +3317,10 @@ def main():
                 linewidth=args.linewidth,
                 ylim_by_io=ylim_by_io,
                 legend=args.legend,
+                show_xc=(not bool(args.hide_xc)),
+                xlabel_override=args.xlabel,
+                ylabel_override=args.ylabel,
+                figsize_override=figsize_override,
                 dpi=args.dpi,
                 output=args.output,
             )
