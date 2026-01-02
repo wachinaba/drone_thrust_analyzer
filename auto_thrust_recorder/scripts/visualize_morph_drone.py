@@ -18,6 +18,176 @@ except Exception as e:
     _AXES3D_IMPORT_ERROR = e
 
 
+@dataclass(frozen=True)
+class DotGridSpec:
+    """
+    ドットグリッドの定義（複数可）。
+
+    生成点（ローカル）:
+      p(i,j) = origin + i*u + j*v,  i=0..nu-1, j=0..nv-1
+
+    frame（平行移動のみ、回転なし）:
+      - world: 変換なし
+      - drone: ドローン原点へ平行移動
+      - rotor: 指定ロータ中心へ平行移動
+      - rotor_between: 指定2ロータ中心の中点へ平行移動
+    """
+
+    frame: str = "world"  # "world" | "drone" | "rotor" | "rotor_between"
+    origin: np.ndarray = np.zeros(3, dtype=float)
+    u: np.ndarray = np.array([1.0, 0.0, 0.0], dtype=float)
+    v: np.ndarray = np.array([0.0, 1.0, 0.0], dtype=float)
+    nu: int = 1
+    nv: int = 1
+    # frame-specific
+    rotor: int | None = None
+    rotors: tuple[int, int] | None = None
+    # style (matplotlib scatter)
+    color: str = "gray"
+    alpha: float = 0.25
+    size: float = 6.0
+    marker: str = "."
+    edgecolor: str | None = None
+    lw: float = 0.0
+
+
+def _parse_vec3_csv(s: str) -> np.ndarray:
+    parts = [p.strip() for p in str(s).split(",") if p.strip() != ""]
+    if len(parts) != 3:
+        raise ValueError(f"Expected 3 comma-separated numbers, got: {s!r}")
+    return np.array([float(parts[0]), float(parts[1]), float(parts[2])], dtype=float)
+
+
+def _parse_kv_semicolon(s: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    raw = str(s).strip()
+    if not raw:
+        return out
+    for item in raw.split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Invalid token (expected key=value): {item!r}")
+        k, v = item.split("=", 1)
+        k = k.strip().lower()
+        v = v.strip()
+        if not k:
+            raise ValueError(f"Empty key in token: {item!r}")
+        out[k] = v
+    return out
+
+
+def parse_dot_grid_spec(spec_str: str) -> DotGridSpec:
+    """
+    CLI string -> DotGridSpec
+    Format: "key=value;key=value;..."
+    Required keys: origin, u, v, nu, nv
+    Optional keys:
+      frame=world|drone|rotor|rotor_between
+      rotor=<int> (frame=rotor)
+      rotors=a,b (frame=rotor_between)
+      color, alpha, size, marker, edgecolor, lw
+    """
+    kv = _parse_kv_semicolon(spec_str)
+    frame = str(kv.get("frame", "world")).strip().lower()
+
+    def req(name: str) -> str:
+        if name not in kv:
+            raise ValueError(f"Missing required key: {name}")
+        return str(kv[name])
+
+    origin = _parse_vec3_csv(req("origin"))
+    u = _parse_vec3_csv(req("u"))
+    v = _parse_vec3_csv(req("v"))
+    nu = int(float(req("nu")))
+    nv = int(float(req("nv")))
+    if nu <= 0 or nv <= 0:
+        raise ValueError(f"nu/nv must be positive integers, got nu={nu}, nv={nv}")
+
+    rotor: int | None = None
+    rotors: tuple[int, int] | None = None
+    if frame == "rotor":
+        if "rotor" not in kv:
+            raise ValueError("frame=rotor requires key 'rotor=<index>'")
+        rotor = int(float(str(kv["rotor"])))
+    elif frame == "rotor_between":
+        if "rotors" not in kv:
+            raise ValueError("frame=rotor_between requires key 'rotors=a,b'")
+        parts = [p.strip() for p in str(kv["rotors"]).split(",") if p.strip() != ""]
+        if len(parts) != 2:
+            raise ValueError(f"rotors must be 'a,b', got: {kv['rotors']!r}")
+        rotors = (int(float(parts[0])), int(float(parts[1])))
+    elif frame in {"world", "drone"}:
+        pass
+    else:
+        raise ValueError(f"Unknown frame: {frame!r}")
+
+    color = str(kv.get("color", "gray"))
+    alpha = float(kv.get("alpha", 0.25))
+    size = float(kv.get("size", 6.0))
+    marker = str(kv.get("marker", "."))
+    edgecolor = (str(kv["edgecolor"]) if "edgecolor" in kv else None)
+    lw = float(kv.get("lw", 0.0))
+
+    return DotGridSpec(
+        frame=frame,
+        origin=origin,
+        u=u,
+        v=v,
+        nu=nu,
+        nv=nv,
+        rotor=rotor,
+        rotors=rotors,
+        color=color,
+        alpha=alpha,
+        size=size,
+        marker=marker,
+        edgecolor=edgecolor,
+        lw=lw,
+    )
+
+
+def _dot_grid_points_local(spec: DotGridSpec) -> np.ndarray:
+    i = np.arange(int(spec.nu), dtype=float)[:, None]  # (nu,1)
+    j = np.arange(int(spec.nv), dtype=float)[None, :]  # (1,nv)
+    pts = (
+        spec.origin[None, None, :]
+        + i[:, :, None] * spec.u[None, None, :]
+        + j[:, :, None] * spec.v[None, None, :]
+    )
+    return pts.reshape(-1, 3)
+
+
+def _dot_grid_translation(spec: DotGridSpec, *, drone_origin: np.ndarray, rotor_centers: list[np.ndarray]) -> np.ndarray:
+    frame = str(spec.frame).lower()
+    if frame == "world":
+        return np.zeros(3, dtype=float)
+    if frame == "drone":
+        return np.asarray(drone_origin, dtype=float).reshape(3)
+    if frame == "rotor":
+        if spec.rotor is None:
+            raise ValueError("DotGridSpec.frame='rotor' requires spec.rotor")
+        idx = int(spec.rotor)
+        if idx < 0 or idx >= len(rotor_centers):
+            raise ValueError(f"rotor index out of range: {idx} (0..{len(rotor_centers)-1})")
+        return np.asarray(rotor_centers[idx], dtype=float).reshape(3)
+    if frame == "rotor_between":
+        if spec.rotors is None:
+            raise ValueError("DotGridSpec.frame='rotor_between' requires spec.rotors=(a,b)")
+        a, b = int(spec.rotors[0]), int(spec.rotors[1])
+        if a < 0 or a >= len(rotor_centers) or b < 0 or b >= len(rotor_centers):
+            raise ValueError(f"rotors indices out of range: ({a},{b}) (0..{len(rotor_centers)-1})")
+        return 0.5 * (np.asarray(rotor_centers[a], dtype=float).reshape(3) + np.asarray(rotor_centers[b], dtype=float).reshape(3))
+    raise ValueError(f"Unknown frame: {frame!r}")
+
+
+def _dot_grid_points_world(spec: DotGridSpec, *, drone_origin: np.ndarray, rotor_centers: list[np.ndarray]) -> np.ndarray:
+    pts = _dot_grid_points_local(spec)
+    t = _dot_grid_translation(spec, drone_origin=drone_origin, rotor_centers=rotor_centers)
+    return pts + t[None, :]
+
+
 def _setup_logging(level: str):
     numeric = getattr(logging, str(level).upper(), None)
     if not isinstance(numeric, int):
@@ -463,6 +633,7 @@ def plot_morphing_drone(
     show: bool = True,
     sliders_enabled: bool = True,
     hide_decorations: bool = False,
+    dot_grids: list[DotGridSpec] | None = None,
 ):
     # Import pyplot lazily so that main() can set backend beforehand.
     import matplotlib.pyplot as plt
@@ -628,6 +799,10 @@ def plot_morphing_drone(
     def _set_3d_point(scatter, p: np.ndarray):
         scatter._offsets3d = ([float(p[0])], [float(p[1])], [float(p[2])])
 
+    def _set_3d_scatter(scatter, pts: np.ndarray):
+        pts = np.asarray(pts, dtype=float)
+        scatter._offsets3d = (pts[:, 0].tolist(), pts[:, 1].tolist(), pts[:, 2].tolist())
+
     def _compute_limits(_poses: list[ArmPose], _L: float):
         all_points = []
         for _pose in _poses:
@@ -670,6 +845,37 @@ def plot_morphing_drone(
                 angle_text.set_visible(False)
             except Exception:
                 pass
+
+        # Dot grids (background reference). Points are in WORLD coords.
+        dot_grid_artists = []
+        dot_grid_specs = list(dot_grids) if dot_grids else []
+        if dot_grid_specs:
+            # Current drone origin includes y_clearance shift (A).
+            drone_origin = np.array([0.0, float(dy), 0.0], dtype=float)
+            rotor_centers = [
+                (pose.hinge + np.array([0.0, float(dy), 0.0], dtype=float) + float(arm_length_m) * pose.arm_dir)
+                for pose in poses
+            ]
+            for spec in dot_grid_specs:
+                try:
+                    pts = _dot_grid_points_world(spec, drone_origin=drone_origin, rotor_centers=rotor_centers)
+                except Exception as e:
+                    logging.warning("Failed to build dot grid %r: %r", spec, e)
+                    continue
+                kwargs = dict(
+                    s=float(spec.size),
+                    c=str(spec.color),
+                    alpha=float(spec.alpha),
+                    marker=str(spec.marker),
+                    depthshade=False,
+                    zorder=0.1,
+                )
+                if spec.edgecolor is not None:
+                    kwargs["edgecolors"] = str(spec.edgecolor)
+                if float(spec.lw) > 0.0:
+                    kwargs["linewidths"] = float(spec.lw)
+                sc = ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], **kwargs)
+                dot_grid_artists.append((spec, sc))
 
         # Body outline (hinge square)
         hs_shift = hs.copy()
@@ -898,6 +1104,20 @@ def plot_morphing_drone(
                     p2 = p1 + n_scale * pose.rotor_normal
                     _set_3d_line(normal_lines[i], [p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]])
 
+                # Update dot grids (if any). They depend on dy/poses (drone/rotor frames).
+                if dot_grid_artists:
+                    drone_origin_u = np.array([0.0, float(new_dy), 0.0], dtype=float)
+                    rotor_centers_u = [
+                        (pose.hinge + np.array([0.0, float(new_dy), 0.0], dtype=float) + float(new_L) * pose.arm_dir)
+                        for pose in new_poses
+                    ]
+                    for (spec, sc) in dot_grid_artists:
+                        try:
+                            pts_u = _dot_grid_points_world(spec, drone_origin=drone_origin_u, rotor_centers=rotor_centers_u)
+                            _set_3d_scatter(sc, pts_u)
+                        except Exception as e:
+                            logging.debug("Dot grid update failed for %r: %r", spec, e)
+
                 ax.set_title(_format_title(new_poses, new_L, new_phi, new_psi, new_theta, new_clear))
                 _compute_limits([ArmPose(hinge=p.hinge + np.array([0.0, new_dy, 0.0]), arm_dir=p.arm_dir, rotor_normal=p.rotor_normal) for p in new_poses], new_L)
                 _draw_plane()
@@ -1063,6 +1283,7 @@ def plot_three_view_drone(
     hide_decorations: bool = False,
     drone_color: str = "multi",
     body_color: str = "gray",
+    dot_grids: list[DotGridSpec] | None = None,
 ):
     """
     3面図 (正面図・側面図・平面図) を描画する。
@@ -1243,6 +1464,21 @@ def plot_three_view_drone(
         ax_front = fig.add_subplot(1, 3, 3)
         ax_3d = None
 
+    # Dot grids: precompute points in WORLD coords once for all views.
+    dot_grid_specs = list(dot_grids) if dot_grids else []
+    dot_grid_points_world_list: list[tuple[DotGridSpec, np.ndarray]] = []
+    if dot_grid_specs:
+        # Drone origin in three-view: use drone_center offset (and any other applied translation).
+        # NOTE: three-view currently does not apply y_clearance shift to the drone geometry.
+        drone_origin = np.asarray(drone_offset, dtype=float).reshape(3)
+        rotor_centers = [np.asarray(rc[0], dtype=float).reshape(3) for rc in rotor_circles]
+        for spec in dot_grid_specs:
+            try:
+                pts = _dot_grid_points_world(spec, drone_origin=drone_origin, rotor_centers=rotor_centers)
+                dot_grid_points_world_list.append((spec, pts))
+            except Exception as e:
+                logging.warning("Failed to build dot grid %r: %r", spec, e)
+
     def _format_status_text_three_view() -> str:
         """
         三面図用の図中テキスト:
@@ -1330,6 +1566,23 @@ def plot_three_view_drone(
                 zorder=base_zorder + 4,
             )
 
+        # Dot grids (background)
+        if dot_grid_points_world_list:
+            for (spec, pts) in dot_grid_points_world_list:
+                pts2 = np.asarray([proj_func(p) for p in pts], dtype=float)
+                kwargs = dict(
+                    s=float(spec.size),
+                    c=str(spec.color),
+                    alpha=float(spec.alpha),
+                    marker=str(spec.marker),
+                    zorder=0.15,
+                )
+                if spec.edgecolor is not None:
+                    kwargs["edgecolors"] = str(spec.edgecolor)
+                if float(spec.lw) > 0.0:
+                    kwargs["linewidths"] = float(spec.lw)
+                ax.scatter(pts2[:, 0], pts2[:, 1], **kwargs)
+
         ax.set_aspect("equal", adjustable="box")
         if hide_decorations:
             ax.set_axis_off()
@@ -1412,6 +1665,22 @@ def plot_three_view_drone(
 
     # 3D view (if enabled)
     if ax_3d is not None:
+        # Dot grids in 3D (background)
+        if dot_grid_points_world_list:
+            for (spec, pts) in dot_grid_points_world_list:
+                kwargs = dict(
+                    s=float(spec.size),
+                    c=str(spec.color),
+                    alpha=float(spec.alpha),
+                    marker=str(spec.marker),
+                    depthshade=False,
+                )
+                if spec.edgecolor is not None:
+                    kwargs["edgecolors"] = str(spec.edgecolor)
+                if float(spec.lw) > 0.0:
+                    kwargs["linewidths"] = float(spec.lw)
+                ax_3d.scatter(pts[:, 0], pts[:, 1], pts[:, 2], **kwargs)
+
         # Body outline
         hinges_for_outline = [pose.hinge + drone_offset for pose in poses]
         hs = np.array(hinges_for_outline + [hinges_for_outline[0]])
@@ -1675,6 +1944,17 @@ def main():
     parser.add_argument("--no-show", action="store_true", help="Do not open a window (useful with --save on WSL/headless).")
     parser.add_argument("--no-sliders", action="store_true", help="Disable slider UI (enabled by default when showing).")
     parser.add_argument(
+        "--dot-grid",
+        action="append",
+        default=[],
+        help=(
+            "Draw dot grid(s). Repeatable. Format: \"key=value;key=value;...\". "
+            "Required: origin=x,y,z; u=dx,dy,dz; v=dx,dy,dz; nu=N; nv=M. "
+            "Optional: frame=world|drone|rotor|rotor_between; rotor=i; rotors=a,b; "
+            "color=...; alpha=...; size=...; marker=...; edgecolor=...; lw=..."
+        ),
+    )
+    parser.add_argument(
         "--three-view",
         action="store_true",
         help="Output three-view diagram (Front/Side/Top) with optional 3D view.",
@@ -1791,6 +2071,14 @@ def main():
 
     rotor_radius_m = float(args.rotor_radius_in) * 0.0254
 
+    # Parse dot grids (if any)
+    dot_grids: list[DotGridSpec] = []
+    try:
+        for s in (args.dot_grid or []):
+            dot_grids.append(parse_dot_grid_spec(str(s)))
+    except Exception as e:
+        raise SystemExit(f"Failed to parse --dot-grid: {e}") from e
+
     # Optional inverse: alpha/beta -> psi/theta (phi fixed)
     if bool(args.solve_psi_theta):
         if args.alpha is None or args.beta is None:
@@ -1847,6 +2135,7 @@ def main():
             hide_decorations=bool(args.hide_decorations),
             drone_color=str(args.drone_color),
             body_color=str(args.body_color),
+            dot_grids=dot_grids,
         )
     else:
         plot_morphing_drone(
@@ -1869,6 +2158,7 @@ def main():
             dpi=int(args.dpi),
             show=(not bool(args.no_show)),
             sliders_enabled=(not bool(args.no_sliders)),
+            dot_grids=dot_grids,
         )
 
 
