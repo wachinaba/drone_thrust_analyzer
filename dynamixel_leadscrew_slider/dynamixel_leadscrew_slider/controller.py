@@ -56,7 +56,7 @@ class LeadscrewSliderController(Node):
         self.declare_parameter('profile.max_acc_mm_s2', 500.0)
         # Stall detection / travel guard
         self.declare_parameter('homing.stall_vel_threshold_mm_s', 0.05)
-        self.declare_parameter('homing.stall_hold_time_s', 0.25)
+        self.declare_parameter('homing.stall_hold_time_s', 1.0)
         self.declare_parameter('homing.max_travel_mm', 300.0)
         self.declare_parameter('homing.max_seek_time_s', 15.0)
         self.declare_parameter('homing.move_vel_threshold_mm_s', 0.2)
@@ -64,6 +64,9 @@ class LeadscrewSliderController(Node):
         self.declare_parameter('homing.return_to_zero_timeout_s', 5.0)
         self.declare_parameter('homing.return_to_zero_tolerance_mm', 0.05)
         self.declare_parameter('homing.return_to_zero_monitor', False)
+        # Calibration success criteria (soft-limit range)
+        # If > 0, homing is considered failed when |soft_max_mm - soft_min_mm| < this value.
+        self.declare_parameter('homing.min_soft_limit_range_mm', 0.0)
         # Debug
         self.declare_parameter('debug.log_states', True)
         self.declare_parameter('debug.log_states_period_s', 0.5)
@@ -98,6 +101,7 @@ class LeadscrewSliderController(Node):
         self.return_to_zero_timeout_s: float = self.get_parameter('homing.return_to_zero_timeout_s').get_parameter_value().double_value
         self.return_to_zero_tolerance_mm: float = self.get_parameter('homing.return_to_zero_tolerance_mm').get_parameter_value().double_value
         self.return_to_zero_monitor: bool = self.get_parameter('homing.return_to_zero_monitor').get_parameter_value().bool_value
+        self.min_soft_limit_range_mm: float = self.get_parameter('homing.min_soft_limit_range_mm').get_parameter_value().double_value
         self.log_states: bool = self.get_parameter('debug.log_states').get_parameter_value().bool_value
         self.log_states_period_s: float = self.get_parameter('debug.log_states_period_s').get_parameter_value().double_value
         self.states_watchdog_s: float = self.get_parameter('debug.states_watchdog_s').get_parameter_value().double_value
@@ -155,7 +159,8 @@ class LeadscrewSliderController(Node):
             f"seek_ramp(max={self.seek_current_ma_max} mA, step={self.seek_current_ma_step} mA, stage_ms={self.seek_ramp_stage_ms}, move_min_mm={self.move_min_mm}), "
             f"stall(v<= {self.stall_vel_threshold_mm_s} mm/s for {self.stall_hold_time_s}s), guards(max_travel={self.max_travel_mm} mm, max_time={self.max_seek_time_s}s), "
             f"backoff_timeout={self.backoff_timeout_s}s, rtz_timeout={self.return_to_zero_timeout_s}s, rtz_tol={self.return_to_zero_tolerance_mm}mm, rtz_monitor={self.return_to_zero_monitor}, "
-            f"origin_offset_mm={self.origin_offset_mm}, return_to_position_mm={self.return_to_position_mm}"
+            f"origin_offset_mm={self.origin_offset_mm}, return_to_position_mm={self.return_to_position_mm}, "
+            f"min_soft_limit_range_mm={self.min_soft_limit_range_mm}"
         )
 
         # ---- State Machine (non-blocking) ----
@@ -502,6 +507,25 @@ class LeadscrewSliderController(Node):
                 if (now - self.sm_stall_start).nanoseconds * 1e-9 >= self.stall_hold_time_s:
                     self.get_logger().info("Seek end detected: stall condition")
                     self._enforce_stop()
+                    # Option: skip backoff (only release current and proceed) when backoff_mm <= 0
+                    if self.backoff_mm <= 0.0:
+                        end_counts = self.present_counts
+                        if self.sm_dir < 0:
+                            self.sm_end_left = end_counts
+                            self.sm_state = 'homing_right'
+                            self.sm_dir = +1
+                        else:
+                            self.sm_end_right = end_counts
+                            self.sm_state = 'finalize_homing'
+                        # re-init stage tracking
+                        self.sm_current_level = max(0, abs(self.seek_current_mA))
+                        self.sm_last_cmd_time = None
+                        self.sm_moved_once = False
+                        self.sm_stage_start = now
+                        self.sm_stage_baseline_counts = self.present_counts
+                        self.sm_stall_start = None
+                        self.get_logger().info("Backoff skipped (backoff_mm <= 0), proceeding")
+                        return
                     # compute backoff
                     backoff_counts = abs(mm_to_counts(self.backoff_mm, self.pitch, self.cpr))
                     target = (self.present_counts or 0) - self.sm_dir * backoff_counts
@@ -514,6 +538,46 @@ class LeadscrewSliderController(Node):
                     self.get_logger().info(f"Backoff start: target_counts={target}")
             else:
                 self.sm_stall_start = None
+            # If we cannot move at all from an endpoint (e.g. starting already at hard-stop),
+            # the "moved_once -> stall" criterion never becomes true. Detect "stuck" and
+            # proceed to backoff to force a turn-around.
+            if (
+                not self.sm_moved_once
+                and abs(vel_mm_s) <= self.stall_vel_threshold_mm_s
+                and self.sm_current_level >= self.seek_current_ma_max
+                and self.sm_last_move_time is not None
+                and (now - self.sm_last_move_time).nanoseconds * 1e-9 >= self.stall_hold_time_s
+            ):
+                self.get_logger().warn("Seek end detected: stuck at endpoint (no initial movement)")
+                self._enforce_stop()
+                # Option: skip backoff when backoff_mm <= 0
+                if self.backoff_mm <= 0.0:
+                    end_counts = self.present_counts
+                    if self.sm_dir < 0:
+                        self.sm_end_left = end_counts
+                        self.sm_state = 'homing_right'
+                        self.sm_dir = +1
+                    else:
+                        self.sm_end_right = end_counts
+                        self.sm_state = 'finalize_homing'
+                    # re-init stage tracking
+                    self.sm_current_level = max(0, abs(self.seek_current_mA))
+                    self.sm_last_cmd_time = None
+                    self.sm_moved_once = False
+                    self.sm_stage_start = now
+                    self.sm_stage_baseline_counts = self.present_counts
+                    self.sm_stall_start = None
+                    self.get_logger().info("Backoff skipped (backoff_mm <= 0), proceeding")
+                    return
+                backoff_counts = abs(mm_to_counts(self.backoff_mm, self.pitch, self.cpr))
+                target = (self.present_counts or 0) - self.sm_dir * backoff_counts
+                self.sm_backoff_target = target
+                self.sm_backoff_start = now
+                self._torque(True)
+                self.sm_last_cmd_time = None
+                self.sm_state = 'backoff_left' if self.sm_dir < 0 else 'backoff_right'
+                self.get_logger().info(f"Backoff start (stuck): target_counts={target}")
+                return
             # guards
             if self.sm_start_time and (now - self.sm_start_time).nanoseconds * 1e-9 > self.max_seek_time_s:
                 self._zero_current()
@@ -533,7 +597,8 @@ class LeadscrewSliderController(Node):
                         self.sm_last_move_time = now
             # check reached or timeout
             if self.present_counts is not None and self.sm_backoff_target is not None:
-                if abs(self.present_counts - self.sm_backoff_target) < 8:
+                backoff_tol_counts = max(8, abs(mm_to_counts(self.return_to_zero_tolerance_mm, self.pitch, self.cpr)))
+                if abs(self.present_counts - self.sm_backoff_target) <= backoff_tol_counts:
                     # backoff done
                     end_counts = self.present_counts
                     if state == 'backoff_left':
@@ -592,6 +657,22 @@ class LeadscrewSliderController(Node):
                 max_mm = counts_to_mm(self.max_end_counts - self.zero_offset_counts, self.pitch, self.cpr)
                 self.soft_min_mm = min(min_mm, max_mm)
                 self.soft_max_mm = max(min_mm, max_mm)
+            # Validate calibration quality by soft-limit range
+            if (
+                self.min_soft_limit_range_mm > 0.0
+                and self.soft_min_mm is not None
+                and self.soft_max_mm is not None
+            ):
+                soft_range_mm = abs(self.soft_max_mm - self.soft_min_mm)
+                if soft_range_mm < self.min_soft_limit_range_mm:
+                    self.get_logger().error(
+                        f"Homing FAILED: soft limit range too small: range={soft_range_mm:.3f} mm < "
+                        f"min_required={self.min_soft_limit_range_mm:.3f} mm. Aborting node."
+                    )
+                    # Safety: release current before exiting
+                    self._enforce_stop()
+                    self.sm_state = 'error'
+                    raise SystemExit(2)
             self.get_logger().info(
                 f"Homing finalized: min={self.min_end_counts}, max={self.max_end_counts}, zero={self.zero_offset_counts}, origin_offset_mm={self.origin_offset_mm}, soft=[{self.soft_min_mm}, {self.soft_max_mm}] mm"
             )
