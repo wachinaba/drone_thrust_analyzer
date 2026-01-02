@@ -268,6 +268,15 @@ python ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/visual
 python ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/visualize_morph_drone.py --arm-length 0.12 --three-view --hide-decorations --drone-center-y 0.3 --rotor-inflow-offset 0.011 --view-azim 20 --view-elev 12 --no-show --save-split --solve-psi-theta --drone-lw 2.5 \
   --alpha="1" --beta="-15" --save "optima_set08_alpha1_beta-15.png" &&
 
+# visualize 3d morph, with grid
+
+python ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/visualize_morph_drone.py --arm-length 0.12 --three-view --hide-decorations --drone-center-y 0.3 --rotor-inflow-offset 0.011 --view-azim 20 --view-elev 12 --save-split --dot-grid "frame=rotor_between;rotors=3,0;origin=0,0.03,0.08889;u=0,0.015,0;v=0,0,0.04445;nu=14;nv=3;color=black;alpha=0.8;size=10;marker=." --dot-grid "frame=rotor_between;rotors=3,0;origin=0,0.03,-0.08889;u=0,0.015,0;v=0,0,-0.04445;nu=14;nv=3;color=black;alpha=0.8;size=10;marker=." --dot-grid "frame=rotor_between;rotors=3,0;origin=0,-0.03,0.08889;u=0,-0.015,0;v=0,0,0.04445;nu=14;nv=3;color=black;alpha=0.8;size=10;marker=." --dot-grid "frame=rotor_between;rotors=3,0;origin=0,-0.03,-0.08889;u=0,-0.015,0;v=0,0,-0.04445;nu=14;nv=3;color=black;alpha=0.8;size=10;marker=." --theta="0" --psi="-0" --save "t0_f0_s0_w_grid.png" &&
+python ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/visualize_morph_drone.py --arm-length 0.12 --three-view --hide-decorations --drone-center-y 0.3 --rotor-inflow-offset 0.011 --view-azim 20 --view-elev 12 --save-split --dot-grid "frame=rotor_between;rotors=3,0;origin=0,0.03,0.08889;u=0,0.015,0;v=0,0,0.04445;nu=14;nv=3;color=black;alpha=0.8;size=10;marker=." --dot-grid "frame=rotor_between;rotors=3,0;origin=0,0.03,-0.08889;u=0,0.015,0;v=0,0,-0.04445;nu=14;nv=3;color=black;alpha=0.8;size=10;marker=." --dot-grid "frame=rotor_between;rotors=3,0;origin=0,-0.03,0.08889;u=0,-0.015,0;v=0,0,0.04445;nu=14;nv=3;color=black;alpha=0.8;size=10;marker=." --dot-grid "frame=rotor_between;rotors=3,0;origin=0,-0.03,-0.08889;u=0,-0.015,0;v=0,0,-0.04445;nu=14;nv=3;color=black;alpha=0.8;size=10;marker=." --theta="15" --psi="-15" --save "t15_f0_s-15_w_grid.png" &&
+
+# flow
+
+python3 ~/colcon_ws/src/drone_thrust_analyzer/auto_thrust_recorder/scripts/plot_flow_line_facet.py --input concat_merged.csv --col-keys tilt_angle slant_angle --y-in-origin 266.7 --x-offset-max-mm 20 --single-angle-mode use --plot-kind mean_fold_with_map --feature u_norm_o --x-offset-scope io_y_facet --fit-sensor-k --export-k flow_k_fit.csv --k-scope io_y_facet --overlay-drone --drone-prop-center-y-mm 88.9 --drone-arm-length 0.128 --drone-rotor-inflow-offset-mm 14 --hide-in-line --hide-xc --plot-xc-on-map --xlabel "y [mm]" --ylabel "|U| [%]" --xlabel-map "y [mm]" --ylabel-map "|U| [%]" --cmap-in viridis --cmap-out magma --cbar-label-in "in: |U| [%]" --cbar-label-out "out: |U| [%]" --output flow_facet.png --figsize 12 12
+ 
 # --- GAM (解釈目的) ---
 # 目的変数を切り替え可能（例: torque_x / force_y）で、
 # 平均モデル + 分散モデル(log(variance_*)) を同時に当てて、重要度と部分効果プロットを出力します。
