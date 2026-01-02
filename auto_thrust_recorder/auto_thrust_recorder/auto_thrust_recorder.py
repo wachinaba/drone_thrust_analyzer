@@ -3,6 +3,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import WrenchStamped
 from std_srvs.srv import Trigger
+from std_msgs.msg import Float64MultiArray
 import numpy as np
 import datetime
 
@@ -13,13 +14,25 @@ from auto_thrust_recorder.logger.raw_logger import RawLogger
 from auto_thrust_recorder.exporter.csv_exporter import CSVExporter
 from auto_thrust_recorder.px4_bridge.actuator import ActuatorController
 from auto_thrust_recorder.sensor_bridge.force_sensor import ForceSensor
+from auto_thrust_recorder.sensor_bridge.seven_segment_sensor import FlowSensor
 from auto_thrust_recorder.plotter.average_plotter import AveragePlotter
 
 class AutoThrustRecorder(Node):
-    def __init__(self, force_sensor: ForceSensor, actuator_controller: ActuatorController):
+    def __init__(self, force_sensor: ForceSensor, actuator_controller: ActuatorController, flow_sensor: FlowSensor = None):
         super().__init__("auto_thrust_recorder")
         self.force_sensor = force_sensor
         self.actuator_controller = actuator_controller
+        self.flow_sensor = flow_sensor
+
+        # -15deg_fold15deg: y = 110.97x2 + 18.971x + 0.5445
+        # -30deg_fold15deg: y = 96.732x2 + 16.219x + 0.7684
+
+        # tilt0deg_fold0deg: y = 116.47x2 + 20.482x + 0.6069
+
+        # tilt15deg_fold0deg: y = 109.76x2 + 20.829x + 0.5509
+
+        # tilt30deg_fold0deg: y = 97.337x2 + 19.195x + 0.6036
+
 
         thrust_coefs = {
             "0deg_long": [117.9, 21.811, 0.5403],
@@ -29,11 +42,65 @@ class AutoThrustRecorder(Node):
             "30deg_short": [91.475, 21.633, 0.4504],
             "0deg_short": [126.67, 14.089, 0.6691],
             "linear": [0.0, 1.0, 0.0],
-            "tilt0deg_fold15deg": [124.45, 17.182, 0.6627],
-            "tilt8deg_fold15deg": [127.1, 15.612, 0.6906], #127.1x2 + 15.612x + 0.6906
-            "tilt15deg_fold15deg": [107.09, 18.039, 0.5855], #107.09x2 + 18.039x + 0.5855
-            "tilt23deg_fold15deg": [104.91, 17.476, 0.5441], #104.91x2 + 17.476x + 0.5441
-            "tilt30deg_fold15deg": [92.596, 17.961, 0.5213], #92.596x2 + 17.961x + 0.5213
+
+            # slant -30deg
+            "tilt0deg_fold0deg_slant-30deg": [103.71, 16.053, 0.6686], #y = 103.71x2 + 16.053x + 0.6686
+
+            # slant -15deg
+            ## fold 0deg
+            "tilt30deg_fold0deg_slant-15deg": [96.185, 17.625, 0.6216], #y = 96.185x2 + 17.625x + 0.6216
+            "tilt15deg_fold0deg_slant-15deg": [108.59, 18.681, 0.5947], #y = 108.59x2 + 18.681x + 0.5947
+            "tilt0deg_fold0deg_slant-15deg": [111.5, 21.129, 0.7433], #y = 111.5x2 + 21.129x + 0.7433
+            "tilt-15deg_fold0deg_slant-15deg": [108.97, 18.88, 0.8118], #y = 108.97x2 + 18.88x + 0.8118
+            "tilt-30deg_fold0deg_slant-15deg": [100.06, 16.024, 0.6129], #y = 100.06x2 + 16.024x + 0.6129
+
+            ## fold 15deg
+            "tilt15deg_fold15deg_slant-15deg": [108.52, 18.579, 0.7022], #y = 108.52x2 + 18.579x + 0.7022
+            "tilt0deg_fold15deg_slant-15deg": [110.95, 20.003, 0.6545], #y = 110.95x2 + 20.003x + 0.6545
+            "tilt-15deg_fold15deg_slant-15deg": [106.97, 19.331, 0.6339], # y = 106.97x2 + 19.331x + 0.6339
+            "tilt-30deg_fold15deg_slant-15deg": [99.369, 15.017, 0.7342], # y = 99.369x2 + 15.017x + 0.7342
+
+            # slant 0deg
+            ## fold 0deg
+            "tilt-30deg_fold0deg_slant0deg": [103.41, 16.592, 0.5887], #y = 103.41x2 + 16.592x + 0.5887
+            "tilt-15deg_fold0deg_slant0deg": [111.26, 19.312, 0.5469], #y = 111.26x2 + 19.312x + 0.5469
+            "tilt0deg_fold0deg_slant0deg": [116.47, 20.482, 0.6069],
+            "tilt8deg_fold0deg_slant0deg": [110.58, 20.194, 0.7106], # y = 110.58x2 + 20.194x + 0.7106
+            "tilt15deg_fold0deg_slant0deg": [109.76, 20.829, 0.5509],
+            "tilt23deg_fold0deg_slant0deg": [105.29, 19.208, 0.4868], # y = 105.29x2 + 19.208x + 0.4868
+            "tilt30deg_fold0deg_slant0deg": [97.337, 19.195, 0.6036],
+            ## fold 5deg
+            "tilt0deg_fold5deg_slant0deg": [116.77, 20.403, 0.7757], # y = 116.77x2 + 20.403x + 0.7757
+            "tilt15deg_fold5deg_slant0deg": [110.99, 20.343, 0.6807], # y = 110.99x2 + 20.343x + 0.6807
+            "tilt30deg_fold5deg_slant0deg": [100.64, 18.519, 0.6294], #y = 100.64x2 + 18.519x + 0.6294
+            ## fold 10deg
+            "tilt0deg_fold10deg_slant0deg": [116.37, 20.006, 0.7258], # y = 116.37x2 + 20.006x + 0.7258
+            "tilt15deg_fold10deg_slant0deg": [108.49, 20.192, 0.6883], # y = 108.49x2 + 20.192x + 0.6883
+            "tilt30deg_fold10deg_slant0deg": [99.525, 16.988, 0.7645], # y = 99.525x2 + 16.988x + 0.7645
+            ## fold 15deg
+            "tilt-15deg_fold15deg_slant0deg": [110.97, 18.971, 0.5445],
+            "tilt-30deg_fold15deg_slant0deg": [96.732, 16.219, 0.7684],
+            "tilt0deg_fold15deg_slant0deg": [124.45, 17.182, 0.6627],
+            "tilt8deg_fold15deg_slant0deg": [127.1, 15.612, 0.6906], #127.1x2 + 15.612x + 0.6906
+            "tilt15deg_fold15deg_slant0deg": [107.09, 18.039, 0.5855], #107.09x2 + 18.039x + 0.5855
+            "tilt23deg_fold15deg_slant0deg": [104.91, 17.476, 0.5441], #104.91x2 + 17.476x + 0.5441
+            "tilt30deg_fold15deg_slant0deg": [92.596, 17.961, 0.5213], #92.596x2 + 17.961x + 0.5213
+            # slant 15deg
+            ## fold 0deg
+            "tilt-30deg_fold0deg_slant15deg": [106.17, 18.674, 0.5654], #y = 106.17x2 + 18.674x + 0.5654
+            "tilt-15deg_fold0deg_slant15deg": [110.34, 19.409, 0.6955], #y = 110.34x2 + 19.409x + 0.6955
+            "tilt0deg_fold0deg_slant15deg": [110.87, 20.433, 0.8024], #y = 110.87x2 + 20.433x + 0.8024
+            "tilt15deg_fold0deg_slant15deg": [108.59, 20.639, 0.669], #y = 108.59x2 + 20.639x + 0.669
+            "tilt30deg_fold0deg_slant15deg": [99.874, 17.767, 0.6262], #y = 99.874x2 + 17.767x + 0.6262
+            ## fold 15deg
+            
+            "tilt-15deg_fold15deg_slant15deg": [110.34, 19.409, 0.6955], # example value!! TODO: find actual value
+            "tilt0deg_fold15deg_slant15deg": [115.3, 19.694, 0.5929], #y = 115.3x2 + 19.694x + 0.5929
+            "tilt15deg_fold15deg_slant15deg": [108.23, 20.094, 0.7166], #y = 108.23x2 + 20.094x + 0.7166
+            "tilt30deg_fold15deg_slant15deg": [101.4, 17.914, 0.4998], #y = 101.4x2 + 17.914x + 0.4998
+
+            # slant 30deg
+            "tilt0deg_fold0deg_slant30deg": [104.36, 17.939, 0.5291], #y = 104.36x2 + 17.939x + 0.5291 (16.2V)
         }
 
         self.scheduler_params = {
@@ -41,7 +108,7 @@ class AutoThrustRecorder(Node):
             "min_thrust": self.declare_parameter("min_thrust", 0.0).get_parameter_value().double_value,
             "max_thrust": self.declare_parameter("max_thrust", 0.4).get_parameter_value().double_value,
             "step_duration": self.declare_parameter("step_duration", 1.0).get_parameter_value().double_value,
-            "thrust_coef": self.declare_parameter("thrust_coef", thrust_coefs["tilt8deg_fold15deg"]).get_parameter_value().double_array_value,
+            "thrust_coef": self.declare_parameter("thrust_coef", thrust_coefs["tilt0deg_fold0deg_slant0deg"]).get_parameter_value().double_array_value,
         }
 
         coef_name = self.declare_parameter("coef_name", "").get_parameter_value().string_value
@@ -55,7 +122,7 @@ class AutoThrustRecorder(Node):
             for coef_name in thrust_coefs:
                 self.get_logger().error(f"  - {coef_name}")
             self.get_logger().error("Using tilt0deg_fold15deg as default.")
-            self.scheduler_params["thrust_coef"] = thrust_coefs["tilt0deg_fold15deg"]
+            self.scheduler_params["thrust_coef"] = thrust_coefs["tilt0deg_fold15deg_slant0deg"]
 
         self.enable_breakpoint = self.declare_parameter("enable_breakpoint", False).get_parameter_value().bool_value
         
@@ -67,6 +134,12 @@ class AutoThrustRecorder(Node):
         self.num_repetitions = self.declare_parameter("num_repetitions", 1).get_parameter_value().integer_value
 
         self.sensor_reversed = self.declare_parameter("sensor_reversed", False).get_parameter_value().bool_value
+
+        self.autoexit = self.declare_parameter("autoexit", True).get_parameter_value().bool_value
+        self.skip_sensor_calibration = self.declare_parameter("skip_sensor_calibration", False).get_parameter_value().bool_value
+
+        # 7セグメントディスプレイ関連のパラメータ（後方互換性のため残す）
+        self.enable_seven_segment = self.declare_parameter("enable_seven_segment", True).get_parameter_value().bool_value
 
         self.mode = self.declare_parameter("mode", "linear").get_parameter_value().string_value
         if self.mode not in ["polynomial", "linear"]:
@@ -91,6 +164,13 @@ class AutoThrustRecorder(Node):
         self.get_logger().info(f"Num repetitions: {self.num_repetitions}")
         self.get_logger().info(f"Enable breakpoint: {self.enable_breakpoint}")
         self.get_logger().info(f"Sensor reversed: {self.sensor_reversed}")
+        self.get_logger().info(f"Auto exit: {self.autoexit}")
+        self.get_logger().info(f"Skip sensor calibration: {self.skip_sensor_calibration}")
+        self.get_logger().info(f"Enable seven segment: {self.enable_seven_segment}")
+        if self.flow_sensor:
+            self.get_logger().info("フローセンサーが有効です")
+        else:
+            self.get_logger().info("フローセンサーは無効です")
 
         self.initialize_logger()
         self.start_recording()
@@ -161,15 +241,18 @@ class AutoThrustRecorder(Node):
         wait.sleep()
         wait.destroy()
 
-        self.get_logger().info("Setting sensor offset...")
-        future = self.force_sensor.set_sensor_offset()
-        while not future.done():
-            rate.sleep()
-            timeout_counter += 1
-            if timeout_counter > timeout:
-                self.get_logger().error("sensor offset setting timeout...")
-                break
-        self.get_logger().info("Sensor offset set.")
+        if not self.skip_sensor_calibration:
+            self.get_logger().info("Setting sensor offset...")
+            future = self.force_sensor.set_sensor_offset()
+            while not future.done():
+                rate.sleep()
+                timeout_counter += 1
+                if timeout_counter > timeout:
+                    self.get_logger().error("sensor offset setting timeout...")
+                    break
+            self.get_logger().info("Sensor offset set.")
+        else:
+            self.get_logger().info("Skipping sensor offset calibration by parameter.")
         timeout_counter = 0
 
         self.get_logger().info("Setting offboard mode...")
@@ -215,6 +298,10 @@ class AutoThrustRecorder(Node):
         self.actuator_controller.set_target_control(self.scheduler.get_current_control())
 
         self.force_sensor.set_on_sensor_update(self.sensor_update_callback)
+        
+        # フローセンサーのコールバックを設定
+        if self.flow_sensor:
+            self.flow_sensor.set_on_sensor_update(self.flow_sensor_update_callback)
     
     def change_thrust_callback(self):
         self.average_logger.next()
@@ -228,19 +315,15 @@ class AutoThrustRecorder(Node):
         self.average_logger.next()
         self.repetition_average_logger.next()
         self.force_sensor.set_on_sensor_update(None)
+        
+        # フローセンサーのコールバックを停止
+        if self.flow_sensor:
+            self.flow_sensor.set_on_sensor_update(None)
 
         self.get_logger().info("Complete recording...")
-        try:
-            if self.raw_log_exporter:
-                self.raw_log_exporter.export()
-            if self.average_log_exporter:
-                self.average_log_exporter.export()
-        except Exception as e:
-            self.get_logger().error(f"Error exporting logs: {e}")
-
         self.get_logger().info("Disarming...")
         self.disarming_thrust = self.scheduler.get_current_control()
-        self.disarming_timer = self.create_timer(0.05, self.disarming_callback)
+        self.disarming_timer = self.create_timer(0.5, self.disarming_callback)
 
     def plot(self):
         plotter = AveragePlotter(self.average_logger.get_data())
@@ -268,6 +351,15 @@ class AutoThrustRecorder(Node):
             self.get_logger().info("Disarming complete.")
             self.disarming_timer = None
             #self.plot()
+            # Disarming 完了後にログをファイルへ保存する
+            try:
+                if self.raw_log_exporter:
+                    self.raw_log_exporter.export()
+                if self.average_log_exporter:
+                    self.average_log_exporter.export()
+            except Exception as e:
+                self.get_logger().error(f"Error exporting logs: {e}")
+
             self.raw_log_exporter = None
             self.average_log_exporter = None
             self.repeat_count += 1
@@ -288,7 +380,7 @@ class AutoThrustRecorder(Node):
         self.actuator_controller.set_target_control(self.disarming_thrust)
         self.actuator_controller.update_control()
 
-        self.disarming_thrust -= 0.01
+        self.disarming_thrust -= 0.08
         self.disarming_thrust = np.clip(self.disarming_thrust, 0.0, 0.5)
 
     def breakpoint_callback(self):
@@ -326,14 +418,17 @@ class AutoThrustRecorder(Node):
         wait.sleep()
         wait.destroy()
 
-        future = self.force_sensor.set_sensor_offset()
-        while not future.done():
-            rate.sleep()
-            timeout_counter += 1
-            if timeout_counter > timeout:
-                self.get_logger().error("sensor offset setting timeout...")
-                break
-        self.get_logger().info("Sensor offset set.")
+        if not self.skip_sensor_calibration:
+            future = self.force_sensor.set_sensor_offset()
+            while not future.done():
+                rate.sleep()
+                timeout_counter += 1
+                if timeout_counter > timeout:
+                    self.get_logger().error("sensor offset setting timeout...")
+                    break
+            self.get_logger().info("Sensor offset set.")
+        else:
+            self.get_logger().info("Skipping sensor offset calibration by parameter.")
         timeout_counter = 0
 
         self.get_logger().info("Resuming...")
@@ -365,6 +460,10 @@ class AutoThrustRecorder(Node):
         self.get_logger().info("Resuming complete.")
         return
     
+    def flow_sensor_update_callback(self, data, timestamp, valid_count):
+        """フローセンサーのデータ更新コールバック"""
+        self.get_logger().debug(f"フローセンサーデータ更新: {valid_count}個の有効値")
+    
     def sensor_update_callback(self, msg: WrenchStamped):
         if not self.scheduler.ready_to_record() or self.actuator_controller.is_moving_control():
             return
@@ -387,6 +486,19 @@ class AutoThrustRecorder(Node):
             "torque_y": msg.wrench.torque.y,
             "torque_z": msg.wrench.torque.z,
         }
+        
+        # フローセンサーのデータを追加
+        if self.flow_sensor:
+            wind_speed_data = self.flow_sensor.get_named_wind_speed_data(self.sensor_reversed)
+            row.update(wind_speed_data)
+        else:
+            # フローセンサーが無効またはデータがない場合はNaNで埋める
+            row["front_in"] = float('nan')
+            row["front_out"] = float('nan')
+            row["rear_out"] = float('nan')
+            row["rear_in"] = float('nan')
+            row["seven_segment_count"] = 0
+            row["seven_segment_timestamp"] = float('nan')
         if self.sensor_reversed:
             row["force_x"] = -row["force_x"]
             row["force_y"] = -row["force_y"]
@@ -401,19 +513,27 @@ class AutoThrustRecorder(Node):
         self.get_logger().info("Disarming...")
         self.actuator_controller.set_arming(False)
         
+        if self.autoexit:
+            self.get_logger().info("All measurements completed. Auto exit enabled. Shutting down...")
+            rclpy.try_shutdown()
+        else:
+            self.get_logger().info("All measurements completed. Auto exit disabled. Node will continue running.")
+        
 
 def main():
     rclpy.init()
-    executor = MultiThreadedExecutor(num_threads=3)
+    executor = MultiThreadedExecutor(num_threads=4)
 
     actuator_controller = ActuatorController()
-    force_sensor = ForceSensor() 
+    force_sensor = ForceSensor()
+    flow_sensor = FlowSensor()
     
-    auto_thrust_recorder = AutoThrustRecorder(force_sensor, actuator_controller)
+    auto_thrust_recorder = AutoThrustRecorder(force_sensor, actuator_controller, flow_sensor)
 
     executor.add_node(auto_thrust_recorder)
     executor.add_node(actuator_controller)
     executor.add_node(force_sensor)
+    executor.add_node(flow_sensor)
 
     try:
         executor.spin()
@@ -426,6 +546,7 @@ def main():
 
         actuator_controller.destroy_node()
         force_sensor.destroy_node()
+        flow_sensor.destroy_node()
         auto_thrust_recorder.destroy_node()
 
         rclpy.try_shutdown()

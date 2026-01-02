@@ -22,7 +22,7 @@ def find_csv_files(keywords, directory='.', and_keywords=False):
 def extract_parameters(filename):
     """ファイル名から距離、角度、キーワードを抽出する関数。
     キーワードは正規表現で使用されます。"""
-    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z_]+)_height=(\d+\.?\d*)\[mm\].*\.csv"
+    matcher = r"distance=(\d+\.?\d*)\[R\]_tilt=(-?\d+)\[deg\]_fold=(\d+)\[deg\]_wheelbase=(\d+\.?\d*)\[R\]_direction=([a-z_]+)_height=(\d+\.?\d*)\[mm\]_wallspacing=(\d+\.?\d*)\[m\]_.*\.csv"
     print(matcher)
     match = re.match(matcher, filename, re.IGNORECASE)
     if match:
@@ -32,13 +32,15 @@ def extract_parameters(filename):
         prop_spacing = float(match.group(4))
         keyword = match.group(5)
         height = float(match.group(6))
+        wall_spacing = float(match.group(7))
         return {
             'distance': distance,
             'tilt_angle': tilt_angle,
             'fold_angle': fold_angle,
             'prop_spacing': prop_spacing,
             'keyword': keyword,
-            'height': height
+            'height': height,
+            'wall_spacing': wall_spacing
         }
     else:
         return None
@@ -125,7 +127,8 @@ def main():
         if params:
             distance, tilt_angle, fold_angle, prop_spacing, height = params['distance'], params['tilt_angle'], params['fold_angle'], params['prop_spacing'], params['height']
             keyword = params['keyword']
-            grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height)].append(file)
+            wall_spacing = params['wall_spacing']
+            grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height, wall_spacing)].append(file)
         else:
             print(f"ファイル '{filename}' からパラメータを抽出できませんでした。スキップします。")
 
@@ -136,7 +139,7 @@ def main():
     print(f"分類されたパラメータの数: {len(grouped_files)}")
 
     # パラメータでソート
-    sorted_parameters = sorted(grouped_files.keys(), key=lambda x: (x[0], x[1], x[2], x[3], x[4]))
+    sorted_parameters = sorted(grouped_files.keys(), key=lambda x: (x[0], x[1], x[2], x[3], x[4], x[5], x[6]))
     print(f"ソートされたパラメータ順: {sorted_parameters}")
 
     """
@@ -163,9 +166,9 @@ def main():
     combined_data = []
 
     # 各グループの処理
-    for (distance, tilt_angle, fold_angle, prop_spacing, keyword, height) in sorted_parameters:
-        print(f"\nパラメータ: 距離={distance}, チルト角={tilt_angle}, 折りたたみ角={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}, 高さ={height}")
-        files = grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height)]
+    for (distance, tilt_angle, fold_angle, prop_spacing, keyword, height, wall_spacing) in sorted_parameters:
+        print(f"\nパラメータ: 距離={distance}, チルト角={tilt_angle}, 折りたたみ角={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}, 高さ={height}, 壁間隔={wall_spacing}")
+        files = grouped_files[(distance, tilt_angle, fold_angle, prop_spacing, keyword, height, wall_spacing)]
 
         combined_data_group = []
         for file in files:
@@ -207,13 +210,14 @@ def main():
             df_processed.loc[:, 'prop_spacing'] = prop_spacing
             df_processed.loc[:, 'keyword'] = keyword
             df_processed.loc[:, 'height'] = height
+            df_processed.loc[:, 'wall_spacing'] = wall_spacing
             for col in ['force_x', 'force_y', 'force_z', 'torque_x', 'torque_y', 'torque_z']:
                 df_processed[f"{col}_partial_variance"] = df_processed.groupby('target_thrust')[col].transform("var")
 
             combined_data_group.append(df_processed)
 
         if not combined_data_group:
-            print(f"  パラメータグループ (距離={distance}, 角度={tilt_angle}, 折曲={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}) に有効なデータがありません。")
+            print(f"  パラメータグループ (距離={distance}, 角度={tilt_angle}, 折曲={fold_angle}, プロペラ間隔={prop_spacing}, キーワード={keyword}, 壁間隔={wall_spacing}) に有効なデータがありません。")
             continue
 
         print(combined_data_group[0].head())
@@ -246,12 +250,13 @@ def main():
         grouped_stats['prop_spacing'] = prop_spacing
         grouped_stats['keyword'] = keyword
         grouped_stats['height'] = height
+        grouped_stats['wall_spacing'] = wall_spacing
         combined_data.append(grouped_stats)
 
     # すべてのパラメータのデータを1つのCSVにエクスポート
     if args.output and combined_data:
         combined_df = pd.concat(combined_data, ignore_index=True)
-        combined_df = combined_df.sort_values(by=['distance', 'tilt_angle', 'fold_angle', 'prop_spacing', 'keyword', 'target_thrust']).reset_index(drop=True)
+        combined_df = combined_df.sort_values(by=['distance', 'tilt_angle', 'fold_angle', 'prop_spacing', 'keyword', 'height', 'wall_spacing', 'target_thrust']).reset_index(drop=True)
         export_data_to_csv(combined_df, args.output)
     else:
         print("結合されたデータがありません。エクスポートをスキップします。")

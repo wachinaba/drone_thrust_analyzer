@@ -1,0 +1,61 @@
+\documentclass[a4paper,11pt]{jsarticle} % 日本語環境の場合
+% 英語環境の場合は \documentclass[a4paper,11pt]{article} とし、日本語パッケージを外してください
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage[dvipdfmx]{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+
+\title{ドローン周辺流場における非対称性の定量評価手法}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{目的}
+壁面効果（地面効果および側壁効果）によって生じるドローン周辺の空気流れの非対称性を数値化し、機体の安定性への影響を定量的に評価することを目的とする。
+
+\section{評価指標の定義}
+
+\subsection{領域平均流速による非対称指数 (Asymmetry Index)}
+プロペラ下方の特定断面において、壁側（Wall side）と開放側（Open side）の平均流速を比較し、その偏りを指数化する。
+
+\begin{equation}
+  I_{asym} = \frac{|\bar{V}_{Wall} - \bar{V}_{Open}|}{\bar{V}_{Total}}
+\end{equation}
+
+\begin{itemize}
+  \item $I_{asym}$: 非対称指数（0で完全対称、値が大きいほど非対称）
+  \item $\bar{V}_{Wall}$: 壁側領域の平均垂直流速 [m/s]
+  \item $\bar{V}_{Open}$: 開放側領域の平均垂直流速 [m/s]
+  \item $\bar{V}_{Total}$: 全領域の平均垂直流速 [m/s]
+\end{itemize}
+
+\subsection{流束重心偏位 (Displacement of Flow Center)}
+プロペラから吹き下ろされる風の「重心位置（圧力中心に近い概念）」が、幾何学的中心からどの程度ズレているかを評価する。
+
+\begin{equation}
+  X_{center} = \frac{\int (x \cdot w) dA}{\int w dA}
+\end{equation}
+
+\begin{itemize}
+  \item $x$: 機体中心からの水平距離座標
+  \item $w$: 垂直方向流速成分 ($Velocity\_w$)
+  \item $dA$: 微小面積
+\end{itemize}
+
+\subsection{流れの偏角 (Flow Deflection Angle)}
+壁の存在により、本来垂直であるべき吹き下ろし風が何度傾いたかを算出する。
+
+\begin{equation}
+  \theta_{def} = \arctan \left( \frac{\bar{V}_{Horizontal}}{\bar{V}_{Vertical}} \right)
+\end{equation}
+
+\begin{itemize}
+  \item $\bar{V}_{Horizontal}$: 水平方向の平均流速成分
+  \item $\bar{V}_{Vertical}$: 垂直方向の平均流速成分
+\end{itemize}
