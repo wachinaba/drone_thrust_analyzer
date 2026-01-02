@@ -335,7 +335,7 @@ def generate_launch_description():
     )
 
     home_vertical_after_delay = TimerAction(
-        period=60.0,
+        period=100.0,
         condition=IfCondition(
             PythonExpression(
                 [
