@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
+import matplotlib.image as mpimg
 
 warnings.filterwarnings("ignore")
 
@@ -284,6 +285,7 @@ def plot_single_raw_and_fit(
     scaler: Any,
     curve_x: str,
     curve_points: int,
+    xlim: Optional[Tuple[float, float]],
     fixes: Optional[List[str]],
     hue_raw: Optional[str],
     hue_fit: Optional[str],
@@ -295,6 +297,13 @@ def plot_single_raw_and_fit(
     show_uncertainty: bool,
     ylim: Optional[Tuple[float, float]],
     raw_alpha: float,
+    raw_color: Optional[str],
+    fit_color: Optional[str],
+    legend: bool,
+    grid: bool,
+    mask_outside_plot: bool,
+    mask_pad_px: int,
+    no_plot: bool,
     fit_extrema: bool,
     fit_extrema_vline: bool,
     fit_extrema_marker: bool,
@@ -314,7 +323,10 @@ def plot_single_raw_and_fit(
     drone_phi: Optional[float],
     drone_psi: Optional[float],
     drone_theta: Optional[float],
+    transparent: bool,
     output: Optional[str],
+    save_dpi: int,
+    bbox_tight: bool,
     gpr_mod,
 ) -> None:
     """
@@ -328,12 +340,19 @@ def plot_single_raw_and_fit(
     if target_column not in df.columns:
         raise ValueError(f"target列 '{target_column}' がCSVに存在しません。")
 
-    # xレンジ
-    x_series = pd.to_numeric(df[curve_x], errors="coerce")
-    x_min = float(np.nanmin(x_series.values))
-    x_max = float(np.nanmax(x_series.values))
-    if not np.isfinite(x_min) or not np.isfinite(x_max):
-        raise ValueError(f"curve_x '{curve_x}' の範囲が取得できません。")
+    # xレンジ（--xlim 指定時はデータ範囲に依らず固定）
+    if xlim is not None:
+        x_min, x_max = float(xlim[0]), float(xlim[1])
+        if (not np.isfinite(x_min)) or (not np.isfinite(x_max)) or (x_min == x_max):
+            raise ValueError(f"--xlim が不正です: {xlim}")
+        if x_min > x_max:
+            x_min, x_max = x_max, x_min
+    else:
+        x_series = pd.to_numeric(df[curve_x], errors="coerce")
+        x_min = float(np.nanmin(x_series.values))
+        x_max = float(np.nanmax(x_series.values))
+        if not np.isfinite(x_min) or not np.isfinite(x_max):
+            raise ValueError(f"curve_x '{curve_x}' の範囲が取得できません。")
     if x_min == x_max:
         x_min -= 1e-6
         x_max += 1e-6
@@ -422,75 +441,85 @@ def plot_single_raw_and_fit(
             extrema["min"]["x"] = x_min
             extrema["min"]["hue"] = hue_value
 
-    # raw散布
-    x_raw = pd.to_numeric(df[curve_x], errors="coerce").values
-    y_raw = pd.to_numeric(df[target_column], errors="coerce").values
-    mxy = np.isfinite(x_raw) & np.isfinite(y_raw)
-
+    # raw散布 + fit（--no-plot のときは一切描かない）
     # hue-raw の「色決定」と「グループ値」を fit 側でも使えるように保持する
     hue_raw_is_num = False
     hue_raw_num = None  # numeric series (float) if hue_raw_is_num
     hue_raw_color_of = None  # callable: v(float) -> rgba
     hue_raw_group_values_num: List[float] = []
-
     raw_handles = []
-    if hue_raw_col:
-        s = df[hue_raw_col]
-        if _is_numeric_series(s):
-            hue_raw_is_num = True
-            hue_raw_num = pd.to_numeric(s, errors="coerce")
-            cvals = pd.to_numeric(s, errors="coerce").values
-            cmap_name = str(hue_raw_cmap or "viridis")
-            cmap = plt.get_cmap(cmap_name)
-            if hue_raw_range is not None:
-                vmin, vmax = float(hue_raw_range[0]), float(hue_raw_range[1])
-            else:
-                vmin = float(np.nanmin(cvals))
-                vmax = float(np.nanmax(cvals))
-            if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
-                vmin, vmax = 0.0, 1.0
-            norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-            hue_raw_color_of = lambda vv: cmap(norm(float(vv)))
-            try:
-                hue_raw_group_values_num = [float(v) for v in pd.unique(hue_raw_num.dropna())]
-                hue_raw_group_values_num = [float(v) for v in _stable_sorted_unique(hue_raw_group_values_num)]
-            except Exception:
-                hue_raw_group_values_num = []
-            ax.scatter(
-                x_raw[mxy],
-                y_raw[mxy],
-                c=cvals[mxy],
-                s=22,
-                alpha=raw_alpha,
-                cmap=cmap,
-                norm=norm,
-                zorder=3,
-            )
-            # カラーバーは ScalarMappable から作成（scatter の alpha の影響を受けないように）
-            sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-            sm.set_array([])
-            cb = fig.colorbar(sm, ax=ax, shrink=0.95)
-            cb.set_label(colorbar_label if colorbar_label else hue_raw_col)
-        else:
-            hue_vals = list(pd.unique(s.dropna()))
-            hue_vals = _stable_sorted_unique(hue_vals)
-            cmap_name = str(hue_raw_cmap or "tab20")
-            cmap = plt.get_cmap(cmap_name)
-            # カテゴリ数に応じて等間隔サンプリング
-            n = max(1, len(hue_vals))
-            color_map = {v: cmap(0.5 if n == 1 else (i / (n - 1))) for i, v in enumerate(hue_vals)}
-            if hue_raw_range is not None:
-                print(f"[warn] --hue-raw-range はカテゴリhueでは無視されます: hue-raw='{hue_raw_col}'")
-            for v in hue_vals:
-                mv = (s.values == v) & mxy
-                if not np.any(mv):
-                    continue
-                ax.scatter(x_raw[mv], y_raw[mv], s=22, alpha=raw_alpha, color=color_map[v], zorder=3)
-                raw_handles.append(
-                    mlines.Line2D([], [], color=color_map[v], marker="o", linestyle="None", markersize=6, label=f"{hue_raw_col}={v}")
+
+    if not bool(no_plot):
+        x_raw = pd.to_numeric(df[curve_x], errors="coerce").values
+        y_raw = pd.to_numeric(df[target_column], errors="coerce").values
+        mxy = np.isfinite(x_raw) & np.isfinite(y_raw)
+
+        if hue_raw_col:
+            s = df[hue_raw_col]
+            if _is_numeric_series(s):
+                hue_raw_is_num = True
+                hue_raw_num = pd.to_numeric(s, errors="coerce")
+                cvals = pd.to_numeric(s, errors="coerce").values
+                cmap_name = str(hue_raw_cmap or "viridis")
+                cmap = plt.get_cmap(cmap_name)
+                if hue_raw_range is not None:
+                    vmin, vmax = float(hue_raw_range[0]), float(hue_raw_range[1])
+                else:
+                    vmin = float(np.nanmin(cvals))
+                    vmax = float(np.nanmax(cvals))
+                if (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmin == vmax):
+                    vmin, vmax = 0.0, 1.0
+                norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+                hue_raw_color_of = lambda vv: cmap(norm(float(vv)))
+                try:
+                    hue_raw_group_values_num = [float(v) for v in pd.unique(hue_raw_num.dropna())]
+                    hue_raw_group_values_num = [float(v) for v in _stable_sorted_unique(hue_raw_group_values_num)]
+                except Exception:
+                    hue_raw_group_values_num = []
+                ax.scatter(
+                    x_raw[mxy],
+                    y_raw[mxy],
+                    c=cvals[mxy],
+                    s=22,
+                    alpha=raw_alpha,
+                    cmap=cmap,
+                    norm=norm,
+                    zorder=3,
                 )
-    else:
-        ax.scatter(x_raw[mxy], y_raw[mxy], s=22, alpha=raw_alpha, color="C0", label="raw", zorder=3)
+                # カラーバーは ScalarMappable から作成（scatter の alpha の影響を受けないように）
+                sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+                sm.set_array([])
+                cb = fig.colorbar(sm, ax=ax, shrink=0.95)
+                cb.set_label(colorbar_label if colorbar_label else hue_raw_col)
+            else:
+                hue_vals = list(pd.unique(s.dropna()))
+                hue_vals = _stable_sorted_unique(hue_vals)
+                cmap_name = str(hue_raw_cmap or "tab20")
+                cmap = plt.get_cmap(cmap_name)
+                # カテゴリ数に応じて等間隔サンプリング
+                n = max(1, len(hue_vals))
+                color_map = {v: cmap(0.5 if n == 1 else (i / (n - 1))) for i, v in enumerate(hue_vals)}
+                if hue_raw_range is not None:
+                    print(f"[warn] --hue-raw-range はカテゴリhueでは無視されます: hue-raw='{hue_raw_col}'")
+                for v in hue_vals:
+                    mv = (s.values == v) & mxy
+                    if not np.any(mv):
+                        continue
+                    ax.scatter(x_raw[mv], y_raw[mv], s=22, alpha=raw_alpha, color=color_map[v], zorder=3)
+                    raw_handles.append(
+                        mlines.Line2D(
+                            [],
+                            [],
+                            color=color_map[v],
+                            marker="o",
+                            linestyle="None",
+                            markersize=6,
+                            label=f"{hue_raw_col}={v}",
+                        )
+                    )
+        else:
+            c_raw = str(raw_color).strip() if raw_color else "C0"
+            ax.scatter(x_raw[mxy], y_raw[mxy], s=22, alpha=raw_alpha, color=c_raw, label="raw", zorder=3)
 
     # fit曲線（1本 or hue-fitごと）
     def _predict_for(
@@ -525,7 +554,10 @@ def plot_single_raw_and_fit(
         return np.asarray(y_mean).reshape(-1), None
 
     fit_handles = []
-    if hue_fit_col is not None:
+    if bool(no_plot):
+        # draw nothing
+        pass
+    elif hue_fit_col is not None:
         # --- Special mode (requested):
         # If both hue-raw and hue-fit are given AND hue-raw is numeric,
         # then override hue-fit value using hue-raw value (per hue-raw category).
@@ -660,16 +692,28 @@ def plot_single_raw_and_fit(
             # end fallback hue-fit mode
     else:
         y_mean, y_std = _predict_for(None, fixed=None, x_arr=x_grid)
-        ax.plot(x_grid, y_mean, color="red", lw=3.0, label="GPR fit", zorder=4)
+        c_fit = str(fit_color).strip() if fit_color else "red"
+        ax.plot(x_grid, y_mean, color=c_fit, lw=3.0, label="GPR fit", zorder=4)
         _update_extrema(np.asarray(y_mean), x_arr=np.asarray(x_grid), hue_value=None)
         if show_uncertainty and (y_std is not None):
-            ax.fill_between(x_grid, y_mean - 2.0 * y_std, y_mean + 2.0 * y_std, color="red", alpha=0.20, label="±2σ", zorder=2)
+            ax.fill_between(
+                x_grid,
+                y_mean - 2.0 * y_std,
+                y_mean + 2.0 * y_std,
+                color=c_fit,
+                alpha=0.20,
+                label="±2σ",
+                zorder=2,
+            )
 
     ax.set_xlabel(xlabel if xlabel else curve_x)
     ax.set_ylabel(ylabel if ylabel else target_column)
-    ax.grid(True, alpha=0.3)
+    if bool(grid):
+        ax.grid(True, alpha=0.3)
     if ylim is not None:
         ax.set_ylim(ylim[0], ylim[1])
+    if xlim is not None:
+        ax.set_xlim(float(x_min), float(x_max))
     if title:
         ax.set_title(title)
 
@@ -782,38 +826,134 @@ def plot_single_raw_and_fit(
             print(f"[warn] ドローン図の重畳に失敗: {e}")
 
     # 凡例（rawのカテゴリ + fitの分割 をまとめる）
-    handles = []
-    labels = []
-    # Matplotlibが拾った凡例（raw単色やfit単色）も残す
-    h0, l0 = ax.get_legend_handles_labels()
-    for h, l in zip(h0, l0):
-        handles.append(h)
-        labels.append(l)
-    # rawカテゴリ凡例
-    for h in raw_handles:
-        handles.append(h)
-        labels.append(h.get_label())
-    # fitカテゴリ凡例
-    for h in fit_handles:
-        handles.append(h)
-        labels.append(h.get_label())
+    if bool(legend):
+        handles = []
+        labels = []
+        # Matplotlibが拾った凡例（raw単色やfit単色）も残す
+        h0, l0 = ax.get_legend_handles_labels()
+        for h, l in zip(h0, l0):
+            handles.append(h)
+            labels.append(l)
+        # rawカテゴリ凡例
+        for h in raw_handles:
+            handles.append(h)
+            labels.append(h.get_label())
+        # fitカテゴリ凡例
+        for h in fit_handles:
+            handles.append(h)
+            labels.append(h.get_label())
 
-    if handles:
-        # ラベル重複を除去（順序維持）
-        seen = set()
-        uniq_h = []
-        uniq_l = []
-        for h, l in zip(handles, labels):
-            if l in seen:
-                continue
-            seen.add(l)
-            uniq_h.append(h)
-            uniq_l.append(l)
-        ax.legend(handles=uniq_h, labels=uniq_l, fontsize=10, frameon=True, loc="best")
+        if handles:
+            # ラベル重複を除去（順序維持）
+            seen = set()
+            uniq_h = []
+            uniq_l = []
+            for h, l in zip(handles, labels):
+                if l in seen:
+                    continue
+                seen.add(l)
+                uniq_h.append(h)
+                uniq_l.append(l)
+            ax.legend(handles=uniq_h, labels=uniq_l, fontsize=10, frameon=True, loc="best")
 
     plt.tight_layout()
     if output:
-        plt.savefig(output, dpi=300, bbox_inches="tight")
+        if bool(transparent):
+            # 透明背景で保存（PNG等向け）。Axes/figure の facecolor も透明化する。
+            try:
+                fig.patch.set_alpha(0.0)
+            except Exception:
+                pass
+            try:
+                ax.set_facecolor("none")
+            except Exception:
+                pass
+
+        # --- optional postprocess: mask outside plot (keep canvas size) ---
+        if bool(mask_outside_plot):
+            try:
+                # Ensure deterministic pixel size (canvas-based save path)
+                try:
+                    fig.set_dpi(int(save_dpi))
+                except Exception:
+                    pass
+                fig.canvas.draw()
+                w, h = fig.canvas.get_width_height()
+                buf = np.asarray(fig.canvas.buffer_rgba())  # (h,w,4) uint8
+                if buf.shape[0] != h or buf.shape[1] != w:
+                    # fall back to buffer shape
+                    h, w = int(buf.shape[0]), int(buf.shape[1])
+
+                # Axes "plot region" bbox in display coords (origin: lower-left)
+                bb = ax.bbox
+                pad = int(mask_pad_px) if mask_pad_px is not None else 0
+                x0 = int(np.floor(float(bb.x0))) - pad
+                x1 = int(np.ceil(float(bb.x1))) + pad
+                y0 = int(np.floor(float(bb.y0))) - pad
+                y1 = int(np.ceil(float(bb.y1))) + pad
+
+                # clip to canvas
+                x0 = max(0, min(w, x0))
+                x1 = max(0, min(w, x1))
+                y0 = max(0, min(h, y0))
+                y1 = max(0, min(h, y1))
+
+                # convert y (bottom-origin) to array rows (top-origin)
+                row0 = int(h - y1)
+                row1 = int(h - y0)
+                row0 = max(0, min(h, row0))
+                row1 = max(0, min(h, row1))
+
+                # alpha=0 outside plot region
+                alpha = buf[:, :, 3]
+                alpha[:row0, :] = 0
+                alpha[row1:, :] = 0
+                alpha[:, :x0] = 0
+                alpha[:, x1:] = 0
+                buf[:, :, 3] = alpha
+
+                # Apply "tight" crop to match savefig(bbox_inches="tight") behavior (optional)
+                if bool(bbox_tight):
+                    try:
+                        renderer = fig.canvas.get_renderer()
+                        tb = fig.get_tightbbox(renderer)  # in inches
+                        dpi = float(getattr(fig, "dpi", save_dpi))
+                        # tb: (x0,y0,x1,y1) in inches, origin lower-left of figure
+                        tx0 = int(np.floor(float(tb.x0) * dpi))
+                        ty0 = int(np.floor(float(tb.y0) * dpi))
+                        tx1 = int(np.ceil(float(tb.x1) * dpi))
+                        ty1 = int(np.ceil(float(tb.y1) * dpi))
+                        # clip
+                        tx0 = max(0, min(w, tx0))
+                        tx1 = max(0, min(w, tx1))
+                        ty0 = max(0, min(h, ty0))
+                        ty1 = max(0, min(h, ty1))
+                        # convert y (bottom-origin) to array rows (top-origin)
+                        r0 = int(h - ty1)
+                        r1 = int(h - ty0)
+                        r0 = max(0, min(h, r0))
+                        r1 = max(0, min(h, r1))
+                        if (tx1 > tx0) and (r1 > r0):
+                            buf = buf[r0:r1, tx0:tx1, :]
+                    except Exception as e:
+                        print(f"[warn] bbox-tight のクロップに失敗: {e}")
+
+                mpimg.imsave(output, buf)
+                print(f"保存(枠外マスク): {output}")
+                plt.close(fig)
+                return
+            except Exception as e:
+                print(f"[warn] 枠外マスク後処理に失敗したため通常保存にフォールバックします: {e}")
+
+        # normal save
+        plt.savefig(
+            output,
+            dpi=int(save_dpi),
+            bbox_inches=("tight" if bool(bbox_tight) else None),
+            transparent=bool(transparent),
+            facecolor=("none" if bool(transparent) else None),
+            edgecolor=("none" if bool(transparent) else None),
+        )
         print(f"保存: {output}")
         plt.close(fig)
     else:
@@ -846,13 +986,52 @@ def main() -> int:
     parser.add_argument("--fix-filter-rtol", type=float, default=0.0, help="rawを--fixで絞る際の rtol（デフォルト: 0.0）")
     parser.add_argument("--data-filter", action="append", default=None, help="事前フィルタ 'col:min,max' を複数指定可")
     parser.add_argument("--no-uncertainty", action="store_true", help="±2σ帯を描かない")
+    parser.add_argument(
+        "--no-plot",
+        type=gpr.parse_tf,
+        default=False,
+        metavar="{t,f}",
+        help="raw点/fit線を一切描かない（軸やラベル等の枠だけ欲しいとき用、デフォルト: f）",
+    )
     parser.add_argument("--ylim", default=None, help="縦軸の範囲 'min,max'（未指定なら自動）")
+    parser.add_argument("--xlim", default=None, help="横軸の範囲 'min,max'（未指定なら自動）")
     parser.add_argument("--raw-alpha", type=float, default=0.65, help="rawプロット点の透明度（デフォルト: 0.65）")
+    parser.add_argument("--raw-color", default=None, help="hue-raw 未使用時の raw 点の色（例: '#470557'）。hue-raw 使用時は無視されます。")
     parser.add_argument("--no-title", action="store_true", help="タイトルを表示しない")
+    parser.add_argument("--legend", type=gpr.parse_tf, default=True, metavar="{t,f}", help="凡例を表示する（デフォルト: t）")
+    parser.add_argument("--grid", type=gpr.parse_tf, default=True, metavar="{t,f}", help="グリッドを表示する（デフォルト: t）")
+    parser.add_argument(
+        "--mask-outside-plot",
+        type=gpr.parse_tf,
+        default=False,
+        metavar="{t,f}",
+        help="保存時にプロット枠(Axes本体)の外側を透明(alpha=0)にする（画像サイズは維持、デフォルト: f）",
+    )
+    parser.add_argument(
+        "--mask-pad-px",
+        type=int,
+        default=0,
+        help="--mask-outside-plot の枠に足す余白（px、デフォルト: 0）",
+    )
     parser.add_argument("--xlabel", default=None, help="横軸ラベル（未指定なら curve-x 列名）")
     parser.add_argument("--ylabel", default=None, help="縦軸ラベル（未指定なら target 列名）")
     parser.add_argument("--colorbar-label", default=None, help="カラーバーのラベル（未指定なら hue-raw 列名）")
     parser.add_argument("--figsize", default="10.5,7.5", help="図のサイズ '幅,高さ'（インチ、デフォルト: 10.5,7.5）")
+    parser.add_argument("--save-dpi", type=int, default=300, help="保存DPI（デフォルト: 300）")
+    parser.add_argument(
+        "--bbox-tight",
+        type=gpr.parse_tf,
+        default=True,
+        metavar="{t,f}",
+        help="保存時に bbox を tight でトリミングする（デフォルト: t、PPT重ね用途なら f 推奨）",
+    )
+    parser.add_argument(
+        "--transparent",
+        type=gpr.parse_tf,
+        default=False,
+        metavar="{t,f}",
+        help="保存画像の背景を透過する（デフォルト: f、--output 指定時に有効）",
+    )
 
     # 色分け
     parser.add_argument("--hue-raw", default=None, help="raw散布の色分け列（学習特徴量でなくても可）")
@@ -868,6 +1047,9 @@ def main() -> int:
         metavar="{t,f}",
         help="hue-raw グループごとに curve-x の定義域（min/max）を分けて fit 曲線を描画（デフォルト: f、hue-raw→hue-fit 上書きモードで有効）",
     )
+
+    # fit line styling (single-fit mode)
+    parser.add_argument("--fit-color", default=None, help="単一fit曲線の色（例: '#470557'）。hue-fit 使用時は無視されます。")
 
     # fit extrema overlay
     parser.add_argument("--fit-extrema", type=gpr.parse_tf, default=False, metavar="{t,f}", help="fitの最大/最小を点線と注釈で表示（デフォルト: f）")
@@ -915,6 +1097,15 @@ def main() -> int:
     if (not os.environ.get("DISPLAY")) or args.output:
         try:
             matplotlib.use("Agg", force=True)
+        except Exception:
+            pass
+
+    # 透過保存（group-by など別関数で保存されるケースにも効かせるため rcParams も設定）
+    if bool(getattr(args, "transparent", False)):
+        try:
+            plt.rcParams["savefig.transparent"] = True
+            plt.rcParams["savefig.facecolor"] = "none"
+            plt.rcParams["savefig.edgecolor"] = "none"
         except Exception:
             pass
 
@@ -1007,6 +1198,7 @@ def main() -> int:
         scaler=scaler,
         curve_x=curve_x,
         curve_points=int(args.curve_points),
+        xlim=_parse_float_pair_opt(args.xlim, name="--xlim"),
         fixes=args.fix,
         hue_raw=(str(args.hue_raw).strip() if args.hue_raw else None),
         hue_fit=(str(args.hue_fit).strip() if args.hue_fit else None),
@@ -1018,6 +1210,13 @@ def main() -> int:
         show_uncertainty=(not bool(args.no_uncertainty)),
         ylim=_parse_float_pair_opt(args.ylim, name="--ylim"),
         raw_alpha=float(args.raw_alpha),
+        raw_color=(str(args.raw_color).strip() if args.raw_color else None),
+        fit_color=(str(args.fit_color).strip() if args.fit_color else None),
+        legend=bool(getattr(args, "legend", True)),
+        grid=bool(getattr(args, "grid", True)),
+        mask_outside_plot=bool(getattr(args, "mask_outside_plot", False)),
+        mask_pad_px=int(getattr(args, "mask_pad_px", 0)),
+        no_plot=bool(getattr(args, "no_plot", False)),
         fit_extrema=bool(getattr(args, "fit_extrema", False)),
         fit_extrema_vline=bool(getattr(args, "fit_extrema_vline", False)),
         fit_extrema_marker=bool(getattr(args, "fit_extrema_marker", False)),
@@ -1037,7 +1236,10 @@ def main() -> int:
         drone_phi=args.drone_phi,
         drone_psi=args.drone_psi,
         drone_theta=args.drone_theta,
+        transparent=bool(getattr(args, "transparent", False)),
         output=(str(args.output) if args.output else None),
+        save_dpi=int(getattr(args, "save_dpi", 300)),
+        bbox_tight=bool(getattr(args, "bbox_tight", True)),
         gpr_mod=gpr,
     )
 

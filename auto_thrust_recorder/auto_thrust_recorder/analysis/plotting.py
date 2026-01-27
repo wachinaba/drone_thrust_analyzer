@@ -68,6 +68,7 @@ def plot_1d(
     title: str = "",
     output: str | None = None,
     ylabel: str = "integral",
+    transparent: bool = False,
 ):
     plt.figure(figsize=(10, 6))
     plt.rcParams.update({'font.size': 16})
@@ -79,7 +80,7 @@ def plot_1d(
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     if output:
-        plt.savefig(output, dpi=300, bbox_inches='tight')
+        plt.savefig(output, dpi=300, bbox_inches='tight', transparent=bool(transparent))
     else:
         plt.show()
     plt.close()
@@ -108,6 +109,7 @@ def plot_2d(
     cmap: str = "viridis",
     colorbar_label: str = "integral",
     show_colorbar: bool = True,
+    transparent: bool = False,
 ):
     plt.figure(figsize=(10, 8))
     plt.rcParams.update({'font.size': 16})
@@ -241,7 +243,7 @@ def plot_2d(
         plt.title(title)
     plt.tight_layout()
     if output:
-        plt.savefig(output, dpi=300, bbox_inches='tight')
+        plt.savefig(output, dpi=300, bbox_inches='tight', transparent=bool(transparent))
     else:
         plt.show()
     plt.close()

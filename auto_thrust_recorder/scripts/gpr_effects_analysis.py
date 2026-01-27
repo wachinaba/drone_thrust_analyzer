@@ -264,8 +264,6 @@ def _mask_by_polygon_2d(Z: np.ndarray, x_vals: np.ndarray, y_vals: np.ndarray, p
     Z (ny,nx) を polygon 外で NaN にする。
     Returns: (Z_masked, inside_mask[ny,nx])
     """
-    from matplotlib.path import Path  # matplotlib は依存済みなのでここでimport
-
     Z0 = np.asarray(Z, dtype=float)
     Xv = np.asarray(x_vals, dtype=float).reshape(-1)
     Yv = np.asarray(y_vals, dtype=float).reshape(-1)
@@ -278,11 +276,106 @@ def _mask_by_polygon_2d(Z: np.ndarray, x_vals: np.ndarray, y_vals: np.ndarray, p
     # build grid points (N,2)
     Xg, Yg = np.meshgrid(Xv, Yv)
     pts = np.stack([Xg.reshape(-1), Yg.reshape(-1)], axis=1)
-    inside = Path(poly, closed=True).contains_points(pts)
+    path = _make_closed_path(poly)
+    if path is None:
+        return Z0, np.ones_like(Z0, dtype=bool)
+    inside = path.contains_points(pts)
     inside_mask = inside.reshape(Z0.shape)
     Zm = Z0.copy()
     Zm[~inside_mask] = np.nan
     return Zm, inside_mask
+
+
+def _make_closed_path(poly_xy: np.ndarray):
+    """
+    Build a properly closed matplotlib Path for polygon containment tests.
+
+    NOTE:
+      Path(poly, closed=True) だけだと、contains_point(s) が閉路として扱わないケースがあるため、
+      CLOSEPOLY コードで明示的に閉じる。
+    """
+    from matplotlib.path import Path  # local import
+
+    poly = np.asarray(poly_xy, dtype=float)
+    if poly.ndim != 2 or poly.shape[1] != 2 or poly.shape[0] < 3:
+        return None
+    # codes + CLOSEPOLY require one extra vertex (ignored for CLOSEPOLY)
+    verts = np.vstack([poly, poly[0]])
+    codes = [Path.MOVETO] + [Path.LINETO] * (poly.shape[0] - 1) + [Path.CLOSEPOLY]
+    return Path(verts, codes)
+
+
+def _bbox_str_xy(points_xy: Optional[np.ndarray]) -> str:
+    """
+    points_xy: (N,2) array
+    Return bbox string for debug.
+    """
+    if points_xy is None:
+        return "(none)"
+    pts = np.asarray(points_xy, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] == 0:
+        return f"(invalid shape={getattr(pts, 'shape', None)})"
+    m = np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1])
+    if not bool(np.any(m)):
+        return "(no finite points)"
+    x = pts[m, 0]
+    y = pts[m, 1]
+    return f"x[{float(np.min(x)):.6g}, {float(np.max(x)):.6g}] y[{float(np.min(y)):.6g}, {float(np.max(y)):.6g}] n={int(np.sum(m))}"
+
+
+def _hull_none_reason(points_xy: Optional[np.ndarray]) -> str:
+    """
+    Explain why convex hull could not be formed (best-effort).
+    """
+    if points_xy is None:
+        return "pts_hull is None (missing columns or no points after filtering)"
+    pts = np.asarray(points_xy, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 2:
+        return f"invalid pts_hull shape={getattr(pts, 'shape', None)}"
+    if pts.shape[0] < 3:
+        return f"too few points: n={pts.shape[0]}"
+    m = np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1])
+    nf = int(np.sum(m))
+    if nf < 3:
+        return f"too few finite points: n_finite={nf}/{pts.shape[0]}"
+    uniq = np.unique(pts[m], axis=0)
+    nu = int(uniq.shape[0])
+    if nu < 3:
+        return f"too few unique finite points: n_unique={nu} (duplicates?)"
+    return "degenerate hull (likely collinear points) or hull computation returned <3 vertices"
+
+
+def _unique_sorted_points_xy(points_xy: Optional[np.ndarray]) -> np.ndarray:
+    """
+    points_xy: (N,2) -> unique finite points (M,2), sorted by x then y.
+    """
+    if points_xy is None:
+        return np.zeros((0, 2), dtype=float)
+    pts = np.asarray(points_xy, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] == 0:
+        return np.zeros((0, 2), dtype=float)
+    m = np.isfinite(pts[:, 0]) & np.isfinite(pts[:, 1])
+    pts = pts[m]
+    if pts.shape[0] == 0:
+        return np.zeros((0, 2), dtype=float)
+    pts = np.unique(pts, axis=0)
+    if pts.shape[0] == 0:
+        return np.zeros((0, 2), dtype=float)
+    pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]  # sort by x then y
+    return pts
+
+
+def _print_points_block(prefix: str, title: str, pts_xy: np.ndarray) -> None:
+    """
+    Print all points to stdout, one per line: '  x,y'
+    """
+    pts = np.asarray(pts_xy, dtype=float)
+    n = int(pts.shape[0]) if (pts.ndim == 2 and pts.shape[1] == 2) else 0
+    print(f"{prefix} {title} (n={n})")
+    if n == 0:
+        return
+    for i in range(n):
+        print(f"{prefix}   {pts[i, 0]:.10g},{pts[i, 1]:.10g}")
 
 
 def parse_normalize_ref(text: str) -> Dict[str, float]:
@@ -792,6 +885,7 @@ def main():
     p.add_argument('--weights', type=str, default=None, help="--combine logsum の重み。例: 'moment_abs=1,grad_abs=1'（moment/grad/m/g も可）")
     p.add_argument('--heatmap-range', type=str, default=None, help="ヒートマップの値範囲 'min,max'（normalize後の単位で指定）")
     p.add_argument('--colormap', type=str, default='viridis', help="カラーマップ名（例: viridis, magma, plasma, inferno, cividis）")
+    p.add_argument('--transparent', type=str, default='f', help="画像出力(--output-eval)を透過背景で保存する場合は 't'。")
     p.add_argument('--no-title', action='store_true', help='プロットのタイトルを表示しない')
     p.add_argument('--no-colorbar', action='store_true', help='2Dプロットのカラーバーを表示しない')
     p.add_argument('--xlabel', type=str, default=None, help='X軸ラベルを上書き（未指定なら列名）')
@@ -816,6 +910,8 @@ def main():
 
     def maybe_title(s: str) -> str:
         return "" if bool(args.no_title) else (s or "")
+
+    transparent = str(getattr(args, "transparent", "f") or "f").strip().lower() in {"t", "true", "1", "yes", "y"}
 
     # backend
     if (not os.environ.get('DISPLAY')) or args.output_eval:
@@ -1115,6 +1211,17 @@ def main():
             ignore_fix = (src == "all")
             pts_hull = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=ignore_fix)
             hull = _convex_hull_2d(pts_hull) if pts_hull is not None else None
+
+            # debug: always show hull inputs when verbose
+            if args.verbose:
+                n_pts = 0 if pts_hull is None else int(np.asarray(pts_hull).shape[0])
+                print("[hull] axes:", axes_names[0], axes_names[1], "| src=", src, "| ignore_fix=", bool(ignore_fix))
+                print("[hull] pts_hull bbox:", _bbox_str_xy(pts_hull))
+                print("[hull] pts_hull n:", n_pts)
+                # raw points unique list (all)
+                pts_u = _unique_sorted_points_xy(pts_hull)
+                _print_points_block("[hull]", "raw unique points (x,y)", pts_u)
+
             if hull is not None:
                 # build inside-mask for the current grid
                 Xv0 = np.asarray(axes_vals[0], dtype=float)
@@ -1122,6 +1229,42 @@ def main():
                 _dummy = np.zeros((len(Yv0), len(Xv0)), dtype=float)
                 _, hull_inside_mask = _mask_by_polygon_2d(_dummy, Xv0, Yv0, hull)
                 hull_desc = f"convex_hull(src={src}, n_pts={int(pts_hull.shape[0])})"
+
+                # debug: sanity checks (only when verbose)
+                if args.verbose:
+                    try:
+                        path = _make_closed_path(np.asarray(hull, dtype=float))
+                        inside_pts = path.contains_points(np.asarray(pts_hull, dtype=float)) if path is not None else None
+                        if inside_pts is None:
+                            raise RuntimeError("failed to build closed Path for hull")
+                        inside_pts = np.asarray(inside_pts, dtype=bool)
+                        n_in = int(np.sum(inside_pts))
+                        n_all = int(len(inside_pts))
+                        print("[hull] axes:", axes_names[0], axes_names[1], "| src=", src)
+                        print("[hull] pts_hull bbox:", _bbox_str_xy(pts_hull))
+                        print("[hull] hull vertices:", int(np.asarray(hull).shape[0]), "bbox:", _bbox_str_xy(hull))
+                        # hull vertices list (all)
+                        _print_points_block("[hull]", "hull vertices (x,y)", np.asarray(hull, dtype=float))
+                        print(
+                            "[hull] pts_hull inside hull:",
+                            f"{n_in}/{n_all}",
+                            f"({(100.0 * n_in / max(1, n_all)):.3g}%)",
+                        )
+                        grid_bbox = _bbox_str_xy(np.stack([Xv0.reshape(-1), Yv0.reshape(-1)], axis=1))
+                        print("[hull] grid centers bbox:", grid_bbox, "grid_shape=", (len(Yv0), len(Xv0)))
+                        if hull_inside_mask is not None:
+                            n_grid_in = int(np.sum(hull_inside_mask))
+                            n_grid = int(hull_inside_mask.size)
+                            print(
+                                "[hull] grid inside hull:",
+                                f"{n_grid_in}/{n_grid}",
+                                f"({(100.0 * n_grid_in / max(1, n_grid)):.3g}%)",
+                            )
+                    except Exception as e:
+                        print("[hull] debug failed:", repr(e))
+            else:
+                if args.verbose:
+                    print("[hull] hull=None reason:", _hull_none_reason(pts_hull))
 
         def apply_hull_nan(arr: Any) -> np.ndarray:
             a = np.asarray(arr, dtype=float)
@@ -1154,7 +1297,7 @@ def main():
             elif len(axes_names) == 1:
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else str(ylab_or_cbl)
-                plot_1d(xlab, axes_vals[0], np.asarray(disp), maybe_title(title), args.output_eval, ylabel=ylab)
+                plot_1d(xlab, axes_vals[0], np.asarray(disp), maybe_title(title), args.output_eval, ylabel=ylab, transparent=transparent)
                 if args.output_csv:
                     dump_csv(axes_names, axes_vals, np.asarray(disp).reshape(Z_map[m].shape), args.output_csv)
             elif len(axes_names) == 2:
@@ -1170,6 +1313,7 @@ def main():
                     overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
                     colorbar_label=cbl,
                     show_colorbar=(not bool(args.no_colorbar)),
+                    transparent=transparent,
                 )
                 if args.output_csv:
                     dump_csv(axes_names, axes_vals, disp_plot, args.output_csv)
@@ -1230,12 +1374,12 @@ def main():
                 out_path = _base_out_paths(args.output_eval, m)
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab_eff = args.ylabel if args.ylabel is not None else str(ylab)
-                plot_1d(xlab, axes_vals[0], np.asarray(disp), maybe_title(title), out_path, ylabel=ylab_eff)
+                plot_1d(xlab, axes_vals[0], np.asarray(disp), maybe_title(title), out_path, ylabel=ylab_eff, transparent=transparent)
             if combined is not None:
                 out_path = _base_out_paths(args.output_eval, "combined")
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab_eff = args.ylabel if args.ylabel is not None else str(combined_label)
-                plot_1d(xlab, axes_vals[0], np.asarray(combined), maybe_title(combined_title), out_path, ylabel=ylab_eff)
+                plot_1d(xlab, axes_vals[0], np.asarray(combined), maybe_title(combined_title), out_path, ylabel=ylab_eff, transparent=transparent)
             if args.output_csv:
                 df = df_base
                 # store change rate if requested else ratio if normalized else raw
@@ -1265,6 +1409,7 @@ def main():
                     overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
                     colorbar_label=cbl_eff,
                     show_colorbar=(not bool(args.no_colorbar)),
+                    transparent=transparent,
                 )
             if combined is not None:
                 # combined: improve[%] は 0 を中心に見たいので vmin/vmax を±対称にする
@@ -1348,6 +1493,7 @@ def main():
                     vmin=vmin_c, vmax=vmax_c, cmap=cmap_combined,
                     colorbar_label=cbl_eff,
                     show_colorbar=(not bool(args.no_colorbar)),
+                    transparent=transparent,
                 )
             if args.output_csv:
                 df = df_base
@@ -1486,7 +1632,7 @@ def main():
                 plt.tight_layout()
                 out_path = _base_out_paths(args.output_eval, metric_name) if args.output_eval else None
                 if out_path:
-                    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+                    plt.savefig(out_path, dpi=300, bbox_inches='tight', transparent=bool(transparent))
                 else:
                     plt.show()
                 plt.close()
@@ -1532,7 +1678,7 @@ def main():
                 plt.tight_layout()
                 out_path = _base_out_paths(args.output_eval, "combined") if args.output_eval else None
                 if out_path:
-                    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+                    plt.savefig(out_path, dpi=300, bbox_inches='tight', transparent=bool(transparent))
                 else:
                     plt.show()
                 plt.close()
@@ -1618,10 +1764,51 @@ def main():
                 ignore_fix = (src == "all")
                 pts_hull = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=ignore_fix)
                 hull = _convex_hull_2d(pts_hull) if pts_hull is not None else None
+
+                # debug: always show hull inputs when verbose (cumulative branch)
+                if args.verbose:
+                    n_pts = 0 if pts_hull is None else int(np.asarray(pts_hull).shape[0])
+                    print("[hull] (cumulative) axes:", axes_names[0], axes_names[1], "| src=", src, "| ignore_fix=", bool(ignore_fix))
+                    print("[hull] (cumulative) pts_hull bbox:", _bbox_str_xy(pts_hull))
+                    print("[hull] (cumulative) pts_hull n:", n_pts)
+                    # raw points unique list (all)
+                    pts_u = _unique_sorted_points_xy(pts_hull)
+                    _print_points_block("[hull] (cumulative)", "raw unique points (x,y)", pts_u)
+
                 if hull is not None:
                     _dummy = np.zeros((len(Yv), len(Xv)), dtype=float)
                     _, hull_inside_mask = _mask_by_polygon_2d(_dummy, Xv, Yv, hull)
                     hull_desc = f"convex_hull(src={src}, n_pts={int(pts_hull.shape[0])})"
+                    if args.verbose:
+                        try:
+                            path = _make_closed_path(np.asarray(hull, dtype=float))
+                            inside_pts = path.contains_points(np.asarray(pts_hull, dtype=float)) if path is not None else None
+                            if inside_pts is None:
+                                raise RuntimeError("failed to build closed Path for hull")
+                            inside_pts = np.asarray(inside_pts, dtype=bool)
+                            n_in = int(np.sum(inside_pts))
+                            n_all = int(len(inside_pts))
+                            print("[hull] (cumulative) hull vertices:", int(np.asarray(hull).shape[0]), "bbox:", _bbox_str_xy(hull))
+                            # hull vertices list (all)
+                            _print_points_block("[hull] (cumulative)", "hull vertices (x,y)", np.asarray(hull, dtype=float))
+                            print(
+                                "[hull] (cumulative) pts_hull inside hull:",
+                                f"{n_in}/{n_all}",
+                                f"({(100.0 * n_in / max(1, n_all)):.3g}%)",
+                            )
+                            if hull_inside_mask is not None:
+                                n_grid_in = int(np.sum(hull_inside_mask))
+                                n_grid = int(hull_inside_mask.size)
+                                print(
+                                    "[hull] (cumulative) grid inside hull:",
+                                    f"{n_grid_in}/{n_grid}",
+                                    f"({(100.0 * n_grid_in / max(1, n_grid)):.3g}%)",
+                                )
+                        except Exception as e:
+                            print("[hull] (cumulative) debug failed:", repr(e))
+                else:
+                    if args.verbose:
+                        print("[hull] (cumulative) hull=None reason:", _hull_none_reason(pts_hull))
 
             def apply_hull_nan(arr: Any) -> np.ndarray:
                 a = np.asarray(arr, dtype=float)
@@ -1678,6 +1865,7 @@ def main():
                         overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
                         colorbar_label=cbl_eff,
                         show_colorbar=(not bool(args.no_colorbar)),
+                        transparent=transparent,
                     )
                     if args.output_csv:
                         csv_path = f"{stem}_{metric_name}_upper_{up:.6g}.csv"
@@ -1699,6 +1887,10 @@ def main():
                     score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
                     improve_pct = _improve_pct_from_log_ratio(score)
                     improve_plot = apply_hull_nan(improve_pct)
+                    # CSV export for combined (logsum) in cumulative 2D
+                    if args.output_csv:
+                        csv_path = f"{stem}_combined_upper_{up:.6g}.csv"
+                        dump_csv(axes_names, axes_vals, improve_plot, csv_path)
                     if (hm_vmin is not None) and (hm_vmax is not None):
                         vmin_c, vmax_c = hm_vmin, hm_vmax
                     else:
@@ -1780,6 +1972,7 @@ def main():
                         vmin=vmin_c, vmax=vmax_c, cmap=cmap_combined,
                         colorbar_label=cbl_eff,
                         show_colorbar=(not bool(args.no_colorbar)),
+                        transparent=transparent,
                     )
         else:
             print(f"可視化軸が3以上のため図は出力しません（累積モード）。CSVで出力します。axes={axes_names}")

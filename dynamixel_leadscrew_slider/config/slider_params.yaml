@@ -9,24 +9,24 @@
       soft_min_mm: .nan  # 両端探索から自動設定（NaNで未設定を表現）
       soft_max_mm: .nan
     homing:
-      origin_reference: "min"  # min|max|center
-      origin_offset_mm: -24.0
-      return_to_position_mm: 40.0  # 原点(オフセット適用後)からの復帰位置 [mm]
+      origin_reference: "max"  # min|max|center
+      origin_offset_mm: 26.0
+      return_to_position_mm: -250.0  # 原点(オフセット適用後)からの復帰位置 [mm]
       seek_current_ma: 500   # 原点探索で印加する目標電流（符号で方向）
       seek_current_ma_max: 500
-      seek_current_ma_step: 50
+      seek_current_ma_step: 100
       seek_ramp_stage_ms: 500.0
       move_min_mm: 0.2
       hold_time_ms: 150
-      backoff_mm: 1.0
-      timeout_s: 120.0
-      max_seek_time_s: 60.0
-      max_travel_mm: 300.0
-      backoff_current_ma: 200
+      backoff_mm: 0.0
+      timeout_s: 200.0
+      max_seek_time_s: 120.0
+      max_travel_mm: 500.0
+      backoff_current_ma: 500
       backoff_profile_vel_mm_s: 20.0
       backoff_profile_acc_mm_s2: 200.0
       backoff_timeout_s: 3.0
-      return_to_zero_timeout_s: 5.0
+      return_to_zero_timeout_s: 100.0
       return_to_zero_tolerance_mm: 0.05
       return_to_zero_monitor: true
     profile:

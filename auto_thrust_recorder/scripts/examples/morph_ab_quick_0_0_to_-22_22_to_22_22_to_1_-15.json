@@ -1,0 +1,121 @@
+{
+  "fps": 30,
+  "output": {
+    "path": "auto_thrust_recorder/scripts/examples/morph_ab_quick_0_0_to_-22_22_to_22_22_to_1_-15_dpi300.mp4"
+  },
+  "render": {
+    "mode": "scene3d",
+    "dpi": 300,
+    "figsize": [10.0, 10.0],
+    "bg": "#F7FFFB",
+    "overlay": {
+      "enabled": true,
+      "layout": "top_center",
+      "y": 12,
+      "font_size": 36,
+      "shadow": false,
+      "color": "#000000"
+    },
+    "scene3d": {
+      "arm_length_m": 0.12,
+      "drone_center": [0.0, 0.3, 0.0],
+      "rotor_inflow_offset": 0.011,
+      "view_azim": 20.0,
+      "view_elev": 12.0,
+      "drone_lw": 2.5,
+      "draw_y0_plane": true
+    }
+  },
+  "defaults": {
+    "phi_deg": 0.0,
+    "alpha_deg": 0.0,
+    "beta_deg": 0.0,
+    "L_m": 0.12,
+    "cx": 0.035,
+    "cy": 0.035,
+    "rotor_radius_in": 3.5,
+    "symmetry": "mirror_xy",
+    "y_clearance": 0.0
+  },
+  "segments": [
+    {
+      "mode": "alpha_beta_keyframes",
+      "duration_s": 1.0,
+      "include_endpoint": false,
+      "easing_deg": { "alpha": "linear", "beta": "linear", "phi": "linear" },
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [1.0, 0.0]],
+        "alpha": [[0.0, 0.0], [1.0, 0.0]],
+        "beta": [[0.0, 0.0], [1.0, 0.0]]
+      }
+    },
+    {
+      "mode": "alpha_beta_keyframes",
+      "duration_s": 0.5,
+      "include_endpoint": false,
+      "easing_deg": { "alpha": "cosine", "beta": "cosine", "phi": "linear" },
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [0.5, 0.0]],
+        "alpha": [[0.0, 0.0], [0.5, -22.0]],
+        "beta": [[0.0, 0.0], [0.5, 22.0]]
+      }
+    },
+    {
+      "mode": "alpha_beta_keyframes",
+      "duration_s": 1.0,
+      "include_endpoint": false,
+      "easing_deg": { "alpha": "linear", "beta": "linear", "phi": "linear" },
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [1.0, 0.0]],
+        "alpha": [[0.0, -22.0], [1.0, -22.0]],
+        "beta": [[0.0, 22.0], [1.0, 22.0]]
+      }
+    },
+    {
+      "mode": "alpha_beta_keyframes",
+      "duration_s": 0.5,
+      "include_endpoint": false,
+      "easing_deg": { "alpha": "cosine", "beta": "cosine", "phi": "linear" },
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [0.5, 0.0]],
+        "alpha": [[0.0, -22.0], [0.5, 22.0]],
+        "beta": [[0.0, 22.0], [0.5, 22.0]]
+      }
+    },
+    {
+      "mode": "alpha_beta_keyframes",
+      "duration_s": 1.0,
+      "include_endpoint": false,
+      "easing_deg": { "alpha": "linear", "beta": "linear", "phi": "linear" },
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [1.0, 0.0]],
+        "alpha": [[0.0, 22.0], [1.0, 22.0]],
+        "beta": [[0.0, 22.0], [1.0, 22.0]]
+      }
+    },
+    {
+      "mode": "alpha_beta_keyframes",
+      "duration_s": 0.5,
+      "include_endpoint": false,
+      "easing_deg": { "alpha": "cosine", "beta": "cosine", "phi": "linear" },
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [0.5, 0.0]],
+        "alpha": [[0.0, 22.0], [0.5, 1.0]],
+        "beta": [[0.0, 22.0], [0.5, -15.0]]
+      }
+    },
+    {
+      "mode": "alpha_beta_keyframes",
+      "duration_s": 1.0,
+      "include_endpoint": true,
+      "easing_deg": { "alpha": "linear", "beta": "linear", "phi": "linear" },
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [1.0, 0.0]],
+        "alpha": [[0.0, 1.0], [1.0, 1.0]],
+        "beta": [[0.0, -15.0], [1.0, -15.0]]
+      }
+    }
+  ]
+}
+
+

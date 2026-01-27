@@ -2,8 +2,16 @@
 
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction, ExecuteProcess
+from launch.actions import (
+    DeclareLaunchArgument,
+    TimerAction,
+    ExecuteProcess,
+    RegisterEventHandler,
+    EmitEvent,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -211,7 +219,8 @@ def generate_launch_description():
         parameters=[
             LaunchConfiguration("slider_params_file"),
             {
-                "motor.id": 2,
+                "motor.id": 3,
+                "homing.min_soft_limit_range_mm": 240.0,
             },
         ],
         remappings=[
@@ -231,7 +240,8 @@ def generate_launch_description():
         parameters=[
             LaunchConfiguration("slider_params_file"),
             {
-                "motor.id": 3,
+                "motor.id": 2,
+                "homing.min_soft_limit_range_mm": 240.0,
             },
         ],
         remappings=[
@@ -257,12 +267,34 @@ def generate_launch_description():
                 "homing.return_to_position_mm": 0.0,
                 "homing.seek_current_ma": 800,
                 "homing.seek_current_ma_max": 1000,
+                "homing.backoff_current_ma": 1000,
+                "homing.min_soft_limit_range_mm": 350.0,
             },
         ],
         remappings=[
             ("/move_mm", "/slider_vertical/move_mm"),
             ("/current_position", "/slider_vertical/current_position"),
         ],
+    )
+
+    # If any leadscrew controller exits, shutdown the whole launch (fail-fast)
+    shutdown_on_bottom_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=leadscrew_slider_controller_bottom_node,
+            on_exit=[EmitEvent(event=Shutdown(reason="slider_bottom leadscrew exited"))],
+        )
+    )
+    shutdown_on_top_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=leadscrew_slider_controller_top_node,
+            on_exit=[EmitEvent(event=Shutdown(reason="slider_top leadscrew exited"))],
+        )
+    )
+    shutdown_on_vertical_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=leadscrew_slider_controller_vertical_node,
+            on_exit=[EmitEvent(event=Shutdown(reason="slider_vertical leadscrew exited"))],
+        )
     )
 
     # ホーミング実行（起動後に順次呼び出し）
@@ -285,7 +317,7 @@ def generate_launch_description():
     )
 
     home_top_after_delay = TimerAction(
-        period=6.0,
+        period=25.0,
         condition=IfCondition(LaunchConfiguration("enable_top_slider")),
         actions=[
             ExecuteProcess(
@@ -303,7 +335,7 @@ def generate_launch_description():
     )
 
     home_vertical_after_delay = TimerAction(
-        period=60.0,
+        period=100.0,
         condition=IfCondition(
             PythonExpression(
                 [
@@ -375,6 +407,9 @@ def generate_launch_description():
             leadscrew_slider_controller_bottom_node,
             leadscrew_slider_controller_top_node,
             leadscrew_slider_controller_vertical_node,
+            shutdown_on_bottom_exit,
+            shutdown_on_top_exit,
+            shutdown_on_vertical_exit,
             home_bottom_after_delay,
             home_top_after_delay,
             home_vertical_immediate,

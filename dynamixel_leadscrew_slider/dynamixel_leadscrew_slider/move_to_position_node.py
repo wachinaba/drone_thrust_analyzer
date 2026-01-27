@@ -235,8 +235,8 @@ def main() -> None:
     # 複数指定
     parser.add_argument('--namespaces', type=str, nargs='+', help='Namespaces of the sliders (space-separated)')
     parser.add_argument('--targets', type=float, nargs='+', help='Target positions in mm (space-separated, same length as namespaces)')
-    parser.add_argument('--tolerance', type=float, default=0.5, 
-                       help='Position tolerance in mm (default: 0.5)')
+    parser.add_argument('--tolerance', type=float, default=0.6, 
+                       help='Position tolerance in mm (default: 0.6)')
     parser.add_argument('--timeout', type=float, default=30.0,
                        help='Timeout in seconds (default: 30.0)')
     parser.add_argument('--vel', type=float, default=20.0, help='Profile velocity in mm/s (default: 20.0)')

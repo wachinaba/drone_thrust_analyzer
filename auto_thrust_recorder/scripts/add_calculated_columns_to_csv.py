@@ -30,6 +30,10 @@ CSV に morphing drone の座標変換由来パラメータ列 + 計算列を追
   そのときの drone center の y オフセット dy を決める。
   その dy を固定したまま、実際の tilt を考慮した rotor rim の最近点を計算し、
   wall(y=0) までの距離を distance_rotortip とする。
+
+CLI 追加オプション:
+  - --angles-only: alpha/beta だけを計算して追加/更新する（他の派生列や計算列は触らない）
+  - --overwrite: --output を省略した場合、入力CSVを上書き保存する
 """
 
 from __future__ import annotations
@@ -248,7 +252,7 @@ def _compute_normalized_moment(df: pd.DataFrame) -> pd.Series:
     torque = pd.to_numeric(df["torque_x_bias_corrected"], errors="coerce")
     prop_spacing_y = pd.to_numeric(df["prop_spacing_y"], errors="coerce")
     force_z = pd.to_numeric(df["force_z"], errors="coerce")
-    denom = prop_spacing_y * force_z / 2.0
+    denom = prop_spacing_y * force_z / 4.0
     denom = denom.where(denom != 0.0, np.nan)
     return torque / denom * 100.0
 
@@ -315,7 +319,63 @@ def _compute_normalized_thrust(df: pd.DataFrame, *, a: float, b: float, c: float
     return fz / denom
 
 
-def process_csv(input_csv: str, *, cx: float, cy: float, rotor_radius_in: float) -> pd.DataFrame:
+def _process_csv_angles_only(input_csv: str) -> pd.DataFrame:
+    """
+    alpha/beta のみ計算して追加/更新する。
+    - 既存の他列は一切変更しない（数値化も最小限）
+    - 必須: tilt_angle, fold_angle, slant_angle
+    """
+    df = pd.read_csv(input_csv)
+
+    required = ["tilt_angle", "fold_angle", "slant_angle"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"MissingColumns: {','.join(missing)}")
+
+    for c in required:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    key_cols = ["tilt_angle", "fold_angle", "slant_angle"]
+    uniq = df[key_cols].drop_duplicates().reset_index(drop=True)
+
+    out_rows = []
+    for row in uniq.itertuples(index=False):
+        tilt = float(row.tilt_angle) if pd.notna(row.tilt_angle) else 0.0
+        fold = float(row.fold_angle) if pd.notna(row.fold_angle) else 0.0
+        slant = float(row.slant_angle) if pd.notna(row.slant_angle) else 0.0
+
+        # alpha/beta: rotor0 (= base pose)
+        poses = _compute_poses_mirror_xy(0.0, 0.0, fold, slant, tilt)
+        alpha, beta = _thrust_angles_alpha_beta_deg(poses[0].rotor_normal)
+
+        out_rows.append(
+            {
+                "tilt_angle": getattr(row, "tilt_angle"),
+                "fold_angle": getattr(row, "fold_angle"),
+                "slant_angle": getattr(row, "slant_angle"),
+                "alpha": alpha,
+                "beta": beta,
+            }
+        )
+
+    computed = pd.DataFrame(out_rows)
+    computed_cols = ["alpha", "beta"]
+    df = df.drop(columns=[c for c in computed_cols if c in df.columns], errors="ignore")
+    df = df.merge(computed, on=key_cols, how="left", validate="many_to_one")
+    return df
+
+
+def process_csv(
+    input_csv: str,
+    *,
+    cx: float,
+    cy: float,
+    rotor_radius_in: float,
+    angles_only: bool = False,
+) -> pd.DataFrame:
+    if angles_only:
+        return _process_csv_angles_only(input_csv)
+
     df = pd.read_csv(input_csv)
 
     # 追加（列が無い場合のみ）
@@ -444,6 +504,16 @@ def main() -> None:
     )
     parser.add_argument("--input", required=True, help="入力CSVパス")
     parser.add_argument("--output", default=None, help="出力CSVパス（省略時は input と同階層に自動生成）")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="--output を省略した場合、入力CSVを上書き保存する（inplace）",
+    )
+    parser.add_argument(
+        "--angles-only",
+        action="store_true",
+        help="alpha/beta のみ計算して追加/更新する（他の派生列/計算列は触らない）",
+    )
     parser.add_argument("--cx", type=float, default=0.035, help="ヒンジ中心 x [m]（fold_center_x）デフォルト: 0.035")
     parser.add_argument("--cy", type=float, default=0.035, help="ヒンジ中心 y [m]（fold_center_y）デフォルト: 0.035")
     parser.add_argument(
@@ -461,16 +531,29 @@ def main() -> None:
     if not os.path.exists(in_path):
         raise SystemExit(f"InputNotFound: {in_path}")
 
-    df_out = process_csv(in_path, cx=float(args.cx), cy=float(args.cy), rotor_radius_in=float(args.rotor_radius_in))
+    df_out = process_csv(
+        in_path,
+        cx=float(args.cx),
+        cy=float(args.cy),
+        rotor_radius_in=float(args.rotor_radius_in),
+        angles_only=bool(args.angles_only),
+    )
     # overwrite baseline columns with user-specified coefficients if provided
     # (kept here to avoid changing process_csv signature)
-    a = float(args.thrust_coef_a)
-    b = float(args.thrust_coef_b)
-    c = float(args.thrust_coef_c)
-    df_out["base_thrust"] = _compute_base_thrust_from_control(df_out, a=a, b=b, c=c)
-    df_out["base_thrust_z"] = _compute_base_thrust_z_from_control(df_out, a=a, b=b, c=c)
-    df_out["normalized_thrust"] = _compute_normalized_thrust(df_out, a=a, b=b, c=c)
-    out_path = _build_output_path(in_path, args.output)
+    if not args.angles_only:
+        a = float(args.thrust_coef_a)
+        b = float(args.thrust_coef_b)
+        c = float(args.thrust_coef_c)
+        df_out["base_thrust"] = _compute_base_thrust_from_control(df_out, a=a, b=b, c=c)
+        df_out["base_thrust_z"] = _compute_base_thrust_z_from_control(df_out, a=a, b=b, c=c)
+        df_out["normalized_thrust"] = _compute_normalized_thrust(df_out, a=a, b=b, c=c)
+
+    if args.output:
+        out_path = Path(args.output)
+    elif args.overwrite:
+        out_path = Path(in_path)
+    else:
+        out_path = _build_output_path(in_path, args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df_out.to_csv(out_path, index=False)
     print(f"出力: {out_path}")
