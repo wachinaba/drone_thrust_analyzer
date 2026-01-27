@@ -1,0 +1,82 @@
+{
+  "fps": 30,
+  "output": {
+    "path": "morph_cross_then_circle_phi_vibe_dpi300_1080min.mp4"
+  },
+  "render": {
+    "dpi": 300,
+    "figsize": [4.4308, 3.6],
+    "bg": "white",
+    "overlay": {
+      "enabled": true,
+      "x": 10,
+      "y": 10,
+      "font_size": 16,
+      "shadow": true
+    }
+  },
+  "defaults": {
+    "phi_deg": 0.0,
+    "alpha_deg": 0.0,
+    "beta_deg": 0.0,
+    "L_m": 0.18,
+    "cx": 0.035,
+    "cy": 0.035,
+    "rotor_radius_in": 3.5,
+    "symmetry": "mirror_xy",
+    "y_clearance": 0.0
+  },
+  "segments": [
+    {
+      "mode": "alpha_beta_keyframes",
+      "duration_s": 8.0,
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [8.0, 0.0]],
+        "alpha": [
+          [0.0, 0.0],
+          [1.0, 15.0],
+          [2.0, 0.0],
+          [3.0, -15.0],
+          [4.0, 0.0],
+          [8.0, 0.0]
+        ],
+        "beta": [
+          [0.0, 0.0],
+          [4.0, 0.0],
+          [5.0, 15.0],
+          [6.0, 0.0],
+          [7.0, -15.0],
+          [8.0, 0.0]
+        ]
+      }
+    },
+    {
+      "mode": "alpha_beta_circle",
+      "duration_s": 6.0,
+      "alpha_center_deg": 0.0,
+      "beta_center_deg": 0.0,
+      "radius_deg": 15.0,
+      "cycles": 2.0,
+      "phase_deg": 0.0,
+      "keys_deg": {
+        "phi": [
+          [0.0, 0.0],
+          [0.5, 15.0],
+          [1.0, 0.0],
+          [1.5, 15.0],
+          [2.0, 0.0],
+          [2.5, 15.0],
+          [3.0, 0.0],
+          [3.5, 15.0],
+          [4.0, 0.0],
+          [4.5, 15.0],
+          [5.0, 0.0],
+          [5.5, 15.0],
+          [6.0, 0.0]
+        ]
+      }
+    }
+  ]
+}
+
+

@@ -1,0 +1,53 @@
+{
+  "fps": 30,
+  "output": {
+    "path": "morph_anim_example_dpi300_1080min.mp4"
+  },
+  "render": {
+    "dpi": 300,
+    "figsize": [4.4308, 3.6],
+    "bg": "white"
+  },
+  "defaults": {
+    "phi_deg": 0.0,
+    "psi_deg": 0.0,
+    "theta_deg": 0.0,
+    "L_m": 0.18,
+    "cx": 0.035,
+    "cy": 0.035,
+    "rotor_radius_in": 3.5,
+    "symmetry": "mirror_xy",
+    "y_clearance": 0.0
+  },
+  "segments": [
+    {
+      "mode": "angles_keyframes",
+      "duration_s": 2.0,
+      "keys_deg": {
+        "phi": [[0.0, 0.0], [1.0, 40.0], [2.0, 0.0]],
+        "psi": [[0.0, 0.0], [2.0, 0.0]],
+        "theta": [[0.0, 0.0], [2.0, 90.0]]
+      },
+      "keys_m": {
+        "L": [[0.0, 0.18], [2.0, 0.22]]
+      }
+    },
+    {
+      "mode": "alpha_beta_circle",
+      "duration_s": 4.0,
+      "alpha_center_deg": 0.0,
+      "beta_center_deg": 0.0,
+      "radius_deg": 18.0,
+      "cycles": 2.0,
+      "phase_deg": 0.0,
+      "keys_deg": {
+        "phi": [[0.0, 10.0], [4.0, 30.0]]
+      },
+      "keys_m": {
+        "L": [[0.0, 0.22], [4.0, 0.18]]
+      }
+    }
+  ]
+}
+
+
