@@ -80,6 +80,49 @@ plt.colormaps.register(cmap=get_custom_rwg_cmap(), name="custom_rwg")
 plt.colormaps.register(cmap=get_custom_log2_rwg_cmap(), name="custom_log2_rwg")
 
 
+def _make_centered_rwg_cmap(*, vmin: float, vmax: float, vcenter: float = 0.0) -> mcolors.Colormap:
+    """
+    vmin/vmax に応じて「vcenter が白」になるように赤-白-緑の発散カラーマップを動的生成する。
+    - vmin < vcenter < vmax: (vmin=赤, vcenter=白, vmax=緑)
+    - vmax <= vcenter: (vmin=赤, vmax=白) の2点（負側のみ）
+    - vmin >= vcenter: (vmin=白, vmax=緑) の2点（正側のみ）
+    """
+    vmin = float(vmin)
+    vmax = float(vmax)
+    vc = float(vcenter)
+    if vmax == vmin:
+        # degenerate: return simple map
+        return mcolors.LinearSegmentedColormap.from_list(
+            "custom_log2_rwg_dyn",
+            [(0.0, (1.0, 1.0, 1.0)), (1.0, (1.0, 1.0, 1.0))],
+        )
+
+    red = (0.404, 0.0, 0.122)
+    white = (1.0, 1.0, 1.0)
+    green = (0.0, 0.39, 0.0)
+
+    if vmin < vc < vmax:
+        zero_pos = (vc - vmin) / (vmax - vmin)
+        colors = [
+            (0.0, red),
+            (float(zero_pos), white),
+            (1.0, green),
+        ]
+    elif vmax <= vc:
+        # all non-positive (or exactly at center): map vmax to white
+        colors = [
+            (0.0, red),
+            (1.0, white),
+        ]
+    else:
+        # all non-negative: map vmin to white
+        colors = [
+            (0.0, white),
+            (1.0, green),
+        ]
+    return mcolors.LinearSegmentedColormap.from_list("custom_log2_rwg_dyn", colors)
+
+
 def plot_1d(
     x_name: str,
     x: np.ndarray,
@@ -164,6 +207,13 @@ def plot_2d(
         return bool(np.allclose(dv, dv[0], rtol=rtol, atol=1e-12))
 
     Z0 = np.asarray(Z)
+    # --- dynamic colormap: keep 0 as white even when vmin/vmax are asymmetric ---
+    cmap_eff = cmap
+    if str(cmap).strip() == "custom_log2_rwg":
+        # heatmap-range が指定されている場合はそれに追従、無ければデータから推定
+        vmin_eff = float(np.nanmin(Z0)) if vmin is None else float(vmin)
+        vmax_eff = float(np.nanmax(Z0)) if vmax is None else float(vmax)
+        cmap_eff = _make_centered_rwg_cmap(vmin=vmin_eff, vmax=vmax_eff, vcenter=0.0)
     if _is_uniform_spacing(Xc) and _is_uniform_spacing(Yc):
         # Align extent to cell edges (prevents half-pixel visual offsets vs contour).
         im = ax.imshow(
@@ -171,13 +221,13 @@ def plot_2d(
             origin='lower',
             aspect='auto',
             extent=[Xe[0], Xe[-1], Ye[0], Ye[-1]],
-            cmap=cmap,
+            cmap=cmap_eff,
             vmin=vmin,
             vmax=vmax,
         )
     else:
         # Correct rendering for non-uniform grids.
-        im = ax.pcolormesh(Xe, Ye, Z0, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto')
+        im = ax.pcolormesh(Xe, Ye, Z0, cmap=cmap_eff, vmin=vmin, vmax=vmax, shading='auto')
 
     if bool(show_colorbar):
         plt.colorbar(im, ax=ax, label=colorbar_label)
