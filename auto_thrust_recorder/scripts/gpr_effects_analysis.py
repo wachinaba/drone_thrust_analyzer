@@ -562,6 +562,99 @@ def _improve_pct_from_log_ratio(score_log_ratio: np.ndarray) -> np.ndarray:
     return (1.0 - gm_ratio) * 100.0
 
 
+def _ratio_to_quality(r: np.ndarray) -> np.ndarray:
+    """
+    比率 r（小さいほど良い）を品質指標 P（大きいほど良い）に変換。
+    P = 1 / (1 + r)
+    - r = 0 → P = 1（完全抑制）
+    - r = 1 → P = 0.5（ベースライン）
+    - r = ∞ → P = 0（極端に悪化）
+    """
+    r = np.asarray(r, dtype=float)
+    r = np.clip(r, 0.0, np.inf)
+    return 1.0 / (1.0 + r)
+
+
+def _harmonic_mean(p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
+    """
+    2つの品質指標の調和平均（F値）。
+    F = 2 * P1 * P2 / (P1 + P2)
+    """
+    p1 = np.asarray(p1, dtype=float)
+    p2 = np.asarray(p2, dtype=float)
+    num = 2.0 * p1 * p2
+    denom = p1 + p2
+    # ゼロ除算回避
+    denom = np.where(denom == 0, 1e-12, denom)
+    return num / denom
+
+
+def _f_score_to_improve_linear(f: np.ndarray) -> np.ndarray:
+    """
+    F値から線形改善率[%]を計算。
+    I = (2F - 1) * 100
+    - F = 1 → I = +100%（完全抑制）
+    - F = 0.5 → I = 0%（ベースライン）
+    - F = 0 → I = -100%（極端に悪化）
+    """
+    return (2.0 * np.asarray(f, dtype=float) - 1.0) * 100.0
+
+
+def _f_score_to_odds_ratio(f: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """
+    F値からオッズ比を計算。
+    OR = F / (1 - F)
+    - F = 0.9 → OR = 9（9倍良い）
+    - F = 0.5 → OR = 1（ベースライン）
+    - F = 0.1 → OR = 0.11（約9倍悪い）
+    """
+    f = np.asarray(f, dtype=float)
+    f = np.clip(f, eps, 1.0 - eps)
+    return f / (1.0 - f)
+
+
+def _f_score_to_improve_log2(f: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """
+    F値からlog2オッズ比（改善度）を計算。
+    I_OR = log2(F / (1 - F))
+    - F = 0.9 → I_OR ≈ +3.17（約10倍良い）
+    - F = 0.5 → I_OR = 0（ベースライン）
+    - F = 0.1 → I_OR ≈ -3.17（約10倍悪い）
+    """
+    odds = _f_score_to_odds_ratio(f, eps)
+    return np.log2(odds)
+
+
+def _compute_f_score_improvement(
+    r_m: np.ndarray, 
+    r_s: np.ndarray, 
+    output_mode: str = "linear"
+) -> np.ndarray:
+    """
+    比率からF値型改善度を計算。
+    
+    Args:
+        r_m: 積分モーメント比率 M_abs(ω) / M_abs(ω_ref)
+        r_s: 距離感度比率 S_abs(ω) / S_abs(ω_ref)
+        output_mode: "linear" | "log2" | "odds"
+    
+    Returns:
+        改善度（output_modeに応じた形式）
+    """
+    p_m = _ratio_to_quality(r_m)
+    p_s = _ratio_to_quality(r_s)
+    f = _harmonic_mean(p_m, p_s)
+    
+    if output_mode == "linear":
+        return _f_score_to_improve_linear(f)
+    elif output_mode == "log2":
+        return _f_score_to_improve_log2(f)
+    elif output_mode == "odds":
+        return _f_score_to_odds_ratio(f)
+    else:
+        raise ValueError(f"Unknown output_mode: {output_mode}")
+
+
 class _SimpleStandardScaler:
     """
     torch.save(weights_only=True) で読める dict 形式の StandardScaler を復元するための簡易実装。
@@ -847,7 +940,7 @@ def main():
             "    --integrate-over prop_spacing_x:auto,auto:200 --integrate-over prop_spacing_y:auto,auto:200 \\\n"
             "    --viz-range distance:auto,auto:150 \\\n"
             "    --normalize-ref distance=1.0 --normalize-as-change-rate \\\n"
-            "    --metrics moment_abs,grad_abs --combine logsum --weights moment_abs=1,grad_abs=1 \\\n"
+            "    --metrics moment_abs,grad_abs --combine fscore \\\n"
             "    --output-eval out.png --output-csv out.csv\n"
         ),
     )
@@ -881,7 +974,7 @@ def main():
     p.add_argument('--normalize-ref', type=str, default=None, help="正規化基準点 'col1=val1,col2=val2'（その点の値で全体を割る）")
     p.add_argument('--normalize-ref-per-step', action='store_true', help="cumulative モードで各ステップごとに独立に正規化する（--normalize-ref と併用）")
     p.add_argument('--normalize-as-change-rate', action='store_true', help="正規化を増減率で表示（基準点=0, +0.5=50%%増, -0.5=50%%減）")
-    p.add_argument('--combine', choices=['none', 'logsum'], default='none', help="--metrics 使用時の合成方法。logsum: w_m*log(r_m)+w_g*log(r_g)（重み付き幾何平均）")
+    p.add_argument('--combine', choices=['none', 'logsum', 'fscore', 'fscore_log2'], default='none', help="--metrics 使用時の合成方法。logsum: 幾何平均型, fscore: F値型（線形%）, fscore_log2: F値型（log2オッズ）")
     p.add_argument('--weights', type=str, default=None, help="--combine logsum の重み。例: 'moment_abs=1,grad_abs=1'（moment/grad/m/g も可）")
     p.add_argument('--heatmap-range', type=str, default=None, help="ヒートマップの値範囲 'min,max'（normalize後の単位で指定）")
     p.add_argument('--colormap', type=str, default='viridis', help="カラーマップ名（例: viridis, magma, plasma, inferno, cividis）")
@@ -1136,8 +1229,8 @@ def main():
         integrate_desc_parts = [f"{col} [{arr[0]:.3g}, {arr[-1]:.3g}], N={len(arr)}" for col, arr in int_axes.items()]
         integrate_desc = "; ".join(integrate_desc_parts) if integrate_desc_parts else "(none)"
 
-        if is_multi and (args.normalize_ref is None) and (args.normalize_as_change_rate or args.combine == "logsum"):
-            raise ValueError("--metrics で増減率/合成(logsum)を扱う場合は --normalize-ref が必須です（比率が必要）。")
+        if is_multi and (args.normalize_ref is None) and (args.normalize_as_change_rate or args.combine in ["logsum", "fscore", "fscore_log2"]):
+            raise ValueError("--metrics で増減率/合成(logsum/fscore)を扱う場合は --normalize-ref が必須です（比率が必要）。")
 
         # helper: build ratio & display grid for each metric
         def build_display(metric_name: str):
@@ -1351,6 +1444,26 @@ def main():
             combined = improve_pct
             combined_label = "improve [%] (1 - geom-mean ratio)"
             combined_title = f"combined=logsum (weights: moment_abs={w_m:g}, grad_abs={w_g:g}) | integrate over: {integrate_desc}"
+        elif args.combine == "fscore":
+            if ("moment_abs" not in ratios) or ("grad_abs" not in ratios):
+                raise ValueError("--combine fscore は moment_abs と grad_abs の両方が必要です（--metrics に含めてください）。")
+            r_m = ratios["moment_abs"]
+            r_g = ratios["grad_abs"]
+            if r_m is None or r_g is None:
+                raise ValueError("--combine fscore は --normalize-ref が必須です（比率が必要）。")
+            combined = _compute_f_score_improvement(r_m, r_g, output_mode="linear")
+            combined_label = "improve [%] (F-score linear)"
+            combined_title = f"combined=fscore | integrate over: {integrate_desc}"
+        elif args.combine == "fscore_log2":
+            if ("moment_abs" not in ratios) or ("grad_abs" not in ratios):
+                raise ValueError("--combine fscore_log2 は moment_abs と grad_abs の両方が必要です（--metrics に含めてください）。")
+            r_m = ratios["moment_abs"]
+            r_g = ratios["grad_abs"]
+            if r_m is None or r_g is None:
+                raise ValueError("--combine fscore_log2 は --normalize-ref が必須です（比率が必要）。")
+            combined = _compute_f_score_improvement(r_m, r_g, output_mode="log2")
+            combined_label = "improve [log2 OR] (F-score)"
+            combined_title = f"combined=fscore_log2 | integrate over: {integrate_desc}"
 
         # plot & csv
         # 0D
@@ -1359,11 +1472,17 @@ def main():
             for m in metrics:
                 print(f"{m}: integral value: {float(Z_map[m]):.6f}")
             if combined is not None:
-                print(f"combined(logsum) improve[%]: {float(combined):.6f}")
+                if args.combine == "fscore_log2":
+                    print(f"combined(fscore_log2) improve[log2 OR]: {float(combined):.6f}")
+                else:
+                    print(f"combined({args.combine}) improve[%]: {float(combined):.6f}")
             if args.output_csv:
                 out = {m: [float(Z_map[m])] for m in metrics}
                 if combined is not None:
-                    out["combined_improve_pct"] = [float(combined)]
+                    if args.combine == "fscore_log2":
+                        out["combined_improve_log2"] = [float(combined)]
+                    else:
+                        out["combined_improve_pct"] = [float(combined)]
                 pd.DataFrame(out).to_csv(args.output_csv, index=False)
             return 0
 
@@ -1388,7 +1507,10 @@ def main():
                     col = f"{m}_{'improve_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
                     df = _append_value_column(df, col, np.asarray(disp))
                 if combined is not None:
-                    df = _append_value_column(df, "combined_improve_pct", np.asarray(combined))
+                    if args.combine == "fscore_log2":
+                        df = _append_value_column(df, "combined_improve_log2", np.asarray(combined))
+                    else:
+                        df = _append_value_column(df, "combined_improve_pct", np.asarray(combined))
                 df.to_csv(args.output_csv, index=False)
             return 0
 
@@ -1419,10 +1541,14 @@ def main():
                     # 手動指定がある場合は必ず優先（複数回実行で色の意味を揃えるため）
                     vmin_c, vmax_c = hm_vmin, hm_vmax
                 else:
-                    c = np.asarray(combined, dtype=float)
-                    mabs = float(np.nanmax(np.abs(c))) if np.isfinite(c).any() else 0.0
-                    vmin_c = -mabs if mabs > 0.0 else None
-                    vmax_c = +mabs if mabs > 0.0 else None
+                    if args.combine == "fscore_log2":
+                        # log2オッズは固定レンジ（±4 = ±16倍の範囲）
+                        vmin_c, vmax_c = -4.0, +4.0
+                    else:
+                        c = np.asarray(combined, dtype=float)
+                        mabs = float(np.nanmax(np.abs(c))) if np.isfinite(c).any() else 0.0
+                        vmin_c = -mabs if mabs > 0.0 else None
+                        vmax_c = +mabs if mabs > 0.0 else None
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else axes_names[1]
                 cbl_eff = args.colorbar_label if args.colorbar_label is not None else str(combined_label)
@@ -1503,7 +1629,10 @@ def main():
                     col = f"{m}_{'improve_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
                     df = _append_value_column(df, col, disp_out)
                 if combined is not None:
-                    df = _append_value_column(df, "combined_improve_pct", apply_hull_nan(combined))
+                    if args.combine == "fscore_log2":
+                        df = _append_value_column(df, "combined_improve_log2", apply_hull_nan(combined))
+                    else:
+                        df = _append_value_column(df, "combined_improve_pct", apply_hull_nan(combined))
                 df.to_csv(args.output_csv, index=False)
             return 0
 
@@ -1528,8 +1657,8 @@ def main():
         w_m, w_g = float(weights.get("moment_abs", 1.0)), float(weights.get("grad_abs", 1.0))
         w_sum = (w_m + w_g) if (w_m + w_g) != 0.0 else 1.0
 
-        if is_multi and (args.normalize_ref is None) and (args.normalize_as_change_rate or args.combine == "logsum"):
-            raise ValueError("--metrics で増減率/合成(logsum)を扱う場合は --normalize-ref が必須です（比率が必要）。")
+        if is_multi and (args.normalize_ref is None) and (args.normalize_as_change_rate or args.combine in ["logsum", "fscore", "fscore_log2"]):
+            raise ValueError("--metrics で増減率/合成(logsum/fscore)を扱う場合は --normalize-ref が必須です（比率が必要）。")
 
         results = []  # [(upper, {metric: Zk}, viz_axes_k, int_axes_k)]
         for k, up in enumerate(tqdm(uppers, desc="Cumulative integration", leave=True), start=1):
@@ -1561,7 +1690,7 @@ def main():
                 df_out = pd.DataFrame({'upper': [up for up, _, _, _ in results]})
                 for m in metrics:
                     df_out[m] = [float(Zk_map[m]) for _, Zk_map, _, _ in results]
-                if is_multi and args.combine == "logsum":
+                if is_multi and args.combine in ["logsum", "fscore", "fscore_log2"]:
                     # combined improve[%] from ratios (requires normalize_ref)
                     pass  # handled in 1D/2D where ratio exists
                 df_out.to_csv(args.output_csv, index=False)
@@ -1637,8 +1766,8 @@ def main():
                     plt.show()
                 plt.close()
 
-            # combined (logsum) 1D cumulative: produce a final-figure per step overlay
-            if is_multi and args.combine == "logsum":
+            # combined (logsum/fscore) 1D cumulative: produce a final-figure per step overlay
+            if is_multi and args.combine in ["logsum", "fscore", "fscore_log2"]:
                 # need ratios for both metrics
                 ref_m, _ = compute_common_ref("moment_abs")
                 ref_g, _ = compute_common_ref("grad_abs")
@@ -1654,23 +1783,38 @@ def main():
                         ref_spec = parse_normalize_ref(args.normalize_ref)
                         r_m, _, _ = normalize_by_ref_1d(Zm, axes_vals[0], axes_names[0], ref_spec)
                         r_g, _, _ = normalize_by_ref_1d(Zg, axes_vals[0], axes_names[0], ref_spec)
-                    score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
-                    improve_pct = _improve_pct_from_log_ratio(score)
+                    
+                    if args.combine == "logsum":
+                        score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
+                        combined_val = _improve_pct_from_log_ratio(score)
+                        ylabel_default = "improve [%] (1 - geom-mean ratio)"
+                        title_suffix = f"combined=logsum (moment_abs={w_m:g}, grad_abs={w_g:g})"
+                    elif args.combine == "fscore":
+                        combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="linear")
+                        ylabel_default = "improve [%] (F-score linear)"
+                        title_suffix = "combined=fscore"
+                    elif args.combine == "fscore_log2":
+                        combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="log2")
+                        ylabel_default = "improve [log2 OR] (F-score)"
+                        title_suffix = "combined=fscore_log2"
+                    else:
+                        continue
+                    
                     t = 1.0 if i == n - 1 else (i / max(1, n - 1))
                     color = plt.cm.magma(1.0 - t)
                     lw = 3.5 if i == n - 1 else (1.5 + 1.0 * t)
                     alpha = 1.0 if i == n - 1 else 0.6
                     z = 5 if i == n - 1 else (1 + i)
                     plt.plot(
-                        axes_vals[0], improve_pct,
+                        axes_vals[0], combined_val,
                         color=color, lw=lw, alpha=alpha, zorder=z,
                         label=f"{cum_col} upper={up:.3g}",
                     )
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
-                ylab = args.ylabel if args.ylabel is not None else "improve [%] (1 - geom-mean ratio)"
+                ylab = args.ylabel if args.ylabel is not None else ylabel_default
                 plt.xlabel(xlab)
                 plt.ylabel(ylab)
-                title_1d = f"combined=logsum (moment_abs={w_m:g}, grad_abs={w_g:g}) | {integrate_desc}"
+                title_1d = f"{title_suffix} | {integrate_desc}"
                 if not bool(args.no_title):
                     plt.title(title_1d)
                 plt.grid(True, alpha=0.3)
@@ -1709,7 +1853,7 @@ def main():
                                 col_suffix = "ratio"
                         df_out[f"{metric_name}_{col_suffix}_upper_{up:.6g}"] = disp
 
-                if is_multi and args.combine == "logsum":
+                if is_multi and args.combine in ["logsum", "fscore", "fscore_log2"]:
                     # combined columns per upper
                     ref_m, _ = compute_common_ref("moment_abs")
                     ref_g, _ = compute_common_ref("grad_abs")
@@ -1723,8 +1867,20 @@ def main():
                             ref_spec = parse_normalize_ref(args.normalize_ref)
                             r_m, _, _ = normalize_by_ref_1d(Zm, axes_vals[0], axes_names[0], ref_spec)
                             r_g, _, _ = normalize_by_ref_1d(Zg, axes_vals[0], axes_names[0], ref_spec)
-                        score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
-                        df_out[f"combined_improve_pct_upper_{up:.6g}"] = _improve_pct_from_log_ratio(score)
+                        
+                        if args.combine == "logsum":
+                            score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
+                            combined_val = _improve_pct_from_log_ratio(score)
+                            col_name = f"combined_improve_pct_upper_{up:.6g}"
+                        elif args.combine == "fscore":
+                            combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="linear")
+                            col_name = f"combined_improve_pct_upper_{up:.6g}"
+                        elif args.combine == "fscore_log2":
+                            combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="log2")
+                            col_name = f"combined_improve_log2_upper_{up:.6g}"
+                        else:
+                            continue
+                        df_out[col_name] = combined_val
                 df_out.to_csv(args.output_csv, index=False)
         elif len(axes_names) == 2:
             base = args.output_eval or 'effects_cumulative.png'
@@ -1871,7 +2027,7 @@ def main():
                         csv_path = f"{stem}_{metric_name}_upper_{up:.6g}.csv"
                         dump_csv(axes_names, axes_vals, disp_plot, csv_path)
 
-            if is_multi and args.combine == "logsum":
+            if is_multi and args.combine in ["logsum", "fscore", "fscore_log2"]:
                 ref_m, _ = compute_common_ref_2d("moment_abs")
                 ref_g, _ = compute_common_ref_2d("grad_abs")
                 for up, Zk_map, _, _ in results:
@@ -1884,25 +2040,43 @@ def main():
                         ref_spec = parse_normalize_ref(args.normalize_ref)
                         r_m, _, _ = normalize_by_ref_2d(Zm, Xv, Yv, axes_names[0], axes_names[1], ref_spec)
                         r_g, _, _ = normalize_by_ref_2d(Zg, Xv, Yv, axes_names[0], axes_names[1], ref_spec)
-                    score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
-                    improve_pct = _improve_pct_from_log_ratio(score)
-                    improve_plot = apply_hull_nan(improve_pct)
-                    # CSV export for combined (logsum) in cumulative 2D
+                    
+                    if args.combine == "logsum":
+                        score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
+                        combined_val = _improve_pct_from_log_ratio(score)
+                        title_suffix = f"combined=logsum (moment_abs={w_m:g}, grad_abs={w_g:g})"
+                        cbl_default = "improve [%] (1 - geom-mean ratio)"
+                    elif args.combine == "fscore":
+                        combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="linear")
+                        title_suffix = "combined=fscore"
+                        cbl_default = "improve [%] (F-score linear)"
+                    elif args.combine == "fscore_log2":
+                        combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="log2")
+                        title_suffix = "combined=fscore_log2"
+                        cbl_default = "improve [log2 OR] (F-score)"
+                    else:
+                        continue
+                    
+                    improve_plot = apply_hull_nan(combined_val)
+                    # CSV export for combined in cumulative 2D
                     if args.output_csv:
                         csv_path = f"{stem}_combined_upper_{up:.6g}.csv"
                         dump_csv(axes_names, axes_vals, improve_plot, csv_path)
                     if (hm_vmin is not None) and (hm_vmax is not None):
                         vmin_c, vmax_c = hm_vmin, hm_vmax
                     else:
-                        c = np.asarray(improve_plot, dtype=float)
-                        mabs = float(np.nanmax(np.abs(c))) if np.isfinite(c).any() else 0.0
-                        vmin_c = -mabs if mabs > 0.0 else None
-                        vmax_c = +mabs if mabs > 0.0 else None
+                        if args.combine == "fscore_log2":
+                            vmin_c, vmax_c = -4.0, +4.0
+                        else:
+                            c = np.asarray(improve_plot, dtype=float)
+                            mabs = float(np.nanmax(np.abs(c))) if np.isfinite(c).any() else 0.0
+                            vmin_c = -mabs if mabs > 0.0 else None
+                            vmax_c = +mabs if mabs > 0.0 else None
                     out_path = f"{stem}_combined_upper_{up:.6g}{ext}"
-                    title_2d = f"combined=logsum (moment_abs={w_m:g}, grad_abs={w_g:g}) | {cum_col} upper={up:.3g}"
+                    title_2d = f"{title_suffix} | {cum_col} upper={up:.3g}"
                     xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                     ylab = args.ylabel if args.ylabel is not None else axes_names[1]
-                    cbl_eff = args.colorbar_label if args.colorbar_label is not None else "improve [%] (1 - geom-mean ratio)"
+                    cbl_eff = args.colorbar_label if args.colorbar_label is not None else cbl_default
 
                     # optima extraction per upper (combined 2D cumulative)
                     opt = None

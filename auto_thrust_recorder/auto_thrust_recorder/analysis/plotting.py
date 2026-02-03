@@ -55,10 +55,29 @@ def get_custom_rwg_cmap():
     return cmap
 
 
+def get_custom_log2_rwg_cmap():
+    """
+    log2オッズ用の非対称発散カラーマップ（-2=赤 / 0=白 / +10=緑）。
+    使用時は vmin=-2, vmax=+10 を指定することを想定。
+
+    -2〜+10 の範囲で 0 が 1/6 (≈0.1667) の位置に来る。
+    """
+    # vmin=-2, vmax=+10 のとき 0 の位置
+    zero_pos = (0.0 - (-2.0)) / (10.0 - (-2.0))  # 2/12
+    colors = [
+        (0.0, (0.404, 0.0, 0.122)),       # red   at -2
+        (float(zero_pos), (1.0, 1.0, 1.0)),  # white at 0
+        (1.0, (0.0, 0.39, 0.0)),          # green at +10
+    ]
+    cmap = mcolors.LinearSegmentedColormap.from_list("custom_log2_rwg", colors)
+    return cmap
+
+
 # カスタムカラーマップを登録
 plt.colormaps.register(cmap=get_custom_rdbu_cmap(), name="custom_rdbu")
 plt.colormaps.register(cmap=get_custom_improve_cmap(), name="custom_improve")
 plt.colormaps.register(cmap=get_custom_rwg_cmap(), name="custom_rwg")
+plt.colormaps.register(cmap=get_custom_log2_rwg_cmap(), name="custom_log2_rwg")
 
 
 def plot_1d(

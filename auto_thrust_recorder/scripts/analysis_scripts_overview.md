@@ -362,7 +362,10 @@ python3 plot_flow_line_facet.py --input concat_merged.csv \
 - `--viz-range`: 可視化軸の範囲（`col:min,max[:N]`形式、複数可）
 - `--normalize-ref`: 正規化基準点（`col1=val1,col2=val2`形式）
 - `--normalize-as-change-rate`: 正規化を増減率で表示（基準点=0, +0.5=50%増）
-- `--combine`: メトリクス合成方法（`none` / `logsum`、デフォルト: `none`）
+- `--combine`: メトリクス合成方法（`none` / `logsum` / `fscore` / `fscore_log2`、デフォルト: `none`）
+  - `logsum`: 幾何平均型（重み付き幾何平均）
+  - `fscore`: F値型（線形改善率[%]、100%=完全抑制、0%=ベースライン）
+  - `fscore_log2`: F値型（log2オッズ、対称スケール、±4=±16倍の範囲）
 - `--overlay-raw-all`: 2Dヒートマップにraw data点（--fix無視で全点）を重ね描き
 - `--mask-by-convex-hull`: 2Dヒートマップをrawデータ点の凸包でマスク（`all` / `fix`）
 - `--optima`: combined(2D)の準最適集合から複数最適条件を抽出し、図に重ね描き
@@ -582,12 +585,28 @@ python3 postprocess_all.py -j 8 --recreate-corrected
      --output plot.png
    ```
 
-5. **効果解析**:
+5. **効果解析（F値型改善度）**:
    ```bash
+   # 線形改善率[%]
    python3 gpr_effects_analysis.py merged.csv --load-model gpr_moment_ab.pkl \
-     --integrate-over force_z:10.0,25.0:5 \
+     --metrics moment_abs,grad_abs --grad-dims distance \
+     --integrate-over force_z:5.0,12.5:5 --integrate-over distance:0.0,6.20 \
+     --fix wall_spacing=1.60 --fix prop_spacing_x=0.25 --fix prop_spacing_y=0.25 \
      --viz-range alpha:-40.0,40.0:30 --viz-range beta:-40.0,40.0:30 \
-     --output-eval effects.png --output-csv effects.csv
+     --normalize-ref alpha=0.0,beta=0.0 --normalize-as-change-rate \
+     --combine fscore --colormap custom_rwg --heatmap-range="-100,100" \
+     --output-eval effects_fscore.png --output-csv effects_fscore.csv
+   
+   # log2オッズ（対称スケール）
+   python3 gpr_effects_analysis.py merged.csv --load-model gpr_moment_ab.pkl \
+     --metrics moment_abs,grad_abs --grad-dims distance \
+     --integrate-over force_z:5.0,12.5:5 --integrate-over distance:0.0,6.20 \
+     --fix wall_spacing=1.60 --fix prop_spacing_x=0.25 --fix prop_spacing_y=0.25 \
+     --viz-range alpha:-40.0,40.0:30 --viz-range beta:-40.0,40.0:30 \
+     --normalize-ref alpha=0.0,beta=0.0 --normalize-as-change-rate \
+     --combine fscore_log2 --colormap custom_rwg --heatmap-range="-4,4" \
+     --colorbar-label "I_OR [log2]" \
+     --output-eval effects_fscore_log2.png --output-csv effects_fscore_log2.csv
    ```
 
 ---
