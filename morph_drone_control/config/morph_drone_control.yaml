@@ -1,0 +1,65 @@
+/**:
+  ros__parameters:
+    # モータIDのリスト（デフォルト: [2, 3]）
+    motor_ids: [2, 3]
+
+    # 制御スキーム:
+    # - fold_tilt: フォルド角・チルト角スライダから2モータの目標角を逆算して制御
+    # - motor_delta: モータ毎のΔdegスライダ（旧方式）
+    control_scheme: 'fold_tilt'
+    
+    # 原点設定モード: 'startup' または 'fixed'
+    # - startup: ノード起動時の現在位置を原点とする
+    # - fixed: origin_deg_listで指定した値を原点とする
+    origin_mode: 'startup'
+    
+    # 固定原点モード時の原点位置（度）
+    # origin_mode='fixed'の場合に使用
+    origin_deg_list: [0.0, 0.0]
+
+    # fold_tilt 用スライダ範囲（度）
+    fold_slider_min_deg: -90.0
+    fold_slider_max_deg: 90.0
+    tilt_slider_min_deg: -45.0
+    tilt_slider_max_deg: 45.0
+
+    # 機構パラメータ（ユーザ指定）
+    # motor 1回転で fold gear が 0.01923 回転
+    foldgear_rev_per_motor_rev: 0.01923
+    # チルト角 = 1.706 * (fold gear回転数差分) * 360[deg]
+    tilt_gain: 1.706
+    # 実機のチルト符号が逆なら -1.0 にする
+    tilt_sign: -1.0
+    # 差分スケール（チルトが半分くらいに見える場合は 2.0 を試す）
+    tilt_diff_scale: 2.0
+    # モータ回転方向補正（必要なら -1.0 を指定）
+    motor_signs: [1.0, -1.0]
+
+    # motor_delta 用スライダ範囲（度）※control_scheme='motor_delta'時のみ
+    slider_min_deg: -180.0
+    slider_max_deg: 180.0
+    
+    # コマンド送信レート（Hz）
+    publish_rate_hz: 20.0
+    
+    # トピック名（通常は変更不要）
+    command_topic: '/dynamixel/commands/x'
+    state_topic: '/dynamixel/states'
+    
+    # プロファイル速度（度/秒）
+    # スカラー値の場合は全モータに同じ値が適用される
+    # 配列の場合は各モータに個別に設定可能
+    profile_vel_deg_s: 100.0
+    
+    # プロファイル加速度（度/秒^2）
+    # スカラー値の場合は全モータに同じ値が適用される
+    # 配列の場合は各モータに個別に設定可能
+    profile_acc_deg_ss: 200.0
+
+    # デバッグ（motor_commands表示）
+    debug_print_commands: true
+    debug_print_period_s: 0.5
+
+    # 実測（太線）フリッカー対策: 状態が一瞬欠落しても最後の姿勢を保持する時間
+    current_pose_hold_s: 0.6
+
