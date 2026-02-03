@@ -20,11 +20,17 @@ from joblib import load
 from tqdm import tqdm
 
 from auto_thrust_recorder.analysis.metrics import compute_metric_values
-from auto_thrust_recorder.analysis.integration import build_grid, integrate_values
+from auto_thrust_recorder.analysis.integration import (
+    build_grid,
+    integrate_values,
+    trapezoid_weights,
+)
 from auto_thrust_recorder.analysis.plotting import plot_1d, plot_2d, dump_csv
 
 
-def _connected_components_2d(mask: np.ndarray, *, connectivity: int = 8) -> Sequence[np.ndarray]:
+def _connected_components_2d(
+    mask: np.ndarray, *, connectivity: int = 8
+) -> Sequence[np.ndarray]:
     """
     2D bool mask の連結成分を抽出する（SciPy不要）。
     Returns: list of (N,2) int array [iy, ix]
@@ -53,7 +59,12 @@ def _connected_components_2d(mask: np.ndarray, *, connectivity: int = 8) -> Sequ
                 for dy, dx in neigh:
                     nyy = cy + dy
                     nxx = cx + dx
-                    if (0 <= nyy < ny) and (0 <= nxx < nx) and m[nyy, nxx] and (not visited[nyy, nxx]):
+                    if (
+                        (0 <= nyy < ny)
+                        and (0 <= nxx < nx)
+                        and m[nyy, nxx]
+                        and (not visited[nyy, nxx])
+                    ):
                         visited[nyy, nxx] = True
                         stack.append((nyy, nxx))
             comps.append(np.asarray(coords, dtype=int))
@@ -80,7 +91,14 @@ def _optima_2d_from_combined(
         raise ValueError("combined_improve_pct must be 2D")
     finite = np.isfinite(V)
     if not bool(np.any(finite)):
-        return {"mask": None, "threshold": None, "vmax": None, "islands": [], "rep_points": None, "labels": []}
+        return {
+            "mask": None,
+            "threshold": None,
+            "vmax": None,
+            "islands": [],
+            "rep_points": None,
+            "labels": [],
+        }
 
     vals = V[finite]
     vmax = float(np.max(vals))
@@ -103,7 +121,9 @@ def _optima_2d_from_combined(
     Yv = np.asarray(y_vals, dtype=float).reshape(-1)
     if V.shape != (len(Yv), len(Xv)):
         # (ny,nx) を想定
-        raise ValueError(f"shape mismatch: combined={V.shape}, x={len(Xv)}, y={len(Yv)}")
+        raise ValueError(
+            f"shape mismatch: combined={V.shape}, x={len(Xv)}, y={len(Yv)}"
+        )
 
     # step sizes for rough area estimate
     dx = float(np.median(np.abs(np.diff(Xv)))) if len(Xv) >= 2 else 0.0
@@ -143,7 +163,11 @@ def _optima_2d_from_combined(
         rep_y = float(Yv[rep_iy])
         rep_v = float(island_max)
         n_cells = int(comp.shape[0])
-        area = (float(n_cells) * float(cell_area)) if (cell_area is not None) else float(n_cells)
+        area = (
+            (float(n_cells) * float(cell_area))
+            if (cell_area is not None)
+            else float(n_cells)
+        )
         islands.append(
             dict(
                 center_median_x=cx,
@@ -166,7 +190,9 @@ def _optima_2d_from_combined(
     rep_points = None
     labels: list[str] = []
     if islands:
-        rep_points = np.asarray([[d["rep_x"], d["rep_y"]] for d in islands], dtype=float)
+        rep_points = np.asarray(
+            [[d["rep_x"], d["rep_y"]] for d in islands], dtype=float
+        )
         labels = [str(i + 1) for i in range(len(islands))]
 
     return {
@@ -196,6 +222,7 @@ def _format_peak_list_text(
     x_label: str,
     y_label: str,
     max_items: int = 10,
+    value_unit: str = "%",
 ) -> str:
     """
     例:
@@ -209,13 +236,16 @@ def _format_peak_list_text(
     yl = _pretty_axis_symbol(y_label)
     lines = ["Top Improve"]
     n = min(int(max_items) if max_items else len(islands), len(islands))
+    unit = str(value_unit or "").strip()
+    unit = (" " + unit) if unit else ""
     for i in range(n):
         d = islands[i]
         v = float(d.get("rep_value", float("nan")))
         x = float(d.get("rep_x", float("nan")))
         y = float(d.get("rep_y", float("nan")))
-        lines.append(f"{i+1}: {v:.3g} % (at {xl}={x:.3g}, {yl}={y:.3g})")
+        lines.append(f"{i+1}: {v:.3g}{unit} (at {xl}={x:.3g}, {yl}={y:.3g})")
     return "\n".join(lines)
+
 
 def _convex_hull_2d(points_xy: np.ndarray) -> Optional[np.ndarray]:
     """
@@ -259,7 +289,9 @@ def _convex_hull_2d(points_xy: np.ndarray) -> Optional[np.ndarray]:
     return hull
 
 
-def _mask_by_polygon_2d(Z: np.ndarray, x_vals: np.ndarray, y_vals: np.ndarray, poly_xy: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def _mask_by_polygon_2d(
+    Z: np.ndarray, x_vals: np.ndarray, y_vals: np.ndarray, poly_xy: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Z (ny,nx) を polygon 外で NaN にする。
     Returns: (Z_masked, inside_mask[ny,nx])
@@ -385,11 +417,13 @@ def parse_normalize_ref(text: str) -> Dict[str, float]:
     examples: 'prop_spacing_x=0.3,prop_spacing_y=0.3', 'distance=1.0'
     """
     result = {}
-    for item in text.split(','):
+    for item in text.split(","):
         item = item.strip()
-        if '=' not in item:
-            raise ValueError(f"normalize-ref の各項目は 'col=value' 形式で指定してください: '{item}'")
-        col, val = item.split('=', 1)
+        if "=" not in item:
+            raise ValueError(
+                f"normalize-ref の各項目は 'col=value' 形式で指定してください: '{item}'"
+            )
+        col, val = item.split("=", 1)
         result[col.strip()] = float(val.strip())
     return result
 
@@ -416,7 +450,9 @@ def normalize_by_ref_1d(
     actual_val = float(axis_vals[idx])
     ref_z = float(Z.flat[idx])
     if ref_z == 0.0:
-        raise ValueError(f"基準点の値が0です。正規化できません。(ref={actual_val}, Z={ref_z})")
+        raise ValueError(
+            f"基準点の値が0です。正規化できません。(ref={actual_val}, Z={ref_z})"
+        )
     return Z / ref_z, ref_z, {axis_name: actual_val}
 
 
@@ -445,23 +481,26 @@ def normalize_by_ref_2d(
     actual_y = float(y_vals[iy])
     ref_z = float(Z[iy, ix])
     if ref_z == 0.0:
-        raise ValueError(f"基準点の値が0です。正規化できません。(ref=({actual_x}, {actual_y}), Z={ref_z})")
+        raise ValueError(
+            f"基準点の値が0です。正規化できません。(ref=({actual_x}, {actual_y}), Z={ref_z})"
+        )
     return Z / ref_z, ref_z, {x_name: actual_x, y_name: actual_y}
 
 
 def parse_span(text: str) -> Tuple[float, float, int]:
     # format: min,max[:points]
     # examples: '0.5,9.0', '0.5,9.0:300'
-    if ':' in text:
-        rng, pts_str = text.split(':', 1)
+    if ":" in text:
+        rng, pts_str = text.split(":", 1)
         pts = int(pts_str) if pts_str.strip() else 0
     else:
         rng = text
         pts = 0
-    if ',' not in rng:
+    if "," not in rng:
         raise ValueError(f"span '{text}' must be 'min,max[:N]'")
-    lo_str, hi_str = rng.split(',', 1)
-    lo = float(lo_str); hi = float(hi_str)
+    lo_str, hi_str = rng.split(",", 1)
+    lo = float(lo_str)
+    hi = float(hi_str)
     return lo, hi, pts
 
 
@@ -473,13 +512,13 @@ def parse_span_auto(text: str, col: str, df: pd.DataFrame) -> Tuple[float, float
     auto の場合、df[col] の観測 min/max（数値変換後）を使用する。
     """
     # split points
-    if ':' in text:
-        rng, pts_str = text.split(':', 1)
+    if ":" in text:
+        rng, pts_str = text.split(":", 1)
         pts = int(pts_str) if pts_str.strip() else 0
     else:
         rng = text
         pts = 0
-    if ',' not in rng:
+    if "," not in rng:
         raise ValueError(f"span '{text}' must be 'min,max[:N]' (min/max may be 'auto')")
 
     if col not in df.columns:
@@ -487,11 +526,13 @@ def parse_span_auto(text: str, col: str, df: pd.DataFrame) -> Tuple[float, float
     s = pd.to_numeric(df[col], errors="coerce")
     s = s[np.isfinite(s.values)]
     if len(s) == 0:
-        raise ValueError(f"column '{col}' has no finite numeric values; cannot use auto range")
+        raise ValueError(
+            f"column '{col}' has no finite numeric values; cannot use auto range"
+        )
     observed_min = float(s.min())
     observed_max = float(s.max())
 
-    lo_tok, hi_tok = rng.split(',', 1)
+    lo_tok, hi_tok = rng.split(",", 1)
     lo_tok = lo_tok.strip()
     hi_tok = hi_tok.strip()
 
@@ -529,7 +570,9 @@ def _parse_weights(text: Optional[str]) -> Dict[str, float]:
         if not item:
             continue
         if "=" not in item:
-            raise ValueError(f"--weights の各項目は 'name=value' 形式で指定してください: '{item}'")
+            raise ValueError(
+                f"--weights の各項目は 'name=value' 形式で指定してください: '{item}'"
+            )
         k, v = item.split("=", 1)
         raw[k.strip().lower()] = float(v.strip())
 
@@ -626,25 +669,23 @@ def _f_score_to_improve_log2(f: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 
 
 def _compute_f_score_improvement(
-    r_m: np.ndarray, 
-    r_s: np.ndarray, 
-    output_mode: str = "linear"
+    r_m: np.ndarray, r_s: np.ndarray, output_mode: str = "linear"
 ) -> np.ndarray:
     """
     比率からF値型改善度を計算。
-    
+
     Args:
         r_m: 積分モーメント比率 M_abs(ω) / M_abs(ω_ref)
         r_s: 距離感度比率 S_abs(ω) / S_abs(ω_ref)
         output_mode: "linear" | "log2" | "odds"
-    
+
     Returns:
         改善度（output_modeに応じた形式）
     """
     p_m = _ratio_to_quality(r_m)
     p_s = _ratio_to_quality(r_s)
     f = _harmonic_mean(p_m, p_s)
-    
+
     if output_mode == "linear":
         return _f_score_to_improve_linear(f)
     elif output_mode == "log2":
@@ -655,11 +696,25 @@ def _compute_f_score_improvement(
         raise ValueError(f"Unknown output_mode: {output_mode}")
 
 
+def _ratio_to_log2_odds_like(ratio: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """
+    比率 ratio（value / value_ref, 小さいほど良いで改善）を、
+    fscore_log2 と同様の「0中心・改善が正・悪化が負」になる log2 表示に変換する。
+
+    品質 P = 1/(1+ratio) の log2オッズは
+      log2(P/(1-P)) = log2(1/ratio) = -log2(ratio)
+    """
+    r = np.asarray(ratio, dtype=float)
+    r = np.clip(r, eps, np.inf)
+    return -np.log2(r)
+
+
 class _SimpleStandardScaler:
     """
     torch.save(weights_only=True) で読める dict 形式の StandardScaler を復元するための簡易実装。
     sklearn が無い環境でも最低限 transform できるようにする。
     """
+
     def __init__(self, payload: dict):
         self.with_mean = bool(payload.get("with_mean", True))
         self.with_std = bool(payload.get("with_std", True))
@@ -710,6 +765,7 @@ def _try_import_torch_gpytorch():
     try:
         import torch  # type: ignore
         import gpytorch  # type: ignore
+
         return torch, gpytorch
     except Exception:
         return None, None
@@ -718,7 +774,9 @@ def _try_import_torch_gpytorch():
 def _load_torch_bundle(path: str, trust: bool):
     torch, _ = _try_import_torch_gpytorch()
     if torch is None:
-        raise RuntimeError("torch が import できません。gpytorchモデルを読むには torch/gpytorch が必要です。")
+        raise RuntimeError(
+            "torch が import できません。gpytorchモデルを読むには torch/gpytorch が必要です。"
+        )
     # PyTorch 2.6+: weights_only の既定が True になったため、明示指定して挙動を安定化
     try:
         bundle = torch.load(path, map_location="cpu", weights_only=True)
@@ -775,6 +833,7 @@ class _ScaledPredictor:
     compute_metric_values は X をそのまま有限差分して model.predict(X) を呼ぶので、
     X は「元の特徴量空間」で渡し、predict 内側で scaler.transform を適用する。
     """
+
     def __init__(self, model, scaler=None):
         self.model = model
         self.scaler = scaler
@@ -792,7 +851,9 @@ def build_gpytorch_wrapper_from_bundle(bundle: dict, device_str: str = "auto"):
     """
     torch, gpytorch = _try_import_torch_gpytorch()
     if torch is None or gpytorch is None:
-        raise RuntimeError("torch/gpytorch が import できません。gpytorchモデルを読むにはインストールが必要です。")
+        raise RuntimeError(
+            "torch/gpytorch が import できません。gpytorchモデルを読むにはインストールが必要です。"
+        )
 
     device = _select_torch_device(device_str)
     if device is None:
@@ -808,7 +869,7 @@ def build_gpytorch_wrapper_from_bundle(bundle: dict, device_str: str = "auto"):
 
     ard = n_features if bool(bundle.get("anisotropic", False)) else None
     kernel = bundle.get("kernel", "rbf")
-    use_linear = (kernel == "rbf_linear")
+    use_linear = kernel == "rbf_linear"
     matern_nu = float(bundle.get("matern_nu", 1.5) or 1.5)
 
     class _SVGPModel(gpytorch.models.ApproximateGP):
@@ -820,7 +881,11 @@ def build_gpytorch_wrapper_from_bundle(bundle: dict, device_str: str = "auto"):
             matern_nu=1.5,
             use_linear=False,
         ):
-            variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(inducing_points.size(0))
+            variational_distribution = (
+                gpytorch.variational.CholeskyVariationalDistribution(
+                    inducing_points.size(0)
+                )
+            )
             variational_strategy = gpytorch.variational.VariationalStrategy(
                 self,
                 inducing_points,
@@ -831,7 +896,9 @@ def build_gpytorch_wrapper_from_bundle(bundle: dict, device_str: str = "auto"):
 
             self.mean_module = gpytorch.means.ConstantMean()
             if (kernel_type or "rbf") == "matern":
-                base_kernel = gpytorch.kernels.MaternKernel(nu=float(matern_nu), ard_num_dims=ard_num_dims)
+                base_kernel = gpytorch.kernels.MaternKernel(
+                    nu=float(matern_nu), ard_num_dims=ard_num_dims
+                )
             else:
                 # rbf / rbf_linear などは rbf として扱う
                 base_kernel = gpytorch.kernels.RBFKernel(ard_num_dims=ard_num_dims)
@@ -850,6 +917,7 @@ def build_gpytorch_wrapper_from_bundle(bundle: dict, device_str: str = "auto"):
         GPyTorch SVGP を sklearn の API に寄せた薄いラッパ。
         - predict(X, return_std=True) -> (mean, std) / mean
         """
+
         def __init__(
             self,
             model,
@@ -882,8 +950,13 @@ def build_gpytorch_wrapper_from_bundle(bundle: dict, device_str: str = "auto"):
             means = []
             stds = []
             with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                for i in tqdm(range(0, n, bs), desc="GPyTorch predict", leave=False, disable=(n <= bs)):
-                    xb = torch.from_numpy(X_np[i:i+bs]).to(self.device)
+                for i in tqdm(
+                    range(0, n, bs),
+                    desc="GPyTorch predict",
+                    leave=False,
+                    disable=(n <= bs),
+                ):
+                    xb = torch.from_numpy(X_np[i : i + bs]).to(self.device)
                     pred = self.likelihood(self.model(xb))
                     m = pred.mean
                     # 正規化yを元スケールへ
@@ -924,7 +997,7 @@ def build_gpytorch_wrapper_from_bundle(bundle: dict, device_str: str = "auto"):
 
 def main():
     p = argparse.ArgumentParser(
-        description='GPR effects analysis (integrated metrics).',
+        description="GPR effects analysis (integrated metrics).",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=(
             "例:\n"
@@ -944,56 +1017,208 @@ def main():
             "    --output-eval out.png --output-csv out.csv\n"
         ),
     )
-    p.add_argument('csv_file', help='参照CSV（範囲推定に使用）')
-    p.add_argument('--load-model', required=True, help='モデル（joblib保存 or torch.save(gpytorch)）')
-    p.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto', help='gpytorchモデルの推論デバイス')
-    p.add_argument('--trust-model', type=str, default='f', help="torch.load の安全ロード失敗時のみ使用。信頼できるモデルなら 't'。")
-    p.add_argument('--metric', choices=['moment_abs', 'grad_abs'], default='moment_abs', help='単一メトリクス（後方互換）')
-    p.add_argument('--metrics', type=str, default=None, help="複数メトリクスを同時評価（カンマ区切り）。例: 'moment_abs,grad_abs'。指定時は --metric より優先。")
-    p.add_argument('--grad-dims', type=str, default=None, help='grad_absで偏微分する軸（カンマ区切り）')
-    p.add_argument('--grad-norm', choices=['l1', 'l2'], default='l2')
-    p.add_argument('--fd-step', action='append', default=None, help="有限差分ステップ 'col:h' を複数指定可")
-    p.add_argument('--integrate-over', action='append', required=True, help="積分軸と範囲 'col:min,max[:N]' を複数指定可（min/maxに 'auto' 可）")
-    p.add_argument('--fix', action='append', default=None, help="固定値 'col=value' 複数可")
-    p.add_argument('--overlay-raw', action='store_true', help='2Dヒートマップに raw data 点（--fixで絞り込み）を重ね描きする')
-    p.add_argument('--overlay-raw-all', action='store_true', help='2Dヒートマップに raw data 点（--fix無視で全点）を重ね描きする')
+    p.add_argument("csv_file", help="参照CSV（範囲推定に使用）")
     p.add_argument(
-        '--mask-by-convex-hull',
-        nargs='?',
-        const='all',
+        "--load-model",
+        required=True,
+        help="モデル（joblib保存 or torch.save(gpytorch)）",
+    )
+    p.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="gpytorchモデルの推論デバイス",
+    )
+    p.add_argument(
+        "--trust-model",
+        type=str,
+        default="f",
+        help="torch.load の安全ロード失敗時のみ使用。信頼できるモデルなら 't'。",
+    )
+    p.add_argument(
+        "--metric",
+        choices=["moment_abs", "grad_abs", "peak_to_peak", "peak_to_peak_d"],
+        default="moment_abs",
+        help="単一メトリクス（後方互換）。peak_to_peak: Ω全域の(max-min), peak_to_peak_d: Fzごとにd方向(max-min)→Fzで平均。",
+    )
+    p.add_argument(
+        "--metrics",
+        type=str,
         default=None,
-        choices=['all', 'fix'],
+        help="複数メトリクスを同時評価（カンマ区切り）。例: 'moment_abs,grad_abs'。指定時は --metric より優先。",
+    )
+    p.add_argument(
+        "--grad-dims",
+        type=str,
+        default=None,
+        help="grad_absで偏微分する軸（カンマ区切り）",
+    )
+    p.add_argument("--grad-norm", choices=["l1", "l2"], default="l2")
+    p.add_argument(
+        "--fd-step",
+        action="append",
+        default=None,
+        help="有限差分ステップ 'col:h' を複数指定可",
+    )
+    p.add_argument(
+        "--integrate-over",
+        action="append",
+        required=True,
+        help="積分軸と範囲 'col:min,max[:N]' を複数指定可（min/maxに 'auto' 可）",
+    )
+    p.add_argument(
+        "--fix", action="append", default=None, help="固定値 'col=value' 複数可"
+    )
+    p.add_argument(
+        "--overlay-raw",
+        action="store_true",
+        help="2Dヒートマップに raw data 点（--fixで絞り込み）を重ね描きする",
+    )
+    p.add_argument(
+        "--overlay-raw-all",
+        action="store_true",
+        help="2Dヒートマップに raw data 点（--fix無視で全点）を重ね描きする",
+    )
+    p.add_argument(
+        "--mask-by-convex-hull",
+        nargs="?",
+        const="all",
+        default=None,
+        choices=["all", "fix"],
         help="2Dヒートマップをrawデータ点の凸包でマスクする。'all'は全点、'fix'は--fix適用後の点。凸包外はNaN。",
     )
-    p.add_argument('--fix-tol', type=float, default=1e-3, help='--fix の一致判定許容誤差（abs(x - value) <= tol）')
-    p.add_argument('--viz-range', action='append', default=None, help="可視化軸の範囲 'col:min,max[:N]' 複数可（min/maxに 'auto' 可）")
-    p.add_argument('--viz-points', type=int, default=100, help='可視化軸デフォルト分解能')
-    p.add_argument('--output-eval', type=str, default=None)
-    p.add_argument('--output-csv', type=str, default=None)
-    p.add_argument('--cumulative-over', type=str, default=None, help="累積積分の軸と分割数 'col:splits'（同軸の [min, partial] を順次評価）")
-    p.add_argument('--normalize-ref', type=str, default=None, help="正規化基準点 'col1=val1,col2=val2'（その点の値で全体を割る）")
-    p.add_argument('--normalize-ref-per-step', action='store_true', help="cumulative モードで各ステップごとに独立に正規化する（--normalize-ref と併用）")
-    p.add_argument('--normalize-as-change-rate', action='store_true', help="正規化を増減率で表示（基準点=0, +0.5=50%%増, -0.5=50%%減）")
-    p.add_argument('--combine', choices=['none', 'logsum', 'fscore', 'fscore_log2'], default='none', help="--metrics 使用時の合成方法。logsum: 幾何平均型, fscore: F値型（線形%）, fscore_log2: F値型（log2オッズ）")
-    p.add_argument('--weights', type=str, default=None, help="--combine logsum の重み。例: 'moment_abs=1,grad_abs=1'（moment/grad/m/g も可）")
-    p.add_argument('--heatmap-range', type=str, default=None, help="ヒートマップの値範囲 'min,max'（normalize後の単位で指定）")
-    p.add_argument('--colormap', type=str, default='viridis', help="カラーマップ名（例: viridis, magma, plasma, inferno, cividis）")
-    p.add_argument('--transparent', type=str, default='f', help="画像出力(--output-eval)を透過背景で保存する場合は 't'。")
-    p.add_argument('--no-title', action='store_true', help='プロットのタイトルを表示しない')
-    p.add_argument('--no-colorbar', action='store_true', help='2Dプロットのカラーバーを表示しない')
-    p.add_argument('--xlabel', type=str, default=None, help='X軸ラベルを上書き（未指定なら列名）')
-    p.add_argument('--ylabel', type=str, default=None, help='Y軸ラベルを上書き（未指定なら列名）')
-    p.add_argument('--colorbar-label', type=str, default=None, help='2Dカラーバー表記を上書き（未指定なら自動）')
-    p.add_argument('--verbose', action='store_true', help='詳細ログを出力')
+    p.add_argument(
+        "--fix-tol",
+        type=float,
+        default=1e-3,
+        help="--fix の一致判定許容誤差（abs(x - value) <= tol）",
+    )
+    p.add_argument(
+        "--viz-range",
+        action="append",
+        default=None,
+        help="可視化軸の範囲 'col:min,max[:N]' 複数可（min/maxに 'auto' 可）",
+    )
+    p.add_argument(
+        "--viz-points", type=int, default=100, help="可視化軸デフォルト分解能"
+    )
+    p.add_argument("--output-eval", type=str, default=None)
+    p.add_argument("--output-csv", type=str, default=None)
+    p.add_argument(
+        "--cumulative-over",
+        type=str,
+        default=None,
+        help="累積積分の軸と分割数 'col:splits'（同軸の [min, partial] を順次評価）",
+    )
+    p.add_argument(
+        "--normalize-ref",
+        type=str,
+        default=None,
+        help="正規化基準点 'col1=val1,col2=val2'（その点の値で全体を割る）",
+    )
+    p.add_argument(
+        "--normalize-ref-per-step",
+        action="store_true",
+        help="cumulative モードで各ステップごとに独立に正規化する（--normalize-ref と併用）",
+    )
+    p.add_argument(
+        "--normalize-as-change-rate",
+        action="store_true",
+        help="正規化を増減率で表示（基準点=0, +0.5=50%%増, -0.5=50%%減）",
+    )
+    p.add_argument(
+        "--normalize-as-log2",
+        action="store_true",
+        help="正規化比率 ratio=value/value_ref を log2(1/ratio)=-log2(ratio) で表示（0が基準、改善が正、悪化が負）。--normalize-ref が必須。",
+    )
+    p.add_argument(
+        "--combine",
+        choices=["none", "logsum", "fscore", "fscore_log2"],
+        default="none",
+        help="--metrics 使用時の合成方法。logsum: 幾何平均型, fscore: F値型（線形%）, fscore_log2: F値型（log2オッズ）",
+    )
+    p.add_argument(
+        "--weights",
+        type=str,
+        default=None,
+        help="--combine logsum の重み。例: 'moment_abs=1,grad_abs=1'（moment/grad/m/g も可）",
+    )
+    p.add_argument(
+        "--heatmap-range",
+        type=str,
+        default=None,
+        help="ヒートマップの値範囲 'min,max'（normalize後の単位で指定）",
+    )
+    p.add_argument(
+        "--colormap",
+        type=str,
+        default="viridis",
+        help="カラーマップ名（例: viridis, magma, plasma, inferno, cividis）",
+    )
+    p.add_argument(
+        "--transparent",
+        type=str,
+        default="f",
+        help="画像出力(--output-eval)を透過背景で保存する場合は 't'。",
+    )
+    p.add_argument(
+        "--no-title", action="store_true", help="プロットのタイトルを表示しない"
+    )
+    p.add_argument(
+        "--no-colorbar", action="store_true", help="2Dプロットのカラーバーを表示しない"
+    )
+    p.add_argument(
+        "--xlabel", type=str, default=None, help="X軸ラベルを上書き（未指定なら列名）"
+    )
+    p.add_argument(
+        "--ylabel", type=str, default=None, help="Y軸ラベルを上書き（未指定なら列名）"
+    )
+    p.add_argument(
+        "--colorbar-label",
+        type=str,
+        default=None,
+        help="2Dカラーバー表記を上書き（未指定なら自動）",
+    )
+    p.add_argument("--verbose", action="store_true", help="詳細ログを出力")
 
     # near-optimal set / multiple optima extraction (combined 2D)
-    p.add_argument('--optima', action='store_true', help='combined(2D)の準最適集合(top-pct)から複数最適条件を抽出し、図に重ね描きする')
+    p.add_argument(
+        "--optima",
+        action="store_true",
+        help="combined(2D)の準最適集合(top-pct)から複数最適条件を抽出し、図に重ね描きする",
+    )
     # argparse の help は '%' を内部でフォーマットするので '%%' にエスケープが必要
-    p.add_argument('--optima-top-pct', type=float, default=5.0, help='準最適集合の上位割合[%%]（default: 5.0）')
-    p.add_argument('--optima-delta', type=float, default=None, help='maxからの許容幅[%%]（指定時は --optima-top-pct より優先）')
-    p.add_argument('--optima-connectivity', type=int, choices=[4, 8], default=8, help='島の連結判定（4 or 8）')
-    p.add_argument('--optima-max-islands', type=int, default=10, help='出力する島（最適条件）の最大数')
-    p.add_argument('--output-optima-csv', type=str, default=None, help='抽出した複数最適条件のCSV出力先（combined 2D時）')
+    p.add_argument(
+        "--optima-top-pct",
+        type=float,
+        default=5.0,
+        help="準最適集合の上位割合[%%]（default: 5.0）",
+    )
+    p.add_argument(
+        "--optima-delta",
+        type=float,
+        default=None,
+        help="maxからの許容幅[%%]（指定時は --optima-top-pct より優先）",
+    )
+    p.add_argument(
+        "--optima-connectivity",
+        type=int,
+        choices=[4, 8],
+        default=8,
+        help="島の連結判定（4 or 8）",
+    )
+    p.add_argument(
+        "--optima-max-islands",
+        type=int,
+        default=10,
+        help="出力する島（最適条件）の最大数",
+    )
+    p.add_argument(
+        "--output-optima-csv",
+        type=str,
+        default=None,
+        help="抽出した複数最適条件のCSV出力先（combined 2D時）",
+    )
 
     args = p.parse_args()
 
@@ -1001,23 +1226,47 @@ def main():
         if args.verbose:
             print(*a, **k)
 
+    # normalize mode validation
+    if bool(args.normalize_as_change_rate) and bool(args.normalize_as_log2):
+        raise ValueError(
+            "--normalize-as-change-rate と --normalize-as-log2 は同時に指定できません。"
+        )
+    if bool(args.normalize_as_log2) and (args.normalize_ref is None):
+        raise ValueError(
+            "--normalize-as-log2 を使うには --normalize-ref が必須です（比率が必要）。"
+        )
+
     def maybe_title(s: str) -> str:
         return "" if bool(args.no_title) else (s or "")
 
-    transparent = str(getattr(args, "transparent", "f") or "f").strip().lower() in {"t", "true", "1", "yes", "y"}
+    transparent = str(getattr(args, "transparent", "f") or "f").strip().lower() in {
+        "t",
+        "true",
+        "1",
+        "yes",
+        "y",
+    }
 
     # backend
-    if (not os.environ.get('DISPLAY')) or args.output_eval:
+    if (not os.environ.get("DISPLAY")) or args.output_eval:
         try:
-            matplotlib.use('Agg', force=True)
+            matplotlib.use("Agg", force=True)
         except Exception:
             pass
 
     # load model bundle
-    vlog('[load] model bundle:', args.load_model)
-    trust = str(args.trust_model or "f").strip().lower() in {"t", "true", "1", "yes", "y"}
-    backend, loaded_obj, scaler, feature_names = load_model_any(args.load_model, trust=trust)
-    vlog('[load] backend:', backend)
+    vlog("[load] model bundle:", args.load_model)
+    trust = str(args.trust_model or "f").strip().lower() in {
+        "t",
+        "true",
+        "1",
+        "yes",
+        "y",
+    }
+    backend, loaded_obj, scaler, feature_names = load_model_any(
+        args.load_model, trust=trust
+    )
+    vlog("[load] backend:", backend)
     if backend == "gpytorch":
         if not isinstance(loaded_obj, dict):
             raise RuntimeError("gpytorch モデルの形式が不正です（dictを期待）。")
@@ -1027,24 +1276,26 @@ def main():
     else:
         model = loaded_obj
     if not feature_names:
-        raise RuntimeError('feature_columns がモデルに含まれていません。')
+        raise RuntimeError("feature_columns がモデルに含まれていません。")
     predictor = _ScaledPredictor(model=model, scaler=scaler)
 
     # read CSV for range reference
-    vlog('[csv] read:', args.csv_file)
+    vlog("[csv] read:", args.csv_file)
     df = pd.read_csv(args.csv_file)
-    vlog('[csv] rows:', len(df))
+    vlog("[csv] rows:", len(df))
 
     # parse fixes
     fixes: Dict[str, float] = {}
     if args.fix:
         for item in args.fix:
-            if '=' not in item:
+            if "=" not in item:
                 continue
-            c, v = item.split('=', 1)
+            c, v = item.split("=", 1)
             fixes[c.strip()] = float(v)
 
-    def select_raw_points_2d(x_col: str, y_col: str, *, ignore_fix: bool = False) -> Optional[np.ndarray]:
+    def select_raw_points_2d(
+        x_col: str, y_col: str, *, ignore_fix: bool = False
+    ) -> Optional[np.ndarray]:
         """
         raw data を 2D散布点 (N,2) として返す。
         - ignore_fix=False の場合: --fix 条件で絞り込み
@@ -1080,12 +1331,12 @@ def main():
 
     # parse integrate spec
     integrate_spec = {}
-    vlog('[integrate] specs:', args.integrate_over)
-    for it in (args.integrate_over or []):
-        if ':' not in it:
+    vlog("[integrate] specs:", args.integrate_over)
+    for it in args.integrate_over or []:
+        if ":" not in it:
             continue
-        col, span = it.split(':', 1)
-        if ',' not in span:
+        col, span = it.split(":", 1)
+        if "," not in span:
             continue
         lo, hi, pts = parse_span_auto(span, col.strip(), df)
         if pts <= 0:
@@ -1095,12 +1346,12 @@ def main():
     # parse visualize spec (remaining non-fixed, non-integrated axes)
     viz_spec = {}
     if args.viz_range:
-        vlog('[viz] ranges:', args.viz_range)
+        vlog("[viz] ranges:", args.viz_range)
         for it in args.viz_range:
-            if ':' not in it:
+            if ":" not in it:
                 continue
-            col, span = it.split(':', 1)
-            if ',' not in span:
+            col, span = it.split(":", 1)
+            if "," not in span:
                 continue
             lo, hi, pts = parse_span_auto(span, col.strip(), df)
             if pts <= 0:
@@ -1108,12 +1359,17 @@ def main():
             viz_spec[col.strip()] = (lo, hi, pts)
     else:
         # default: choose one remaining axis if any, spanning observed range
-        remaining = [c for c in feature_names if c not in fixes and c not in integrate_spec]
+        remaining = [
+            c for c in feature_names if c not in fixes and c not in integrate_spec
+        ]
         if remaining:
             c = remaining[0]
-            lo = float(df[c].min()); hi = float(df[c].max())
+            lo = float(df[c].min())
+            hi = float(df[c].max())
             viz_spec[c] = (lo, hi, args.viz_points)
-            vlog('[viz] default axis:', c, 'range=', (lo, hi), 'points=', args.viz_points)
+            vlog(
+                "[viz] default axis:", c, "range=", (lo, hi), "points=", args.viz_points
+            )
 
     def align_Z_to_axes(Z: np.ndarray, axes_names, viz_axes) -> np.ndarray:
         """
@@ -1132,23 +1388,104 @@ def main():
     fd_steps = {}
     if args.fd_step:
         for it in args.fd_step:
-            if ':' not in it:
+            if ":" not in it:
                 continue
-            c, h = it.split(':', 1)
+            c, h = it.split(":", 1)
             fd_steps[c.strip()] = float(h)
 
     def compute_and_integrate(integrate_spec_local, metric_name: str):
-        vlog('[grid] build with integrate_spec:', integrate_spec_local)
-        X, viz_axes, int_axes = build_grid(feature_names, integrate_spec_local, fixes, viz_spec)
+        vlog("[grid] build with integrate_spec:", integrate_spec_local)
+        X, viz_axes, int_axes = build_grid(
+            feature_names, integrate_spec_local, fixes, viz_spec
+        )
         shape = (len(X), len(feature_names))
-        vlog('[grid] X shape:', shape)
-        vlog('[grid] visualize axes:', {k: len(v) for k, v in viz_axes.items()})
-        vlog('[grid] integrate axes:', {k: len(v) for k, v in int_axes.items()})
+        vlog("[grid] X shape:", shape)
+        vlog("[grid] visualize axes:", {k: len(v) for k, v in viz_axes.items()})
+        vlog("[grid] integrate axes:", {k: len(v) for k, v in int_axes.items()})
         # 重要: 勾配(有限差分)は「元の特徴量空間」で取るので、ここではスケーリングしない。
         # predict 内側で scaler.transform を適用する（_ScaledPredictor）。
-        vlog('[scale] applied inside predict:', scaler is not None)
-        grad_dims = [c.strip() for c in args.grad_dims.split(',')] if args.grad_dims else None
-        vlog('[metric] type:', metric_name, 'grad_dims=', grad_dims, 'grad_norm=', args.grad_norm)
+        vlog("[scale] applied inside predict:", scaler is not None)
+        grad_dims = (
+            [c.strip() for c in args.grad_dims.split(",")] if args.grad_dims else None
+        )
+        vlog(
+            "[metric] type:",
+            metric_name,
+            "grad_dims=",
+            grad_dims,
+            "grad_norm=",
+            args.grad_norm,
+        )
+
+        # --- peak-to-peak metrics (reduction over integrate axes) ---
+        # peak_to_peak は「積分」ではなく max/min の縮約なので、compute_metric_values + integrate_values は使わない。
+        if metric_name in {"peak_to_peak", "peak_to_peak_d"}:
+            y = predictor.predict(X, return_std=False)
+            values = np.asarray(y, dtype=float).ravel()
+
+            # reshape to full grid (axis order == feature_names)
+            full_shape = [
+                (
+                    len(viz_axes[c])
+                    if c in viz_axes
+                    else (len(int_axes[c]) if c in int_axes else 1)
+                )
+                for c in feature_names
+            ]
+            V = values.reshape(full_shape)
+
+            if metric_name == "peak_to_peak":
+                # a) Ω全域（積分軸すべて）で max-min
+                Vmax = V
+                Vmin = V
+                for idx in reversed(range(len(feature_names))):
+                    c = feature_names[idx]
+                    if c in int_axes:
+                        Vmax = np.nanmax(Vmax, axis=idx)
+                        Vmin = np.nanmin(Vmin, axis=idx)
+                V_out = Vmax - Vmin
+            else:
+                # b) Fzごとに d 方向で max-min → 残りの積分軸（例: force_z）で台形則「平均」
+                dist_col = "distance"
+                if dist_col not in int_axes:
+                    raise ValueError(
+                        f"{metric_name} は --integrate-over に '{dist_col}' が必要です。"
+                    )
+                idx_dist = int(feature_names.index(dist_col))
+
+                # reduce along distance only
+                Vmax_d = np.nanmax(V, axis=idx_dist)
+                Vmin_d = np.nanmin(V, axis=idx_dist)
+                Vwork = Vmax_d - Vmin_d
+
+                # fold remaining integrate axes by trapezoidal average (keep unit as moment)
+                names2 = [c for i, c in enumerate(feature_names) if i != idx_dist]
+                for idx in reversed(range(len(names2))):
+                    c = names2[idx]
+                    if (c in int_axes) and (c != dist_col):
+                        arr = np.asarray(int_axes[c], dtype=float).reshape(-1)
+                        n = int(len(arr))
+                        if n <= 0:
+                            continue
+                        span = float(arr[-1] - arr[0]) if n >= 2 else 1.0
+                        w = trapezoid_weights(n, span)
+                        ws = float(np.sum(w))
+                        w = (w / ws) if ws != 0.0 else w
+                        Vwork = np.tensordot(Vwork, w, axes=(idx, 0))
+                V_out = Vwork
+
+            vis_shape = tuple(len(viz_axes[c]) for c in feature_names if c in viz_axes)
+            Z = np.asarray(V_out, dtype=float).reshape(vis_shape)
+            vlog(
+                "[metric] peak_to_peak: min=",
+                float(np.nanmin(Z)),
+                "max=",
+                float(np.nanmax(Z)),
+                "mean=",
+                float(np.nanmean(Z)),
+            )
+            return Z, viz_axes, int_axes
+
         values = compute_metric_values(
             model=predictor,
             X=X,
@@ -1158,9 +1495,16 @@ def main():
             grad_norm=args.grad_norm,
             fd_steps=fd_steps,
         )
-        vlog('[metric] values: min=', float(np.min(values)), 'max=', float(np.max(values)), 'mean=', float(np.mean(values)))
+        vlog(
+            "[metric] values: min=",
+            float(np.min(values)),
+            "max=",
+            float(np.max(values)),
+            "mean=",
+            float(np.mean(values)),
+        )
         Z, _ = integrate_values(values, feature_names, viz_axes, int_axes)
-        vlog('[integrate] result shape:', Z.shape)
+        vlog("[integrate] result shape:", Z.shape)
         return Z, viz_axes, int_axes
 
     def _base_out_paths(base_path: Optional[str], suffix: str) -> Optional[str]:
@@ -1177,19 +1521,25 @@ def main():
             ext = ".csv"
         return f"{stem}_{suffix}{ext}"
 
-    def _grid_dataframe(axes_names: Sequence[str], axes_vals: Sequence[np.ndarray]) -> pd.DataFrame:
+    def _grid_dataframe(
+        axes_names: Sequence[str], axes_vals: Sequence[np.ndarray]
+    ) -> pd.DataFrame:
         if len(axes_names) == 0:
             return pd.DataFrame({})
         if len(axes_names) == 1:
             return pd.DataFrame({axes_names[0]: axes_vals[0]})
         if len(axes_names) == 2:
             Xg, Yg = np.meshgrid(axes_vals[0], axes_vals[1])
-            return pd.DataFrame({axes_names[0]: Xg.reshape(-1), axes_names[1]: Yg.reshape(-1)})
-        grid_axes = np.meshgrid(*axes_vals, indexing='xy')
+            return pd.DataFrame(
+                {axes_names[0]: Xg.reshape(-1), axes_names[1]: Yg.reshape(-1)}
+            )
+        grid_axes = np.meshgrid(*axes_vals, indexing="xy")
         data = {axes_names[i]: grid_axes[i].reshape(-1) for i in range(len(axes_names))}
         return pd.DataFrame(data)
 
-    def _append_value_column(df_base: pd.DataFrame, col_name: str, grid: np.ndarray) -> pd.DataFrame:
+    def _append_value_column(
+        df_base: pd.DataFrame, col_name: str, grid: np.ndarray
+    ) -> pd.DataFrame:
         df = df_base.copy()
         df[col_name] = np.asarray(grid).reshape(-1)
         return df
@@ -1197,12 +1547,15 @@ def main():
     # cumulative option
     cumulative = None
     if args.cumulative_over:
-        if ':' not in args.cumulative_over:
+        if ":" not in args.cumulative_over:
             raise ValueError("--cumulative-over は 'col:splits' 形式で指定してください")
-        cum_col, cum_splits_s = args.cumulative_over.split(':', 1)
-        cum_col = cum_col.strip(); cum_splits = int(cum_splits_s)
+        cum_col, cum_splits_s = args.cumulative_over.split(":", 1)
+        cum_col = cum_col.strip()
+        cum_splits = int(cum_splits_s)
         if cum_col not in integrate_spec:
-            raise ValueError(f"--cumulative-over の軸 '{cum_col}' は --integrate-over に含まれていません")
+            raise ValueError(
+                f"--cumulative-over の軸 '{cum_col}' は --integrate-over に含まれていません"
+            )
         if cum_splits <= 0:
             raise ValueError("--cumulative-over の分割数は正の整数で指定してください")
         cumulative = (cum_col, cum_splits)
@@ -1211,7 +1564,9 @@ def main():
         metrics = _parse_metrics_list(args.metrics, fallback=args.metric)
         is_multi = (args.metrics is not None) and (len(metrics) >= 2)
         weights = _parse_weights(args.weights)
-        w_m, w_g = float(weights.get("moment_abs", 1.0)), float(weights.get("grad_abs", 1.0))
+        w_m, w_g = float(weights.get("moment_abs", 1.0)), float(
+            weights.get("grad_abs", 1.0)
+        )
         w_sum = (w_m + w_g) if (w_m + w_g) != 0.0 else 1.0
 
         Z_map: Dict[str, np.ndarray] = {}
@@ -1226,11 +1581,25 @@ def main():
         assert viz_axes is not None and int_axes is not None
         axes_names = list(viz_axes.keys())
         axes_vals = [viz_axes[k] for k in axes_names]
-        integrate_desc_parts = [f"{col} [{arr[0]:.3g}, {arr[-1]:.3g}], N={len(arr)}" for col, arr in int_axes.items()]
-        integrate_desc = "; ".join(integrate_desc_parts) if integrate_desc_parts else "(none)"
+        integrate_desc_parts = [
+            f"{col} [{arr[0]:.3g}, {arr[-1]:.3g}], N={len(arr)}"
+            for col, arr in int_axes.items()
+        ]
+        integrate_desc = (
+            "; ".join(integrate_desc_parts) if integrate_desc_parts else "(none)"
+        )
 
-        if is_multi and (args.normalize_ref is None) and (args.normalize_as_change_rate or args.combine in ["logsum", "fscore", "fscore_log2"]):
-            raise ValueError("--metrics で増減率/合成(logsum/fscore)を扱う場合は --normalize-ref が必須です（比率が必要）。")
+        if (
+            is_multi
+            and (args.normalize_ref is None)
+            and (
+                args.normalize_as_change_rate
+                or args.combine in ["logsum", "fscore", "fscore_log2"]
+            )
+        ):
+            raise ValueError(
+                "--metrics で増減率/合成(logsum/fscore)を扱う場合は --normalize-ref が必須です（比率が必要）。"
+            )
 
         # helper: build ratio & display grid for each metric
         def build_display(metric_name: str):
@@ -1247,9 +1616,15 @@ def main():
                 title = title_base
                 if args.normalize_ref:
                     ref_spec = parse_normalize_ref(args.normalize_ref)
-                    ratio, ref_z, actual_ref = normalize_by_ref_1d(Z_1d, axes_vals[0], axes_names[0], ref_spec)
+                    ratio, ref_z, actual_ref = normalize_by_ref_1d(
+                        Z_1d, axes_vals[0], axes_names[0], ref_spec
+                    )
                     ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref.items())
-                    if args.normalize_as_change_rate:
+                    if args.normalize_as_log2:
+                        disp = _ratio_to_log2_odds_like(ratio)
+                        ylabel = "log2(1/ratio)"
+                        title = f"{title_base}\n(log2(1/ratio) from ref: {ref_desc}, value={ref_z:.4g})"
+                    elif args.normalize_as_change_rate:
                         disp = (1.0 - ratio) * 100.0
                         ylabel = "improve [%]"
                         title = f"{title_base}\n(improve [%] from ref: {ref_desc}, value={ref_z:.4g})"
@@ -1272,9 +1647,15 @@ def main():
                 cbl = "integral"
                 if args.normalize_ref:
                     ref_spec = parse_normalize_ref(args.normalize_ref)
-                    ratio, ref_z, actual_ref = normalize_by_ref_2d(Z_plot0, Xv, Yv, axes_names[0], axes_names[1], ref_spec)
+                    ratio, ref_z, actual_ref = normalize_by_ref_2d(
+                        Z_plot0, Xv, Yv, axes_names[0], axes_names[1], ref_spec
+                    )
                     ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref.items())
-                    if args.normalize_as_change_rate:
+                    if args.normalize_as_log2:
+                        disp = _ratio_to_log2_odds_like(ratio)
+                        cbl = "log2(1/ratio)"
+                        title = f"{title_base}\n(log2(1/ratio) from ref: {ref_desc}, value={ref_z:.4g})"
+                    elif args.normalize_as_change_rate:
                         disp = (1.0 - ratio) * 100.0
                         cbl = "improve [%]"
                         title = f"{title_base}\n(improve [%] from ref: {ref_desc}, value={ref_z:.4g})"
@@ -1292,23 +1673,37 @@ def main():
         overlay = None
         if len(axes_names) == 2:
             if args.overlay_raw_all:
-                overlay = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=True)
+                overlay = select_raw_points_2d(
+                    axes_names[0], axes_names[1], ignore_fix=True
+                )
             elif args.overlay_raw:
-                overlay = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=False)
+                overlay = select_raw_points_2d(
+                    axes_names[0], axes_names[1], ignore_fix=False
+                )
 
         # convex-hull mask (2D only): outside hull -> NaN
         hull_inside_mask = None
         hull_desc = None
         if len(axes_names) == 2 and args.mask_by_convex_hull:
             src = str(args.mask_by_convex_hull).strip().lower()
-            ignore_fix = (src == "all")
-            pts_hull = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=ignore_fix)
+            ignore_fix = src == "all"
+            pts_hull = select_raw_points_2d(
+                axes_names[0], axes_names[1], ignore_fix=ignore_fix
+            )
             hull = _convex_hull_2d(pts_hull) if pts_hull is not None else None
 
             # debug: always show hull inputs when verbose
             if args.verbose:
                 n_pts = 0 if pts_hull is None else int(np.asarray(pts_hull).shape[0])
-                print("[hull] axes:", axes_names[0], axes_names[1], "| src=", src, "| ignore_fix=", bool(ignore_fix))
+                print(
+                    "[hull] axes:",
+                    axes_names[0],
+                    axes_names[1],
+                    "| src=",
+                    src,
+                    "| ignore_fix=",
+                    bool(ignore_fix),
+                )
                 print("[hull] pts_hull bbox:", _bbox_str_xy(pts_hull))
                 print("[hull] pts_hull n:", n_pts)
                 # raw points unique list (all)
@@ -1327,24 +1722,46 @@ def main():
                 if args.verbose:
                     try:
                         path = _make_closed_path(np.asarray(hull, dtype=float))
-                        inside_pts = path.contains_points(np.asarray(pts_hull, dtype=float)) if path is not None else None
+                        inside_pts = (
+                            path.contains_points(np.asarray(pts_hull, dtype=float))
+                            if path is not None
+                            else None
+                        )
                         if inside_pts is None:
                             raise RuntimeError("failed to build closed Path for hull")
                         inside_pts = np.asarray(inside_pts, dtype=bool)
                         n_in = int(np.sum(inside_pts))
                         n_all = int(len(inside_pts))
-                        print("[hull] axes:", axes_names[0], axes_names[1], "| src=", src)
+                        print(
+                            "[hull] axes:", axes_names[0], axes_names[1], "| src=", src
+                        )
                         print("[hull] pts_hull bbox:", _bbox_str_xy(pts_hull))
-                        print("[hull] hull vertices:", int(np.asarray(hull).shape[0]), "bbox:", _bbox_str_xy(hull))
+                        print(
+                            "[hull] hull vertices:",
+                            int(np.asarray(hull).shape[0]),
+                            "bbox:",
+                            _bbox_str_xy(hull),
+                        )
                         # hull vertices list (all)
-                        _print_points_block("[hull]", "hull vertices (x,y)", np.asarray(hull, dtype=float))
+                        _print_points_block(
+                            "[hull]",
+                            "hull vertices (x,y)",
+                            np.asarray(hull, dtype=float),
+                        )
                         print(
                             "[hull] pts_hull inside hull:",
                             f"{n_in}/{n_all}",
                             f"({(100.0 * n_in / max(1, n_all)):.3g}%)",
                         )
-                        grid_bbox = _bbox_str_xy(np.stack([Xv0.reshape(-1), Yv0.reshape(-1)], axis=1))
-                        print("[hull] grid centers bbox:", grid_bbox, "grid_shape=", (len(Yv0), len(Xv0)))
+                        grid_bbox = _bbox_str_xy(
+                            np.stack([Xv0.reshape(-1), Yv0.reshape(-1)], axis=1)
+                        )
+                        print(
+                            "[hull] grid centers bbox:",
+                            grid_bbox,
+                            "grid_shape=",
+                            (len(Yv0), len(Xv0)),
+                        )
                         if hull_inside_mask is not None:
                             n_grid_in = int(np.sum(hull_inside_mask))
                             n_grid = int(hull_inside_mask.size)
@@ -1370,10 +1787,13 @@ def main():
         # heatmap range (shared)
         hm_vmin, hm_vmax = None, None
         if args.heatmap_range:
-            parts = args.heatmap_range.split(',')
+            parts = args.heatmap_range.split(",")
             if len(parts) == 2:
                 hm_vmin = float(parts[0].strip())
                 hm_vmax = float(parts[1].strip())
+        elif args.normalize_as_log2:
+            # fscore_log2 と同様の見た目にするため、デフォルトレンジを設定（必要なら --heatmap-range で上書き）
+            hm_vmin, hm_vmax = -4.0, +4.0
 
         # build CSV base
         df_base = _grid_dataframe(axes_names, axes_vals)
@@ -1386,24 +1806,51 @@ def main():
                 print(f"Integrate over: {integrate_desc}")
                 print(f"integral value: {float(disp):.6f}")
                 if args.output_csv:
-                    pd.DataFrame({"value": [float(disp)]}).to_csv(args.output_csv, index=False)
+                    pd.DataFrame({"value": [float(disp)]}).to_csv(
+                        args.output_csv, index=False
+                    )
             elif len(axes_names) == 1:
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else str(ylab_or_cbl)
-                plot_1d(xlab, axes_vals[0], np.asarray(disp), maybe_title(title), args.output_eval, ylabel=ylab, transparent=transparent)
+                plot_1d(
+                    xlab,
+                    axes_vals[0],
+                    np.asarray(disp),
+                    maybe_title(title),
+                    args.output_eval,
+                    ylabel=ylab,
+                    transparent=transparent,
+                )
                 if args.output_csv:
-                    dump_csv(axes_names, axes_vals, np.asarray(disp).reshape(Z_map[m].shape), args.output_csv)
+                    dump_csv(
+                        axes_names,
+                        axes_vals,
+                        np.asarray(disp).reshape(Z_map[m].shape),
+                        args.output_csv,
+                    )
             elif len(axes_names) == 2:
                 Xv, Yv = xy
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else axes_names[1]
-                cbl = args.colorbar_label if args.colorbar_label is not None else str(ylab_or_cbl)
+                cbl = (
+                    args.colorbar_label
+                    if args.colorbar_label is not None
+                    else str(ylab_or_cbl)
+                )
                 disp_plot = apply_hull_nan(disp)
                 title_eff = title if not hull_desc else f"{title}\n(mask: {hull_desc})"
                 plot_2d(
-                    xlab, ylab, Xv, Yv, disp_plot,
-                    maybe_title(title_eff), args.output_eval,
-                    overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
+                    xlab,
+                    ylab,
+                    Xv,
+                    Yv,
+                    disp_plot,
+                    maybe_title(title_eff),
+                    args.output_eval,
+                    overlay_points=overlay,
+                    vmin=hm_vmin,
+                    vmax=hm_vmax,
+                    cmap=args.colormap,
                     colorbar_label=cbl,
                     show_colorbar=(not bool(args.no_colorbar)),
                     transparent=transparent,
@@ -1411,7 +1858,9 @@ def main():
                 if args.output_csv:
                     dump_csv(axes_names, axes_vals, disp_plot, args.output_csv)
             else:
-                print(f"可視化軸が3以上のため図は出力しません。CSVで出力します。axes={axes_names}")
+                print(
+                    f"可視化軸が3以上のため図は出力しません。CSVで出力します。axes={axes_names}"
+                )
                 if args.output_csv:
                     dump_csv(axes_names, axes_vals, Z_map[m], args.output_csv)
             return 0
@@ -1433,11 +1882,15 @@ def main():
         combined_label = None
         if args.combine == "logsum":
             if ("moment_abs" not in ratios) or ("grad_abs" not in ratios):
-                raise ValueError("--combine logsum は moment_abs と grad_abs の両方が必要です（--metrics に含めてください）。")
+                raise ValueError(
+                    "--combine logsum は moment_abs と grad_abs の両方が必要です（--metrics に含めてください）。"
+                )
             r_m = ratios["moment_abs"]
             r_g = ratios["grad_abs"]
             if r_m is None or r_g is None:
-                raise ValueError("--combine logsum は --normalize-ref が必須です（比率が必要）。")
+                raise ValueError(
+                    "--combine logsum は --normalize-ref が必須です（比率が必要）。"
+                )
             score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
             # 通常の改善率[%] = (1 - 幾何平均比率) * 100（小さいほど良い前提で、改善ほどプラス）
             improve_pct = _improve_pct_from_log_ratio(score)
@@ -1446,21 +1899,29 @@ def main():
             combined_title = f"combined=logsum (weights: moment_abs={w_m:g}, grad_abs={w_g:g}) | integrate over: {integrate_desc}"
         elif args.combine == "fscore":
             if ("moment_abs" not in ratios) or ("grad_abs" not in ratios):
-                raise ValueError("--combine fscore は moment_abs と grad_abs の両方が必要です（--metrics に含めてください）。")
+                raise ValueError(
+                    "--combine fscore は moment_abs と grad_abs の両方が必要です（--metrics に含めてください）。"
+                )
             r_m = ratios["moment_abs"]
             r_g = ratios["grad_abs"]
             if r_m is None or r_g is None:
-                raise ValueError("--combine fscore は --normalize-ref が必須です（比率が必要）。")
+                raise ValueError(
+                    "--combine fscore は --normalize-ref が必須です（比率が必要）。"
+                )
             combined = _compute_f_score_improvement(r_m, r_g, output_mode="linear")
             combined_label = "improve [%] (F-score linear)"
             combined_title = f"combined=fscore | integrate over: {integrate_desc}"
         elif args.combine == "fscore_log2":
             if ("moment_abs" not in ratios) or ("grad_abs" not in ratios):
-                raise ValueError("--combine fscore_log2 は moment_abs と grad_abs の両方が必要です（--metrics に含めてください）。")
+                raise ValueError(
+                    "--combine fscore_log2 は moment_abs と grad_abs の両方が必要です（--metrics に含めてください）。"
+                )
             r_m = ratios["moment_abs"]
             r_g = ratios["grad_abs"]
             if r_m is None or r_g is None:
-                raise ValueError("--combine fscore_log2 は --normalize-ref が必須です（比率が必要）。")
+                raise ValueError(
+                    "--combine fscore_log2 は --normalize-ref が必須です（比率が必要）。"
+                )
             combined = _compute_f_score_improvement(r_m, r_g, output_mode="log2")
             combined_label = "improve [log2 OR] (F-score)"
             combined_title = f"combined=fscore_log2 | integrate over: {integrate_desc}"
@@ -1473,7 +1934,9 @@ def main():
                 print(f"{m}: integral value: {float(Z_map[m]):.6f}")
             if combined is not None:
                 if args.combine == "fscore_log2":
-                    print(f"combined(fscore_log2) improve[log2 OR]: {float(combined):.6f}")
+                    print(
+                        f"combined(fscore_log2) improve[log2 OR]: {float(combined):.6f}"
+                    )
                 else:
                     print(f"combined({args.combine}) improve[%]: {float(combined):.6f}")
             if args.output_csv:
@@ -1493,24 +1956,62 @@ def main():
                 out_path = _base_out_paths(args.output_eval, m)
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab_eff = args.ylabel if args.ylabel is not None else str(ylab)
-                plot_1d(xlab, axes_vals[0], np.asarray(disp), maybe_title(title), out_path, ylabel=ylab_eff, transparent=transparent)
+                plot_1d(
+                    xlab,
+                    axes_vals[0],
+                    np.asarray(disp),
+                    maybe_title(title),
+                    out_path,
+                    ylabel=ylab_eff,
+                    transparent=transparent,
+                )
             if combined is not None:
                 out_path = _base_out_paths(args.output_eval, "combined")
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
-                ylab_eff = args.ylabel if args.ylabel is not None else str(combined_label)
-                plot_1d(xlab, axes_vals[0], np.asarray(combined), maybe_title(combined_title), out_path, ylabel=ylab_eff, transparent=transparent)
+                ylab_eff = (
+                    args.ylabel if args.ylabel is not None else str(combined_label)
+                )
+                plot_1d(
+                    xlab,
+                    axes_vals[0],
+                    np.asarray(combined),
+                    maybe_title(combined_title),
+                    out_path,
+                    ylabel=ylab_eff,
+                    transparent=transparent,
+                )
             if args.output_csv:
                 df = df_base
                 # store change rate if requested else ratio if normalized else raw
                 for m in metrics:
                     disp, _title, _ylab, _xy = displays[m]
-                    col = f"{m}_{'improve_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
+                    col = f"{m}_{'log2' if args.normalize_as_log2 else ('improve_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value'))}"
                     df = _append_value_column(df, col, np.asarray(disp))
+                    # also store sub-indicators used for combine (ratio / log2 odds / quality)
+                    r = ratios.get(m)
+                    if r is not None:
+                        df = _append_value_column(
+                            df, f"{m}_ratio_for_combine", np.asarray(r)
+                        )
+                        df = _append_value_column(
+                            df,
+                            f"{m}_log2_odds_for_combine",
+                            _ratio_to_log2_odds_like(np.asarray(r)),
+                        )
+                        df = _append_value_column(
+                            df,
+                            f"{m}_quality_for_combine",
+                            _ratio_to_quality(np.asarray(r)),
+                        )
                 if combined is not None:
                     if args.combine == "fscore_log2":
-                        df = _append_value_column(df, "combined_improve_log2", np.asarray(combined))
+                        df = _append_value_column(
+                            df, "combined_improve_log2", np.asarray(combined)
+                        )
                     else:
-                        df = _append_value_column(df, "combined_improve_pct", np.asarray(combined))
+                        df = _append_value_column(
+                            df, "combined_improve_pct", np.asarray(combined)
+                        )
                 df.to_csv(args.output_csv, index=False)
             return 0
 
@@ -1522,13 +2023,23 @@ def main():
                 Xv, Yv = xy
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else axes_names[1]
-                cbl_eff = args.colorbar_label if args.colorbar_label is not None else str(cbl)
+                cbl_eff = (
+                    args.colorbar_label if args.colorbar_label is not None else str(cbl)
+                )
                 disp_plot = apply_hull_nan(disp)
                 title_eff = title if not hull_desc else f"{title}\n(mask: {hull_desc})"
                 plot_2d(
-                    xlab, ylab, Xv, Yv, disp_plot,
-                    maybe_title(title_eff), out_path,
-                    overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
+                    xlab,
+                    ylab,
+                    Xv,
+                    Yv,
+                    disp_plot,
+                    maybe_title(title_eff),
+                    out_path,
+                    overlay_points=overlay,
+                    vmin=hm_vmin,
+                    vmax=hm_vmax,
+                    cmap=args.colormap,
                     colorbar_label=cbl_eff,
                     show_colorbar=(not bool(args.no_colorbar)),
                     transparent=transparent,
@@ -1546,12 +2057,18 @@ def main():
                         vmin_c, vmax_c = -4.0, +4.0
                     else:
                         c = np.asarray(combined, dtype=float)
-                        mabs = float(np.nanmax(np.abs(c))) if np.isfinite(c).any() else 0.0
+                        mabs = (
+                            float(np.nanmax(np.abs(c))) if np.isfinite(c).any() else 0.0
+                        )
                         vmin_c = -mabs if mabs > 0.0 else None
                         vmax_c = +mabs if mabs > 0.0 else None
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                 ylab = args.ylabel if args.ylabel is not None else axes_names[1]
-                cbl_eff = args.colorbar_label if args.colorbar_label is not None else str(combined_label)
+                cbl_eff = (
+                    args.colorbar_label
+                    if args.colorbar_label is not None
+                    else str(combined_label)
+                )
 
                 # optima extraction (near-optimal set) for combined 2D
                 opt = None
@@ -1561,13 +2078,19 @@ def main():
                         np.asarray(Xv, dtype=float),
                         np.asarray(Yv, dtype=float),
                         top_pct=float(args.optima_top_pct),
-                        delta=(None if args.optima_delta is None else float(args.optima_delta)),
+                        delta=(
+                            None
+                            if args.optima_delta is None
+                            else float(args.optima_delta)
+                        ),
                         connectivity=int(args.optima_connectivity),
                         max_islands=int(args.optima_max_islands),
                     )
                     islands = opt.get("islands", []) if isinstance(opt, dict) else []
                     if islands:
-                        print(f"[optima] combined 2D: method={opt.get('method')} threshold={opt.get('threshold'):.6g} vmax={opt.get('vmax'):.6g} islands={len(islands)}")
+                        print(
+                            f"[optima] combined 2D: method={opt.get('method')} threshold={opt.get('threshold'):.6g} vmax={opt.get('vmax'):.6g} islands={len(islands)}"
+                        )
                         for i, d in enumerate(islands, start=1):
                             print(
                                 f"  #{i}: rep=({float(d['rep_x']):.6g}, {float(d['rep_y']):.6g}) "
@@ -1597,26 +2120,51 @@ def main():
                             df_opt.to_csv(args.output_optima_csv, index=False)
 
                 combined_plot = apply_hull_nan(combined)
-                title_eff = combined_title if not hull_desc else f"{combined_title}\n(mask: {hull_desc})"
+                title_eff = (
+                    combined_title
+                    if not hull_desc
+                    else f"{combined_title}\n(mask: {hull_desc})"
+                )
                 corner_text = ""
                 if opt and isinstance(opt, dict) and opt.get("islands"):
+                    unit = "log2" if args.combine == "fscore_log2" else "%"
                     corner_text = _format_peak_list_text(
                         opt.get("islands", []),
                         x_label=xlab,
                         y_label=ylab,
                         max_items=int(args.optima_max_islands),
+                        value_unit=unit,
                     )
                 # combined は従来 custom_improve 固定だったが、--colormap が明示された場合はそれを優先する
-                cmap_combined = args.colormap if str(args.colormap) != "viridis" else "custom_improve"
+                cmap_combined = (
+                    args.colormap
+                    if str(args.colormap) != "viridis"
+                    else "custom_improve"
+                )
                 plot_2d(
-                    xlab, ylab, Xv, Yv, combined_plot,
-                    maybe_title(title_eff), out_path,
+                    xlab,
+                    ylab,
+                    Xv,
+                    Yv,
+                    combined_plot,
+                    maybe_title(title_eff),
+                    out_path,
                     overlay_points=overlay,
-                    contour_mask=(None if (not opt or opt.get("mask") is None) else opt.get("mask")),
-                    mark_points=(None if (not opt or opt.get("rep_points") is None) else opt.get("rep_points")),
+                    contour_mask=(
+                        None
+                        if (not opt or opt.get("mask") is None)
+                        else opt.get("mask")
+                    ),
+                    mark_points=(
+                        None
+                        if (not opt or opt.get("rep_points") is None)
+                        else opt.get("rep_points")
+                    ),
                     mark_labels=(None if (not opt) else opt.get("labels")),
                     corner_text=corner_text,
-                    vmin=vmin_c, vmax=vmax_c, cmap=cmap_combined,
+                    vmin=vmin_c,
+                    vmax=vmax_c,
+                    cmap=cmap_combined,
                     colorbar_label=cbl_eff,
                     show_colorbar=(not bool(args.no_colorbar)),
                     transparent=transparent,
@@ -1626,18 +2174,39 @@ def main():
                 for m in metrics:
                     disp, _title, _cbl, _xy = displays[m]
                     disp_out = apply_hull_nan(disp)
-                    col = f"{m}_{'improve_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
+                    col = f"{m}_{'log2' if args.normalize_as_log2 else ('improve_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value'))}"
                     df = _append_value_column(df, col, disp_out)
+                    # also store sub-indicators used for combine (ratio / log2 odds / quality)
+                    r = ratios.get(m)
+                    if r is not None:
+                        r_out = apply_hull_nan(r)
+                        df = _append_value_column(df, f"{m}_ratio_for_combine", r_out)
+                        df = _append_value_column(
+                            df,
+                            f"{m}_log2_odds_for_combine",
+                            apply_hull_nan(_ratio_to_log2_odds_like(r_out)),
+                        )
+                        df = _append_value_column(
+                            df,
+                            f"{m}_quality_for_combine",
+                            apply_hull_nan(_ratio_to_quality(r_out)),
+                        )
                 if combined is not None:
                     if args.combine == "fscore_log2":
-                        df = _append_value_column(df, "combined_improve_log2", apply_hull_nan(combined))
+                        df = _append_value_column(
+                            df, "combined_improve_log2", apply_hull_nan(combined)
+                        )
                     else:
-                        df = _append_value_column(df, "combined_improve_pct", apply_hull_nan(combined))
+                        df = _append_value_column(
+                            df, "combined_improve_pct", apply_hull_nan(combined)
+                        )
                 df.to_csv(args.output_csv, index=False)
             return 0
 
         # >=3D
-        print(f"可視化軸が3以上のため図は出力しません。CSVで出力します。axes={axes_names}")
+        print(
+            f"可視化軸が3以上のため図は出力しません。CSVで出力します。axes={axes_names}"
+        )
         if args.output_csv:
             df = df_base
             for m in metrics:
@@ -1649,23 +2218,45 @@ def main():
         if pts <= 0:
             pts = 200
         uppers = [lo + (hi - lo) * (k / splits) for k in range(1, splits + 1)]
-        vlog('[cumulative] axis:', cum_col, 'range=', (lo, hi), 'splits=', splits, 'uppers=', uppers)
+        vlog(
+            "[cumulative] axis:",
+            cum_col,
+            "range=",
+            (lo, hi),
+            "splits=",
+            splits,
+            "uppers=",
+            uppers,
+        )
 
         metrics = _parse_metrics_list(args.metrics, fallback=args.metric)
         is_multi = (args.metrics is not None) and (len(metrics) >= 2)
         weights = _parse_weights(args.weights)
-        w_m, w_g = float(weights.get("moment_abs", 1.0)), float(weights.get("grad_abs", 1.0))
+        w_m, w_g = float(weights.get("moment_abs", 1.0)), float(
+            weights.get("grad_abs", 1.0)
+        )
         w_sum = (w_m + w_g) if (w_m + w_g) != 0.0 else 1.0
 
-        if is_multi and (args.normalize_ref is None) and (args.normalize_as_change_rate or args.combine in ["logsum", "fscore", "fscore_log2"]):
-            raise ValueError("--metrics で増減率/合成(logsum/fscore)を扱う場合は --normalize-ref が必須です（比率が必要）。")
+        if (
+            is_multi
+            and (args.normalize_ref is None)
+            and (
+                args.normalize_as_change_rate
+                or args.combine in ["logsum", "fscore", "fscore_log2"]
+            )
+        ):
+            raise ValueError(
+                "--metrics で増減率/合成(logsum/fscore)を扱う場合は --normalize-ref が必須です（比率が必要）。"
+            )
 
         results = []  # [(upper, {metric: Zk}, viz_axes_k, int_axes_k)]
-        for k, up in enumerate(tqdm(uppers, desc="Cumulative integration", leave=True), start=1):
+        for k, up in enumerate(
+            tqdm(uppers, desc="Cumulative integration", leave=True), start=1
+        ):
             spec_k = dict(integrate_spec)
             pts_k = max(2, int(np.ceil(pts * (k / splits))))
             spec_k[cum_col] = (lo, up, pts_k)
-            vlog('[cumulative] step', k, 'upper=', up, 'points=', pts_k)
+            vlog("[cumulative] step", k, "upper=", up, "points=", pts_k)
             Zk_map: Dict[str, np.ndarray] = {}
             viz_axes_k = None
             int_axes_k = None
@@ -1687,7 +2278,7 @@ def main():
                 for m in metrics:
                     print(f"  upper={up:.6g}: {m} value={float(Zk_map[m]):.6f}")
             if args.output_csv:
-                df_out = pd.DataFrame({'upper': [up for up, _, _, _ in results]})
+                df_out = pd.DataFrame({"upper": [up for up, _, _, _ in results]})
                 for m in metrics:
                     df_out[m] = [float(Zk_map[m]) for _, Zk_map, _, _ in results]
                 if is_multi and args.combine in ["logsum", "fscore", "fscore_log2"]:
@@ -1704,7 +2295,10 @@ def main():
                 ref_spec = parse_normalize_ref(args.normalize_ref)
                 # 最終結果から基準値（比率の分母）を取る
                 _, ref_z_common, actual_ref_common = normalize_by_ref_1d(
-                    results[-1][1][metric_name].reshape(-1), axes_vals[0], axes_names[0], ref_spec
+                    results[-1][1][metric_name].reshape(-1),
+                    axes_vals[0],
+                    axes_names[0],
+                    ref_spec,
                 )
                 return ref_z_common, actual_ref_common
 
@@ -1712,7 +2306,7 @@ def main():
             for metric_name in metrics:
                 ref_z_common, actual_ref_common = compute_common_ref(metric_name)
                 plt.figure(figsize=(10, 6))
-                plt.rcParams.update({'font.size': 16})
+                plt.rcParams.update({"font.size": 16})
                 for i, (up, Zk_map, _, _) in enumerate(results):
                     Z_1d = Zk_map[metric_name].reshape(-1)
                     if ref_z_common is not None:
@@ -1728,7 +2322,10 @@ def main():
                         disp = Z_1d
                         ylabel = "integral"
                     else:
-                        if args.normalize_as_change_rate:
+                        if args.normalize_as_log2:
+                            disp = _ratio_to_log2_odds_like(ratio)
+                            ylabel = "log2(1/ratio)"
+                        elif args.normalize_as_change_rate:
                             disp = (1.0 - ratio) * 100.0
                             ylabel = "improve [%]"
                         else:
@@ -1741,8 +2338,12 @@ def main():
                     alpha = 1.0 if i == n - 1 else 0.6
                     z = 5 if i == n - 1 else (1 + i)
                     plt.plot(
-                        axes_vals[0], disp,
-                        color=color, lw=lw, alpha=alpha, zorder=z,
+                        axes_vals[0],
+                        disp,
+                        color=color,
+                        lw=lw,
+                        alpha=alpha,
+                        zorder=z,
                         label=f"{cum_col} upper={up:.3g}",
                     )
 
@@ -1752,16 +2353,27 @@ def main():
                 plt.ylabel(ylab)
                 title_1d = f"metric={metric_name} | {integrate_desc}"
                 if actual_ref_common is not None:
-                    ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref_common.items())
+                    ref_desc = ", ".join(
+                        f"{k}={v:.4g}" for k, v in actual_ref_common.items()
+                    )
                     title_1d = f"{title_1d}\n(common ref: {ref_desc}, value={ref_z_common:.4g})"
                 if not bool(args.no_title):
                     plt.title(title_1d)
                 plt.grid(True, alpha=0.3)
                 plt.legend()
                 plt.tight_layout()
-                out_path = _base_out_paths(args.output_eval, metric_name) if args.output_eval else None
+                out_path = (
+                    _base_out_paths(args.output_eval, metric_name)
+                    if args.output_eval
+                    else None
+                )
                 if out_path:
-                    plt.savefig(out_path, dpi=300, bbox_inches='tight', transparent=bool(transparent))
+                    plt.savefig(
+                        out_path,
+                        dpi=300,
+                        bbox_inches="tight",
+                        transparent=bool(transparent),
+                    )
                 else:
                     plt.show()
                 plt.close()
@@ -1772,7 +2384,7 @@ def main():
                 ref_m, _ = compute_common_ref("moment_abs")
                 ref_g, _ = compute_common_ref("grad_abs")
                 plt.figure(figsize=(10, 6))
-                plt.rcParams.update({'font.size': 16})
+                plt.rcParams.update({"font.size": 16})
                 for i, (up, Zk_map, _, _) in enumerate(results):
                     Zm = Zk_map["moment_abs"].reshape(-1)
                     Zg = Zk_map["grad_abs"].reshape(-1)
@@ -1781,33 +2393,49 @@ def main():
                         r_g = Zg / ref_g
                     else:
                         ref_spec = parse_normalize_ref(args.normalize_ref)
-                        r_m, _, _ = normalize_by_ref_1d(Zm, axes_vals[0], axes_names[0], ref_spec)
-                        r_g, _, _ = normalize_by_ref_1d(Zg, axes_vals[0], axes_names[0], ref_spec)
-                    
+                        r_m, _, _ = normalize_by_ref_1d(
+                            Zm, axes_vals[0], axes_names[0], ref_spec
+                        )
+                        r_g, _, _ = normalize_by_ref_1d(
+                            Zg, axes_vals[0], axes_names[0], ref_spec
+                        )
+
                     if args.combine == "logsum":
-                        score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
+                        score = (
+                            w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)
+                        ) / w_sum
                         combined_val = _improve_pct_from_log_ratio(score)
                         ylabel_default = "improve [%] (1 - geom-mean ratio)"
-                        title_suffix = f"combined=logsum (moment_abs={w_m:g}, grad_abs={w_g:g})"
+                        title_suffix = (
+                            f"combined=logsum (moment_abs={w_m:g}, grad_abs={w_g:g})"
+                        )
                     elif args.combine == "fscore":
-                        combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="linear")
+                        combined_val = _compute_f_score_improvement(
+                            r_m, r_g, output_mode="linear"
+                        )
                         ylabel_default = "improve [%] (F-score linear)"
                         title_suffix = "combined=fscore"
                     elif args.combine == "fscore_log2":
-                        combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="log2")
+                        combined_val = _compute_f_score_improvement(
+                            r_m, r_g, output_mode="log2"
+                        )
                         ylabel_default = "improve [log2 OR] (F-score)"
                         title_suffix = "combined=fscore_log2"
                     else:
                         continue
-                    
+
                     t = 1.0 if i == n - 1 else (i / max(1, n - 1))
                     color = plt.cm.magma(1.0 - t)
                     lw = 3.5 if i == n - 1 else (1.5 + 1.0 * t)
                     alpha = 1.0 if i == n - 1 else 0.6
                     z = 5 if i == n - 1 else (1 + i)
                     plt.plot(
-                        axes_vals[0], combined_val,
-                        color=color, lw=lw, alpha=alpha, zorder=z,
+                        axes_vals[0],
+                        combined_val,
+                        color=color,
+                        lw=lw,
+                        alpha=alpha,
+                        zorder=z,
                         label=f"{cum_col} upper={up:.3g}",
                     )
                 xlab = args.xlabel if args.xlabel is not None else axes_names[0]
@@ -1820,9 +2448,18 @@ def main():
                 plt.grid(True, alpha=0.3)
                 plt.legend()
                 plt.tight_layout()
-                out_path = _base_out_paths(args.output_eval, "combined") if args.output_eval else None
+                out_path = (
+                    _base_out_paths(args.output_eval, "combined")
+                    if args.output_eval
+                    else None
+                )
                 if out_path:
-                    plt.savefig(out_path, dpi=300, bbox_inches='tight', transparent=bool(transparent))
+                    plt.savefig(
+                        out_path,
+                        dpi=300,
+                        bbox_inches="tight",
+                        transparent=bool(transparent),
+                    )
                 else:
                     plt.show()
                 plt.close()
@@ -1838,14 +2475,19 @@ def main():
                             ratio = Z_1d / ref_z_common
                         elif args.normalize_ref and per_step_normalize:
                             ref_spec = parse_normalize_ref(args.normalize_ref)
-                            ratio, _, _ = normalize_by_ref_1d(Z_1d, axes_vals[0], axes_names[0], ref_spec)
+                            ratio, _, _ = normalize_by_ref_1d(
+                                Z_1d, axes_vals[0], axes_names[0], ref_spec
+                            )
                         else:
                             ratio = None
                         if ratio is None:
                             disp = Z_1d
                             col_suffix = "value"
                         else:
-                            if args.normalize_as_change_rate:
+                            if args.normalize_as_log2:
+                                disp = _ratio_to_log2_odds_like(ratio)
+                                col_suffix = "log2"
+                            elif args.normalize_as_change_rate:
                                 disp = (1.0 - ratio) * 100.0
                                 col_suffix = "improve_pct"
                             else:
@@ -1865,25 +2507,35 @@ def main():
                             r_g = Zg / ref_g
                         else:
                             ref_spec = parse_normalize_ref(args.normalize_ref)
-                            r_m, _, _ = normalize_by_ref_1d(Zm, axes_vals[0], axes_names[0], ref_spec)
-                            r_g, _, _ = normalize_by_ref_1d(Zg, axes_vals[0], axes_names[0], ref_spec)
-                        
+                            r_m, _, _ = normalize_by_ref_1d(
+                                Zm, axes_vals[0], axes_names[0], ref_spec
+                            )
+                            r_g, _, _ = normalize_by_ref_1d(
+                                Zg, axes_vals[0], axes_names[0], ref_spec
+                            )
+
                         if args.combine == "logsum":
-                            score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
+                            score = (
+                                w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)
+                            ) / w_sum
                             combined_val = _improve_pct_from_log_ratio(score)
                             col_name = f"combined_improve_pct_upper_{up:.6g}"
                         elif args.combine == "fscore":
-                            combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="linear")
+                            combined_val = _compute_f_score_improvement(
+                                r_m, r_g, output_mode="linear"
+                            )
                             col_name = f"combined_improve_pct_upper_{up:.6g}"
                         elif args.combine == "fscore_log2":
-                            combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="log2")
+                            combined_val = _compute_f_score_improvement(
+                                r_m, r_g, output_mode="log2"
+                            )
                             col_name = f"combined_improve_log2_upper_{up:.6g}"
                         else:
                             continue
                         df_out[col_name] = combined_val
                 df_out.to_csv(args.output_csv, index=False)
         elif len(axes_names) == 2:
-            base = args.output_eval or 'effects_cumulative.png'
+            base = args.output_eval or "effects_cumulative.png"
             stem, ext = os.path.splitext(base)
             Xv, Yv = axes_vals[0], axes_vals[1]
             per_step_normalize = args.normalize_ref_per_step
@@ -1902,51 +2554,89 @@ def main():
 
             overlay = None
             if args.overlay_raw_all:
-                overlay = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=True)
+                overlay = select_raw_points_2d(
+                    axes_names[0], axes_names[1], ignore_fix=True
+                )
             elif args.overlay_raw:
-                overlay = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=False)
+                overlay = select_raw_points_2d(
+                    axes_names[0], axes_names[1], ignore_fix=False
+                )
 
             hm_vmin, hm_vmax = None, None
             if args.heatmap_range:
-                parts = args.heatmap_range.split(',')
+                parts = args.heatmap_range.split(",")
                 if len(parts) == 2:
-                    hm_vmin = float(parts[0].strip()); hm_vmax = float(parts[1].strip())
+                    hm_vmin = float(parts[0].strip())
+                    hm_vmax = float(parts[1].strip())
+            elif args.normalize_as_log2:
+                hm_vmin, hm_vmax = -4.0, +4.0
 
             # convex-hull mask (2D cumulative): outside hull -> NaN
             hull_inside_mask = None
             hull_desc = None
             if args.mask_by_convex_hull:
                 src = str(args.mask_by_convex_hull).strip().lower()
-                ignore_fix = (src == "all")
-                pts_hull = select_raw_points_2d(axes_names[0], axes_names[1], ignore_fix=ignore_fix)
+                ignore_fix = src == "all"
+                pts_hull = select_raw_points_2d(
+                    axes_names[0], axes_names[1], ignore_fix=ignore_fix
+                )
                 hull = _convex_hull_2d(pts_hull) if pts_hull is not None else None
 
                 # debug: always show hull inputs when verbose (cumulative branch)
                 if args.verbose:
-                    n_pts = 0 if pts_hull is None else int(np.asarray(pts_hull).shape[0])
-                    print("[hull] (cumulative) axes:", axes_names[0], axes_names[1], "| src=", src, "| ignore_fix=", bool(ignore_fix))
+                    n_pts = (
+                        0 if pts_hull is None else int(np.asarray(pts_hull).shape[0])
+                    )
+                    print(
+                        "[hull] (cumulative) axes:",
+                        axes_names[0],
+                        axes_names[1],
+                        "| src=",
+                        src,
+                        "| ignore_fix=",
+                        bool(ignore_fix),
+                    )
                     print("[hull] (cumulative) pts_hull bbox:", _bbox_str_xy(pts_hull))
                     print("[hull] (cumulative) pts_hull n:", n_pts)
                     # raw points unique list (all)
                     pts_u = _unique_sorted_points_xy(pts_hull)
-                    _print_points_block("[hull] (cumulative)", "raw unique points (x,y)", pts_u)
+                    _print_points_block(
+                        "[hull] (cumulative)", "raw unique points (x,y)", pts_u
+                    )
 
                 if hull is not None:
                     _dummy = np.zeros((len(Yv), len(Xv)), dtype=float)
                     _, hull_inside_mask = _mask_by_polygon_2d(_dummy, Xv, Yv, hull)
-                    hull_desc = f"convex_hull(src={src}, n_pts={int(pts_hull.shape[0])})"
+                    hull_desc = (
+                        f"convex_hull(src={src}, n_pts={int(pts_hull.shape[0])})"
+                    )
                     if args.verbose:
                         try:
                             path = _make_closed_path(np.asarray(hull, dtype=float))
-                            inside_pts = path.contains_points(np.asarray(pts_hull, dtype=float)) if path is not None else None
+                            inside_pts = (
+                                path.contains_points(np.asarray(pts_hull, dtype=float))
+                                if path is not None
+                                else None
+                            )
                             if inside_pts is None:
-                                raise RuntimeError("failed to build closed Path for hull")
+                                raise RuntimeError(
+                                    "failed to build closed Path for hull"
+                                )
                             inside_pts = np.asarray(inside_pts, dtype=bool)
                             n_in = int(np.sum(inside_pts))
                             n_all = int(len(inside_pts))
-                            print("[hull] (cumulative) hull vertices:", int(np.asarray(hull).shape[0]), "bbox:", _bbox_str_xy(hull))
+                            print(
+                                "[hull] (cumulative) hull vertices:",
+                                int(np.asarray(hull).shape[0]),
+                                "bbox:",
+                                _bbox_str_xy(hull),
+                            )
                             # hull vertices list (all)
-                            _print_points_block("[hull] (cumulative)", "hull vertices (x,y)", np.asarray(hull, dtype=float))
+                            _print_points_block(
+                                "[hull] (cumulative)",
+                                "hull vertices (x,y)",
+                                np.asarray(hull, dtype=float),
+                            )
                             print(
                                 "[hull] (cumulative) pts_hull inside hull:",
                                 f"{n_in}/{n_all}",
@@ -1964,7 +2654,10 @@ def main():
                             print("[hull] (cumulative) debug failed:", repr(e))
                 else:
                     if args.verbose:
-                        print("[hull] (cumulative) hull=None reason:", _hull_none_reason(pts_hull))
+                        print(
+                            "[hull] (cumulative) hull=None reason:",
+                            _hull_none_reason(pts_hull),
+                        )
 
             def apply_hull_nan(arr: Any) -> np.ndarray:
                 a = np.asarray(arr, dtype=float)
@@ -1984,8 +2677,14 @@ def main():
                     cbl = "integral"
                     if ref_z_common is not None:
                         ratio = Z_plot / ref_z_common
-                        ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref_common.items())
-                        if args.normalize_as_change_rate:
+                        ref_desc = ", ".join(
+                            f"{k}={v:.4g}" for k, v in actual_ref_common.items()
+                        )
+                        if args.normalize_as_log2:
+                            disp = _ratio_to_log2_odds_like(ratio)
+                            title_2d = f"{title_2d}\n(log2(1/ratio) from ref: {ref_desc}, value={ref_z_common:.4g})"
+                            cbl = "log2(1/ratio)"
+                        elif args.normalize_as_change_rate:
                             disp = (1.0 - ratio) * 100.0
                             title_2d = f"{title_2d}\n(improve [%] from ref: {ref_desc}, value={ref_z_common:.4g})"
                             cbl = "improve [%]"
@@ -1998,8 +2697,14 @@ def main():
                         ratio, ref_z_step, actual_ref_step = normalize_by_ref_2d(
                             Z_plot, Xv, Yv, axes_names[0], axes_names[1], ref_spec
                         )
-                        ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref_step.items())
-                        if args.normalize_as_change_rate:
+                        ref_desc = ", ".join(
+                            f"{k}={v:.4g}" for k, v in actual_ref_step.items()
+                        )
+                        if args.normalize_as_log2:
+                            disp = _ratio_to_log2_odds_like(ratio)
+                            title_2d = f"{title_2d}\n(log2(1/ratio) per-step from ref: {ref_desc}, value={ref_z_step:.4g})"
+                            cbl = "log2(1/ratio)"
+                        elif args.normalize_as_change_rate:
                             disp = (1.0 - ratio) * 100.0
                             title_2d = f"{title_2d}\n(improve [%] per-step from ref: {ref_desc}, value={ref_z_step:.4g})"
                             cbl = "improve [%]"
@@ -2012,13 +2717,27 @@ def main():
                     out_path = f"{stem}_{metric_name}_upper_{up:.6g}{ext}"
                     xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                     ylab = args.ylabel if args.ylabel is not None else axes_names[1]
-                    cbl_eff = args.colorbar_label if args.colorbar_label is not None else cbl
+                    cbl_eff = (
+                        args.colorbar_label if args.colorbar_label is not None else cbl
+                    )
                     disp_plot = apply_hull_nan(disp)
-                    title_eff = title_2d if not hull_desc else f"{title_2d}\n(mask: {hull_desc})"
+                    title_eff = (
+                        title_2d
+                        if not hull_desc
+                        else f"{title_2d}\n(mask: {hull_desc})"
+                    )
                     plot_2d(
-                        xlab, ylab, Xv, Yv, disp_plot,
-                        maybe_title(title_eff), out_path,
-                        overlay_points=overlay, vmin=hm_vmin, vmax=hm_vmax, cmap=args.colormap,
+                        xlab,
+                        ylab,
+                        Xv,
+                        Yv,
+                        disp_plot,
+                        maybe_title(title_eff),
+                        out_path,
+                        overlay_points=overlay,
+                        vmin=hm_vmin,
+                        vmax=hm_vmax,
+                        cmap=args.colormap,
                         colorbar_label=cbl_eff,
                         show_colorbar=(not bool(args.no_colorbar)),
                         transparent=transparent,
@@ -2031,32 +2750,48 @@ def main():
                 ref_m, _ = compute_common_ref_2d("moment_abs")
                 ref_g, _ = compute_common_ref_2d("grad_abs")
                 for up, Zk_map, _, _ in results:
-                    Zm = align_Z_to_axes(Zk_map["moment_abs"], axes_names, results[0][2]).T
-                    Zg = align_Z_to_axes(Zk_map["grad_abs"], axes_names, results[0][2]).T
+                    Zm = align_Z_to_axes(
+                        Zk_map["moment_abs"], axes_names, results[0][2]
+                    ).T
+                    Zg = align_Z_to_axes(
+                        Zk_map["grad_abs"], axes_names, results[0][2]
+                    ).T
                     if (ref_m is not None) and (ref_g is not None):
                         r_m = Zm / ref_m
                         r_g = Zg / ref_g
                     else:
                         ref_spec = parse_normalize_ref(args.normalize_ref)
-                        r_m, _, _ = normalize_by_ref_2d(Zm, Xv, Yv, axes_names[0], axes_names[1], ref_spec)
-                        r_g, _, _ = normalize_by_ref_2d(Zg, Xv, Yv, axes_names[0], axes_names[1], ref_spec)
-                    
+                        r_m, _, _ = normalize_by_ref_2d(
+                            Zm, Xv, Yv, axes_names[0], axes_names[1], ref_spec
+                        )
+                        r_g, _, _ = normalize_by_ref_2d(
+                            Zg, Xv, Yv, axes_names[0], axes_names[1], ref_spec
+                        )
+
                     if args.combine == "logsum":
-                        score = (w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)) / w_sum
+                        score = (
+                            w_m * _safe_log_ratio(r_m) + w_g * _safe_log_ratio(r_g)
+                        ) / w_sum
                         combined_val = _improve_pct_from_log_ratio(score)
-                        title_suffix = f"combined=logsum (moment_abs={w_m:g}, grad_abs={w_g:g})"
+                        title_suffix = (
+                            f"combined=logsum (moment_abs={w_m:g}, grad_abs={w_g:g})"
+                        )
                         cbl_default = "improve [%] (1 - geom-mean ratio)"
                     elif args.combine == "fscore":
-                        combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="linear")
+                        combined_val = _compute_f_score_improvement(
+                            r_m, r_g, output_mode="linear"
+                        )
                         title_suffix = "combined=fscore"
                         cbl_default = "improve [%] (F-score linear)"
                     elif args.combine == "fscore_log2":
-                        combined_val = _compute_f_score_improvement(r_m, r_g, output_mode="log2")
+                        combined_val = _compute_f_score_improvement(
+                            r_m, r_g, output_mode="log2"
+                        )
                         title_suffix = "combined=fscore_log2"
                         cbl_default = "improve [log2 OR] (F-score)"
                     else:
                         continue
-                    
+
                     improve_plot = apply_hull_nan(combined_val)
                     # CSV export for combined in cumulative 2D
                     if args.output_csv:
@@ -2069,14 +2804,22 @@ def main():
                             vmin_c, vmax_c = -4.0, +4.0
                         else:
                             c = np.asarray(improve_plot, dtype=float)
-                            mabs = float(np.nanmax(np.abs(c))) if np.isfinite(c).any() else 0.0
+                            mabs = (
+                                float(np.nanmax(np.abs(c)))
+                                if np.isfinite(c).any()
+                                else 0.0
+                            )
                             vmin_c = -mabs if mabs > 0.0 else None
                             vmax_c = +mabs if mabs > 0.0 else None
                     out_path = f"{stem}_combined_upper_{up:.6g}{ext}"
                     title_2d = f"{title_suffix} | {cum_col} upper={up:.3g}"
                     xlab = args.xlabel if args.xlabel is not None else axes_names[0]
                     ylab = args.ylabel if args.ylabel is not None else axes_names[1]
-                    cbl_eff = args.colorbar_label if args.colorbar_label is not None else cbl_default
+                    cbl_eff = (
+                        args.colorbar_label
+                        if args.colorbar_label is not None
+                        else cbl_default
+                    )
 
                     # optima extraction per upper (combined 2D cumulative)
                     opt = None
@@ -2086,20 +2829,30 @@ def main():
                             np.asarray(Xv, dtype=float),
                             np.asarray(Yv, dtype=float),
                             top_pct=float(args.optima_top_pct),
-                            delta=(None if args.optima_delta is None else float(args.optima_delta)),
+                            delta=(
+                                None
+                                if args.optima_delta is None
+                                else float(args.optima_delta)
+                            ),
                             connectivity=int(args.optima_connectivity),
                             max_islands=int(args.optima_max_islands),
                         )
-                        islands = opt.get("islands", []) if isinstance(opt, dict) else []
+                        islands = (
+                            opt.get("islands", []) if isinstance(opt, dict) else []
+                        )
                         if islands:
-                            print(f"[optima] cumulative combined 2D: upper={up:.6g} method={opt.get('method')} threshold={opt.get('threshold'):.6g} vmax={opt.get('vmax'):.6g} islands={len(islands)}")
+                            print(
+                                f"[optima] cumulative combined 2D: upper={up:.6g} method={opt.get('method')} threshold={opt.get('threshold'):.6g} vmax={opt.get('vmax'):.6g} islands={len(islands)}"
+                            )
                             for i, d in enumerate(islands, start=1):
                                 print(
                                     f"  #{i}: rep=({float(d['rep_x']):.6g}, {float(d['rep_y']):.6g}) "
                                     f"value={float(d['rep_value']):.6g} island_max={float(d['island_max']):.6g} n_cells={int(d['n_cells'])}"
                                 )
                             if args.output_optima_csv:
-                                csv_path = _optima_csv_path(args.output_optima_csv, f"upper_{up:.6g}")
+                                csv_path = _optima_csv_path(
+                                    args.output_optima_csv, f"upper_{up:.6g}"
+                                )
                                 if csv_path:
                                     df_opt = pd.DataFrame(
                                         [
@@ -2113,8 +2866,12 @@ def main():
                                                 island_median=float(d["island_median"]),
                                                 n_cells=int(d["n_cells"]),
                                                 area=float(d["area"]),
-                                                center_median_x=float(d["center_median_x"]),
-                                                center_median_y=float(d["center_median_y"]),
+                                                center_median_x=float(
+                                                    d["center_median_x"]
+                                                ),
+                                                center_median_y=float(
+                                                    d["center_median_y"]
+                                                ),
                                                 threshold=float(opt.get("threshold")),
                                                 vmax=float(opt.get("vmax")),
                                                 method=str(opt.get("method")),
@@ -2126,30 +2883,57 @@ def main():
 
                     corner_text = ""
                     if opt and isinstance(opt, dict) and opt.get("islands"):
+                        unit = "log2" if args.combine == "fscore_log2" else "%"
                         corner_text = _format_peak_list_text(
                             opt.get("islands", []),
                             x_label=xlab,
                             y_label=ylab,
                             max_items=int(args.optima_max_islands),
+                            value_unit=unit,
                         )
-                    title_eff = title_2d if not hull_desc else f"{title_2d}\n(mask: {hull_desc})"
+                    title_eff = (
+                        title_2d
+                        if not hull_desc
+                        else f"{title_2d}\n(mask: {hull_desc})"
+                    )
                     # combined は従来 custom_improve 固定だったが、--colormap が明示された場合はそれを優先する
-                    cmap_combined = args.colormap if str(args.colormap) != "viridis" else "custom_improve"
+                    cmap_combined = (
+                        args.colormap
+                        if str(args.colormap) != "viridis"
+                        else "custom_improve"
+                    )
                     plot_2d(
-                        xlab, ylab, Xv, Yv, improve_plot,
-                        maybe_title(title_eff), out_path,
+                        xlab,
+                        ylab,
+                        Xv,
+                        Yv,
+                        improve_plot,
+                        maybe_title(title_eff),
+                        out_path,
                         overlay_points=overlay,
-                        contour_mask=(None if (not opt or opt.get("mask") is None) else opt.get("mask")),
-                        mark_points=(None if (not opt or opt.get("rep_points") is None) else opt.get("rep_points")),
+                        contour_mask=(
+                            None
+                            if (not opt or opt.get("mask") is None)
+                            else opt.get("mask")
+                        ),
+                        mark_points=(
+                            None
+                            if (not opt or opt.get("rep_points") is None)
+                            else opt.get("rep_points")
+                        ),
                         mark_labels=(None if (not opt) else opt.get("labels")),
                         corner_text=corner_text,
-                        vmin=vmin_c, vmax=vmax_c, cmap=cmap_combined,
+                        vmin=vmin_c,
+                        vmax=vmax_c,
+                        cmap=cmap_combined,
                         colorbar_label=cbl_eff,
                         show_colorbar=(not bool(args.no_colorbar)),
                         transparent=transparent,
                     )
         else:
-            print(f"可視化軸が3以上のため図は出力しません（累積モード）。CSVで出力します。axes={axes_names}")
+            print(
+                f"可視化軸が3以上のため図は出力しません（累積モード）。CSVで出力します。axes={axes_names}"
+            )
             if args.output_csv:
                 stem, _ = os.path.splitext(args.output_csv)
                 for up, Zk_map, _, _ in results:
@@ -2160,7 +2944,5 @@ def main():
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())
-
-
