@@ -1157,9 +1157,9 @@ def main():
                     ratio, ref_z, actual_ref = normalize_by_ref_1d(Z_1d, axes_vals[0], axes_names[0], ref_spec)
                     ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref.items())
                     if args.normalize_as_change_rate:
-                        disp = (ratio - 1.0) * 100.0
-                        ylabel = "change rate [%]"
-                        title = f"{title_base}\n(change rate [%] from ref: {ref_desc}, value={ref_z:.4g})"
+                        disp = (1.0 - ratio) * 100.0
+                        ylabel = "improve [%]"
+                        title = f"{title_base}\n(improve [%] from ref: {ref_desc}, value={ref_z:.4g})"
                     else:
                         disp = ratio
                         ylabel = "ratio"
@@ -1182,9 +1182,9 @@ def main():
                     ratio, ref_z, actual_ref = normalize_by_ref_2d(Z_plot0, Xv, Yv, axes_names[0], axes_names[1], ref_spec)
                     ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref.items())
                     if args.normalize_as_change_rate:
-                        disp = (ratio - 1.0) * 100.0
-                        cbl = "change rate [%]"
-                        title = f"{title_base}\n(change rate [%] from ref: {ref_desc}, value={ref_z:.4g})"
+                        disp = (1.0 - ratio) * 100.0
+                        cbl = "improve [%]"
+                        title = f"{title_base}\n(improve [%] from ref: {ref_desc}, value={ref_z:.4g})"
                     else:
                         disp = ratio
                         cbl = "ratio"
@@ -1385,7 +1385,7 @@ def main():
                 # store change rate if requested else ratio if normalized else raw
                 for m in metrics:
                     disp, _title, _ylab, _xy = displays[m]
-                    col = f"{m}_{'change_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
+                    col = f"{m}_{'improve_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
                     df = _append_value_column(df, col, np.asarray(disp))
                 if combined is not None:
                     df = _append_value_column(df, "combined_improve_pct", np.asarray(combined))
@@ -1500,7 +1500,7 @@ def main():
                 for m in metrics:
                     disp, _title, _cbl, _xy = displays[m]
                     disp_out = apply_hull_nan(disp)
-                    col = f"{m}_{'change_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
+                    col = f"{m}_{'improve_pct' if args.normalize_as_change_rate else ('ratio' if args.normalize_ref else 'value')}"
                     df = _append_value_column(df, col, disp_out)
                 if combined is not None:
                     df = _append_value_column(df, "combined_improve_pct", apply_hull_nan(combined))
@@ -1600,8 +1600,8 @@ def main():
                         ylabel = "integral"
                     else:
                         if args.normalize_as_change_rate:
-                            disp = (ratio - 1.0) * 100.0
-                            ylabel = "change rate [%]"
+                            disp = (1.0 - ratio) * 100.0
+                            ylabel = "improve [%]"
                         else:
                             disp = ratio
                             ylabel = "ratio"
@@ -1702,8 +1702,8 @@ def main():
                             col_suffix = "value"
                         else:
                             if args.normalize_as_change_rate:
-                                disp = (ratio - 1.0) * 100.0
-                                col_suffix = "change_pct"
+                                disp = (1.0 - ratio) * 100.0
+                                col_suffix = "improve_pct"
                             else:
                                 disp = ratio
                                 col_suffix = "ratio"
@@ -1830,9 +1830,9 @@ def main():
                         ratio = Z_plot / ref_z_common
                         ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref_common.items())
                         if args.normalize_as_change_rate:
-                            disp = (ratio - 1.0) * 100.0
-                            title_2d = f"{title_2d}\n(change rate [%] from ref: {ref_desc}, value={ref_z_common:.4g})"
-                            cbl = "change rate [%]"
+                            disp = (1.0 - ratio) * 100.0
+                            title_2d = f"{title_2d}\n(improve [%] from ref: {ref_desc}, value={ref_z_common:.4g})"
+                            cbl = "improve [%]"
                         else:
                             disp = ratio
                             title_2d = f"{title_2d}\n(normalized by ref: {ref_desc}, value={ref_z_common:.4g})"
@@ -1844,9 +1844,9 @@ def main():
                         )
                         ref_desc = ", ".join(f"{k}={v:.4g}" for k, v in actual_ref_step.items())
                         if args.normalize_as_change_rate:
-                            disp = (ratio - 1.0) * 100.0
-                            title_2d = f"{title_2d}\n(change rate [%] per-step from ref: {ref_desc}, value={ref_z_step:.4g})"
-                            cbl = "change rate [%]"
+                            disp = (1.0 - ratio) * 100.0
+                            title_2d = f"{title_2d}\n(improve [%] per-step from ref: {ref_desc}, value={ref_z_step:.4g})"
+                            cbl = "improve [%]"
                         else:
                             disp = ratio
                             title_2d = f"{title_2d}\n(normalized per-step by ref: {ref_desc}, value={ref_z_step:.4g})"
