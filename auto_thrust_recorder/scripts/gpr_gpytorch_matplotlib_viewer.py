@@ -323,6 +323,8 @@ def main():
     p.add_argument("--trust-model", type=parse_tf, default=False, metavar="{t,f}", help="torch.load unsafe を許可（デフォルト: f）")
     p.add_argument("--x-min", type=float, default=None, help="横軸の下限（未指定ならCSVのmin）")
     p.add_argument("--x-max", type=float, default=None, help="横軸の上限（未指定ならCSVのmax）")
+    p.add_argument("--y-min", type=float, default=-10.0, help="縦軸の下限（デフォルト: -10、固定表示）")
+    p.add_argument("--y-max", type=float, default=10.0, help="縦軸の上限（デフォルト: 10、固定表示）")
     args = p.parse_args()
 
     if torch is None or gpytorch is None:
@@ -355,10 +357,14 @@ def main():
     fig = plt.figure(figsize=(12.0, fig_h))
 
     # メインプロット領域
-    ax = fig.add_axes([0.08, 0.08, 0.56, 0.86])
+    # 右側スライダーのラベルが左にはみ出しても重ならないよう、少しだけ幅を詰める
+    ax = fig.add_axes([0.08, 0.08, 0.54, 0.86])
     ax.set_xlabel(x_feature)
     ax.set_ylabel(f"pred mean ({mb.target_column})")
     ax.grid(True, alpha=0.25)
+    # 縦軸スケール固定（スライダー操作でも変えない）
+    y_lo, y_hi = _safe_minmax(float(args.y_min), float(args.y_max), eps=1e-6)
+    ax.set_ylim(y_lo, y_hi)
 
     # スライダー領域（右側）
     # 上から下へ縦に並べる
@@ -386,6 +392,25 @@ def main():
                 valinit=init,
                 valstep=None,
             )
+            # Slider のラベル文字が左にはみ出してメインプロットに重なるのを防ぐため、
+            # ラベルと値表示をスライダー上側（軸内座標）へ移動する
+            try:
+                sl = sliders[col]
+                sl.label.set_transform(ax_sl.transAxes)
+                sl.label.set_position((0.0, 1.10))
+                sl.label.set_horizontalalignment("left")
+                sl.label.set_verticalalignment("bottom")
+                sl.label.set_fontsize(9)
+                sl.label.set_clip_on(False)
+
+                sl.valtext.set_transform(ax_sl.transAxes)
+                sl.valtext.set_position((1.0, 1.10))
+                sl.valtext.set_horizontalalignment("right")
+                sl.valtext.set_verticalalignment("bottom")
+                sl.valtext.set_fontsize(9)
+                sl.valtext.set_clip_on(False)
+            except Exception:
+                pass
 
     # リセットボタン（中央値へ）
     ax_btn = fig.add_axes([0.70, 0.02, 0.12, 0.04])
@@ -429,17 +454,6 @@ def main():
         nonlocal band
         y_mean, y_std = predict_curve()
         line_mean.set_ydata(y_mean)
-        # y軸を自動調整（±2σも含める）
-        y_lo = float(np.nanmin(y_mean))
-        y_hi = float(np.nanmax(y_mean))
-        if y_std is not None:
-            y_lo = float(np.nanmin(y_mean - 2.0 * y_std))
-            y_hi = float(np.nanmax(y_mean + 2.0 * y_std))
-        if np.isfinite(y_lo) and np.isfinite(y_hi):
-            if y_lo == y_hi:
-                y_lo -= 1e-6
-                y_hi += 1e-6
-            ax.set_ylim(y_lo, y_hi)
         # 不確実性帯
         if bool(args.show_uncertainty):
             if band is not None:
