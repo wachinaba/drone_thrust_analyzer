@@ -2,4 +2,6 @@
 __pycache__
 *.csv
 venv
-.venv-mpl
+.venv-mpl*.aux
+*.log
+*.out
