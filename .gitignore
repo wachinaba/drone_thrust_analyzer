@@ -2,6 +2,7 @@
 __pycache__
 *.csv
 venv
-.venv-mpl*.aux
+.venv-mpl
+*.aux
 *.log
 *.out
