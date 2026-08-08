@@ -2367,6 +2367,14 @@ def main():
     parser.add_argument('csv_file', help='入力CSVファイルのパス')
     parser.add_argument('--output', '-o', default='gpr.png', help='出力画像ファイルのパス（デフォルト: gpr.png）')
     parser.add_argument('--test-size', type=float, default=0.2, help='テストデータの割合（デフォルト: 0.2）')
+    parser.add_argument(
+        '--no-internal-test',
+        action='store_true',
+        help=(
+            '入力CSVの全行で学習し、内部のランダム分割・評価・評価図を省略する。'
+            '外部またはGroupKFoldの保持データで別途評価する場合に使用する。'
+        ),
+    )
     parser.add_argument('--alpha', type=float, default=1e-6, help='ノイズの分散（デフォルト: 1e-6）')
     parser.add_argument('--n-restarts', type=int, default=2, help='最適化の再起動回数（デフォルト: 2）')
     parser.add_argument('--random-state', type=int, default=42, help='乱数のシード（デフォルト: 42）')
@@ -2596,9 +2604,13 @@ def main():
         
         # 訓練データとテストデータの分割（デバッグ用にインデックスも保持）
         all_indices = np.arange(len(df_clean))
-        train_idx, test_idx = train_test_split(
-            all_indices, test_size=args.test_size, random_state=args.random_state
-        )
+        if args.no_internal_test:
+            train_idx = all_indices
+            test_idx = np.array([], dtype=int)
+        else:
+            train_idx, test_idx = train_test_split(
+                all_indices, test_size=args.test_size, random_state=args.random_state
+            )
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
 
@@ -2607,7 +2619,7 @@ def main():
             _debug_print_distribution(df_clean.iloc[test_idx], debug_cols, stage_name="test", topk=args.debug_topk)
         
         print(f"訓練データ数: {len(X_train)}")
-        print(f"テストデータ数: {len(X_test)}")
+        print(f"テストデータ数: {len(X_test)}{'（外部評価を使用）' if args.no_internal_test else ''}")
 
         # 学習データのサブサンプリング（必要に応じて）
         if args.max_train_samples is not None and len(X_train) > args.max_train_samples:
@@ -2823,25 +2835,29 @@ def main():
         
         # モデルの評価
         print(f"\n=== モデルの評価 ===")
-        metrics = evaluate_model(
-            gp_model,
-            X_test,
-            y_test,
-            X_train if args.cv_folds > 0 else None,
-            y_train if args.cv_folds > 0 else None,
-            cv_folds=args.cv_folds,
-            cv_jobs=args.cv_jobs,
-            return_std=(not args.no_uncertainty)
-        )
-        
-        print(f"テストデータでの評価:")
-        print(f"  RMSE: {metrics['rmse']:.6f}")
-        print(f"  MAE:  {metrics['mae']:.6f}")
-        print(f"  R²:   {metrics['r2']:.6f}")
-        
-        if 'cv_rmse' in metrics:
-            print(f"クロスバリデーション:")
-            print(f"  CV RMSE: {metrics['cv_rmse']:.6f} ± {metrics['cv_std']:.6f}")
+        metrics = {}
+        if args.no_internal_test:
+            print("内部ランダム分割は省略しました。保持foldを用いて外部評価してください。")
+        else:
+            metrics = evaluate_model(
+                gp_model,
+                X_test,
+                y_test,
+                X_train if args.cv_folds > 0 else None,
+                y_train if args.cv_folds > 0 else None,
+                cv_folds=args.cv_folds,
+                cv_jobs=args.cv_jobs,
+                return_std=(not args.no_uncertainty)
+            )
+            
+            print(f"テストデータでの評価:")
+            print(f"  RMSE: {metrics['rmse']:.6f}")
+            print(f"  MAE:  {metrics['mae']:.6f}")
+            print(f"  R²:   {metrics['r2']:.6f}")
+            
+            if 'cv_rmse' in metrics:
+                print(f"クロスバリデーション:")
+                print(f"  CV RMSE: {metrics['cv_rmse']:.6f} ± {metrics['cv_std']:.6f}")
         
         # 結果の可視化
         print(f"\n=== 結果の可視化 ===")
@@ -2855,8 +2871,9 @@ def main():
         
         # 動的に目的変数名を渡す（関数属性を利用）
         plot_results._target_column = args.target
-        plot_results(y_test, metrics['y_pred'], metrics.get('y_std', None), 
-                    feature_columns, results_output)
+        if not args.no_internal_test:
+            plot_results(y_test, metrics['y_pred'], metrics.get('y_std', None), 
+                        feature_columns, results_output)
         plot_feature_importance(gp_model, feature_columns, importance_output)
 
         # ペアワイズヒートマップ
