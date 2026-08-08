@@ -2,7 +2,7 @@ import argparse
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import io
 
 import numpy as np
@@ -34,9 +34,9 @@ class DotGridSpec:
     """
 
     frame: str = "world"  # "world" | "drone" | "rotor" | "rotor_between"
-    origin: np.ndarray = np.zeros(3, dtype=float)
-    u: np.ndarray = np.array([1.0, 0.0, 0.0], dtype=float)
-    v: np.ndarray = np.array([0.0, 1.0, 0.0], dtype=float)
+    origin: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=float))
+    u: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0], dtype=float))
+    v: np.ndarray = field(default_factory=lambda: np.array([0.0, 1.0, 0.0], dtype=float))
     nu: int = 1
     nv: int = 1
     # frame-specific
